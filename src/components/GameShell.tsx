@@ -61,6 +61,9 @@ const EMPTY_HUD: Hud = {
   bonusDefeated: false,
 };
 
+const APP_VERSION = (import.meta as ImportMeta & { env: { VITE_APP_VERSION?: string } }).env
+  .VITE_APP_VERSION;
+
 const SECTORS = [
   { numeral: "I", name: "Deep Void" },
   { numeral: "II", name: "Verdant Drift" },
@@ -473,6 +476,12 @@ export default function GameShell({
 
           {/* playfield */}
           <div className="scanlines vignette relative min-h-[320px] w-full flex-1 overflow-hidden border-x border-steel/20 bg-void">
+            <span
+              aria-label={`Game version ${APP_VERSION || "local"}`}
+              className="pointer-events-none absolute bottom-2 left-2 z-10 border border-steel/30 bg-void/70 px-1.5 py-0.5 font-mono text-[9px] tracking-wider text-amber/45"
+            >
+              v{APP_VERSION || "local"}
+            </span>
             <div
               className="absolute inset-0 opacity-[0.55]"
               style={{

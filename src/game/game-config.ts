@@ -256,7 +256,7 @@ export const GAME_CONFIG = {
       damageReductionPerStack: 0.12,
       maxDamageReduction: 0.36,
     },
-    twin: { max: 3, rarity: "rare", weight: 0.7, extraShotsPerStack: 1 },
+    twin: { max: 1, rarity: "rare", weight: 0.7, extraShotsPerStack: 1 },
     pierce: { max: 3, rarity: "rare", weight: 0.7, extraPiercePerStack: 1 },
     crit: { max: 5, rarity: "common", weight: 1, critPerStack: 0.07 },
   },
