@@ -13,46 +13,22 @@ import type {
   StatUpgrade,
   WeaponId,
 } from "./types";
+import { GAME_CONFIG } from "./game-config";
 
 /* ------------------------------------------------------------ palette */
 
-export const AMBER = "#ffb03a";
-export const AMBER_HOT = "#ffe0a3";
-export const ICE = "#6fe7ff";
-export const MAGENTA = "#ff3d6e";
-export const ORANGE = "#ff7a2a";
+export const AMBER = GAME_CONFIG.colors.amber;
+export const AMBER_HOT = GAME_CONFIG.colors.amberHot;
+export const ICE = GAME_CONFIG.colors.ice;
+export const MAGENTA = GAME_CONFIG.colors.magenta;
+export const ORANGE = GAME_CONFIG.colors.orange;
 
 /* ------------------------------------------------------------ sectors */
 
-export const THEMES: SectorTheme[] = [
-  { numeral: "I", name: "DEEP VOID", tint: "rgba(26,29,43,0.10)", stars: ["#ffe0a3", "#8d93ad"] },
-  {
-    numeral: "II",
-    name: "VERDANT DRIFT",
-    tint: "rgba(20,48,34,0.13)",
-    stars: ["#c9ffd9", "#79a98c"],
-  },
-  {
-    numeral: "III",
-    name: "FROZEN BELT",
-    tint: "rgba(18,42,60,0.15)",
-    stars: ["#d9f4ff", "#7ba0bd"],
-  },
-  {
-    numeral: "IV",
-    name: "VIOLET STORM",
-    tint: "rgba(44,24,58,0.15)",
-    stars: ["#f0d4ff", "#a07bcd"],
-  },
-  { numeral: "V", name: "EMBER FIELD", tint: "rgba(58,25,18,0.15)", stars: ["#ffc9b0", "#c08268"] },
-  { numeral: "VI", name: "THE CORE", tint: "rgba(70,32,8,0.18)", stars: ["#ffffff", "#ffd9a0"] },
-  {
-    numeral: "VII",
-    name: "SOLAR CATACLYSM",
-    tint: "rgba(80,38,6,0.26)",
-    stars: ["#ffea88", "#ff9933"],
-  },
-];
+export const THEMES: SectorTheme[] = GAME_CONFIG.themes.map((theme) => ({
+  ...theme,
+  stars: [...theme.stars] as [string, string],
+}));
 
 /* ------------------------------------------------------------ weapons */
 
@@ -66,7 +42,7 @@ export const WEAPON_ORDER: WeaponId[] = [
   "laser",
   "rail",
 ];
-export const MAX_WEAPON_LEVEL = 6;
+export const MAX_WEAPON_LEVEL = GAME_CONFIG.weaponProgression.maxLevel;
 
 export const WEAPON_DEFS: Record<
   WeaponId,
@@ -77,71 +53,69 @@ export const WEAPON_DEFS: Record<
     short: "PULSE",
     desc: "Reliable twin-fed plasma. The baseline everything is measured against.",
     perLevel: "+15% damage · +7% rate · +1 shot every 2 levels",
-    rarity: "common",
-    weight: 1,
+    rarity: GAME_CONFIG.weaponProgression.weapons.pulse.rarity,
+    weight: GAME_CONFIG.weaponProgression.weapons.pulse.weight,
   },
   spread: {
     name: "Scattershot Array",
     short: "SCATTER",
     desc: "A cone of pellets. Devastating up close, forgiving of bad aim.",
     perLevel: "+1 pellet · +12% damage",
-    rarity: "rare",
-    weight: 0.7,
+    rarity: GAME_CONFIG.weaponProgression.weapons.spread.rarity,
+    weight: GAME_CONFIG.weaponProgression.weapons.spread.weight,
   },
   seeker: {
     name: "Seeker Pulse",
     short: "SEEKER",
     desc: "Rapid low-damage darts that hunt the nearest target on their own.",
     perLevel: "+15% damage · +8% rate · +1 dart every 3 levels",
-    rarity: "rare",
-    weight: 0.7,
+    rarity: GAME_CONFIG.weaponProgression.weapons.seeker.rarity,
+    weight: GAME_CONFIG.weaponProgression.weapons.seeker.weight,
   },
   ricochet: {
     name: "Ricochet Blaster",
     short: "RICOCHET",
     desc: "Heavy slugs that bounce off the sector edges instead of leaving.",
     perLevel: "+15% damage · +1 bounce every 2 levels",
-    rarity: "rare",
-    weight: 0.7,
+    rarity: GAME_CONFIG.weaponProgression.weapons.ricochet.rarity,
+    weight: GAME_CONFIG.weaponProgression.weapons.ricochet.weight,
   },
   flak: {
     name: "Flak Cannon",
     short: "FLAK",
     desc: "Timed shells that burst into a ring of shrapnel. Crowd control.",
     perLevel: "+2 shrapnel · +15% damage",
-    rarity: "rare",
-    weight: 0.6,
+    rarity: GAME_CONFIG.weaponProgression.weapons.flak.rarity,
+    weight: GAME_CONFIG.weaponProgression.weapons.flak.weight,
   },
   arc: {
     name: "Arc Coil",
     short: "ARC",
     desc: "Short-range lightning that chains between nearby targets.",
     perLevel: "+18% damage · +range · +1 chain every 2 levels",
-    rarity: "epic",
-    weight: 0.4,
+    rarity: GAME_CONFIG.weaponProgression.weapons.arc.rarity,
+    weight: GAME_CONFIG.weaponProgression.weapons.arc.weight,
   },
   laser: {
     name: "Beam Emitter",
     short: "BEAM",
     desc: "A continuous cutting beam with an overheat gauge.",
     perLevel: "+20% dps · −6% heat build-up",
-    rarity: "epic",
-    weight: 0.4,
+    rarity: GAME_CONFIG.weaponProgression.weapons.laser.rarity,
+    weight: GAME_CONFIG.weaponProgression.weapons.laser.weight,
   },
   rail: {
     name: "Railgun",
     short: "RAIL",
     desc: "Slow, piercing, enormous damage.",
     perLevel: "+22% damage · +1 pierce every 2 levels",
-    rarity: "epic",
-    weight: 0.4,
+    rarity: GAME_CONFIG.weaponProgression.weapons.rail.rarity,
+    weight: GAME_CONFIG.weaponProgression.weapons.rail.weight,
   },
 };
 
 export const WEAPON_BASE_PRICE: Record<Rarity, number> = {
-  common: 120,
-  rare: 280,
-  epic: 560,
+  ...GAME_CONFIG.weaponProgression.rarityBasePrices,
 };
 
 /* ------------------------------------------------------------ stat upgrades */
@@ -151,106 +125,110 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     id: "overclock",
     name: "Overclocked Barrels",
     tag: "Fire rate",
-    rarity: "common",
-    weight: 1,
-    max: 6,
+    rarity: GAME_CONFIG.statUpgrades.overclock.rarity,
+    weight: GAME_CONFIG.statUpgrades.overclock.weight,
+    max: GAME_CONFIG.statUpgrades.overclock.max,
     desc: "Cyclic rate +9% on every weapon.",
     apply: (g) => {
-      g.p.fireRateMul *= 1.09;
+      g.p.fireRateMul *= GAME_CONFIG.statUpgrades.overclock.fireRateMultiplier;
     },
   },
   {
     id: "hollow",
     name: "Hollow-Point Payload",
     tag: "Damage",
-    rarity: "common",
-    weight: 1,
-    max: 6,
+    rarity: GAME_CONFIG.statUpgrades.hollow.rarity,
+    weight: GAME_CONFIG.statUpgrades.hollow.weight,
+    max: GAME_CONFIG.statUpgrades.hollow.max,
     desc: "All weapon damage +12%.",
     apply: (g) => {
-      g.p.damageMul *= 1.12;
+      g.p.damageMul *= GAME_CONFIG.statUpgrades.hollow.damageMultiplier;
     },
   },
   {
     id: "thruster",
     name: "Vector Thruster Kit",
     tag: "Mobility",
-    rarity: "common",
-    weight: 1,
-    max: 4,
+    rarity: GAME_CONFIG.statUpgrades.thruster.rarity,
+    weight: GAME_CONFIG.statUpgrades.thruster.weight,
+    max: GAME_CONFIG.statUpgrades.thruster.max,
     desc: "Thrust +9%, top speed +6%, turn rate +4%.",
     apply: (g) => {
-      g.p.thrust *= 1.09;
-      g.p.maxSpeed *= 1.06;
-      g.p.turn *= 1.04;
+      g.p.thrust *= GAME_CONFIG.statUpgrades.thruster.thrustMultiplier;
+      g.p.maxSpeed *= GAME_CONFIG.statUpgrades.thruster.speedMultiplier;
+      g.p.turn *= GAME_CONFIG.statUpgrades.thruster.turnMultiplier;
     },
   },
   {
     id: "hull",
     name: "Reinforced Hull",
     tag: "Survival",
-    rarity: "common",
-    weight: 1,
-    max: 6,
+    rarity: GAME_CONFIG.statUpgrades.hull.rarity,
+    weight: GAME_CONFIG.statUpgrades.hull.weight,
+    max: GAME_CONFIG.statUpgrades.hull.max,
     desc: "Max hull +18 and immediately repair 18 hull.",
     apply: (g) => {
-      g.p.maxHull += 18;
-      g.p.hull = Math.min(g.p.maxHull, g.p.hull + 18);
+      const hull = GAME_CONFIG.statUpgrades.hull.hullPerStack;
+      g.p.maxHull += hull;
+      g.p.hull = Math.min(g.p.maxHull, g.p.hull + hull);
     },
   },
   {
     id: "armor",
     name: "Reactive Armor Plating",
     tag: "Survival",
-    rarity: "rare",
-    weight: 0.7,
-    max: 3,
+    rarity: GAME_CONFIG.statUpgrades.armor.rarity,
+    weight: GAME_CONFIG.statUpgrades.armor.weight,
+    max: GAME_CONFIG.statUpgrades.armor.max,
     desc: "All incoming damage −12%. Stacks to −36%.",
     apply: (g) => {
-      g.p.armor = Math.min(0.36, g.p.armor + 0.12);
+      g.p.armor = Math.min(
+        GAME_CONFIG.statUpgrades.armor.maxDamageReduction,
+        g.p.armor + GAME_CONFIG.statUpgrades.armor.damageReductionPerStack,
+      );
     },
   },
   {
     id: "twin",
     name: "Twin-Linked Feeder",
     tag: "Weapon",
-    rarity: "rare",
-    weight: 0.7,
-    max: 3,
+    rarity: GAME_CONFIG.statUpgrades.twin.rarity,
+    weight: GAME_CONFIG.statUpgrades.twin.weight,
+    max: GAME_CONFIG.statUpgrades.twin.max,
     desc: "+1 projectile per volley on every projectile weapon.",
     apply: (g) => {
-      g.p.extraShots += 1;
+      g.p.extraShots += GAME_CONFIG.statUpgrades.twin.extraShotsPerStack;
     },
   },
   {
     id: "pierce",
     name: "Sabot Rounds",
     tag: "Weapon",
-    rarity: "rare",
-    weight: 0.7,
-    max: 3,
+    rarity: GAME_CONFIG.statUpgrades.pierce.rarity,
+    weight: GAME_CONFIG.statUpgrades.pierce.weight,
+    max: GAME_CONFIG.statUpgrades.pierce.max,
     desc: "Projectiles pierce one extra target.",
     apply: (g) => {
-      g.p.pierce += 1;
+      g.p.pierce += GAME_CONFIG.statUpgrades.pierce.extraPiercePerStack;
     },
   },
   {
     id: "crit",
     name: "Targeting Optics",
     tag: "Weapon",
-    rarity: "common",
-    weight: 1,
-    max: 5,
+    rarity: GAME_CONFIG.statUpgrades.crit.rarity,
+    weight: GAME_CONFIG.statUpgrades.crit.weight,
+    max: GAME_CONFIG.statUpgrades.crit.max,
     desc: "Critical chance +7% (crits deal 2.2×).",
     apply: (g) => {
-      g.p.crit += 0.07;
+      g.p.crit += GAME_CONFIG.statUpgrades.crit.critPerStack;
     },
   },
 ];
 
 /* ------------------------------------------------------------ salvage drone */
 
-export const SALVAGE_BASE_PRICE = 260;
+export const SALVAGE_BASE_PRICE = GAME_CONFIG.salvage.basePrice;
 
 export const SALVAGE_UPGRADES: Record<
   SalvageUpgradeId,
@@ -266,58 +244,50 @@ export const SALVAGE_UPGRADES: Record<
     name: "Twin Cannons",
     path: "offense",
     desc: "Adds weak support cannons. The final level converts the mounts into a visible minigun.",
-    base: 90,
-    max: 3,
+    ...GAME_CONFIG.salvageUpgradePrices.twinCannons,
   },
   overcharge: {
     name: "Overcharge Core",
     path: "offense",
     desc: "Raises drone shot damage and fire cadence, with a major final-stage capacitor.",
-    base: 105,
-    max: 3,
+    ...GAME_CONFIG.salvageUpgradePrices.overcharge,
   },
   piercing: {
     name: "Piercing Rounds",
     path: "offense",
     desc: "Drone shots pierce additional targets and gain a little range.",
-    base: 120,
-    max: 2,
+    ...GAME_CONFIG.salvageUpgradePrices.piercing,
   },
   armor: {
     name: "Armor Plating",
     path: "support",
     desc: "Visible hull plates increase drone max health and reduce collision damage.",
-    base: 75,
-    max: 3,
+    ...GAME_CONFIG.salvageUpgradePrices.armor,
   },
   repairPulse: {
     name: "Repair Pulse",
     path: "support",
     desc: "A slow support pulse repairs the player's hull when the drone is nearby.",
-    base: 90,
-    max: 3,
+    ...GAME_CONFIG.salvageUpgradePrices.repairPulse,
   },
 
   magnet: {
     name: "Magnet Coil",
     path: "utility",
     desc: "A visible ring expands the drone's credit collection field.",
-    base: 65,
-    max: 3,
+    ...GAME_CONFIG.salvageUpgradePrices.magnet,
   },
   scan: {
     name: "Wide Scan",
     path: "utility",
     desc: "Longer scan range lets the drone find salvage and targets earlier.",
-    base: 70,
-    max: 3,
+    ...GAME_CONFIG.salvageUpgradePrices.scan,
   },
   speed: {
     name: "Follow Thrusters",
     path: "utility",
     desc: "The drone orbits further and catches up faster instead of feeling glued on.",
-    base: 75,
-    max: 3,
+    ...GAME_CONFIG.salvageUpgradePrices.speed,
   },
 };
 
@@ -335,13 +305,13 @@ export const SALVAGE_UPGRADE_ORDER: SalvageUpgradeId[] = [
 /* ------------------------------------------------------------ asteroids */
 
 export const TRAIT_COLOR: Record<RockTrait, string> = {
-  none: "#8d6a3d",
-  homing: "#ff6f9a",
+  none: GAME_CONFIG.colors.rocks.none,
+  homing: GAME_CONFIG.colors.rocks.homing,
   bounce: ICE,
   boom: ORANGE,
-  fast: "#f4f7ff",
-  meteor: "#ffd27a",
-  meteorite: "#ffc36b",
+  fast: GAME_CONFIG.colors.rocks.fast,
+  meteor: GAME_CONFIG.colors.rocks.meteor,
+  meteorite: GAME_CONFIG.colors.rocks.meteorite,
 };
 
 /** meteor showers and meteorites are transient events — they never gate
@@ -351,20 +321,20 @@ export const isEventRock = (t: RockTrait) => t === "meteor" || t === "meteorite"
 /* ------------------------------------------------------------ enemy bolts */
 
 /** a sentinel bolt is the damage yardstick; a warden sniper round lands harder */
-export const SENTINEL_BOLT_DMG = 7;
-export const WARDEN_BOLT_DMG = 12;
+export const SENTINEL_BOLT_DMG = GAME_CONFIG.enemies.sentinels.boltDamage;
+export const WARDEN_BOLT_DMG = GAME_CONFIG.enemies.wardens.boltDamage;
 
 /* ------------------------------------------------------------ bosses */
 
 /** how many non-event rocks may be on the field before a dreadnought (MK1–MK5)
  *  stops shedding more. Keeps boss arenas readable instead of a rock blizzard. */
-export const BOSS_ROCK_CAP = 10;
+export const BOSS_ROCK_CAP = GAME_CONFIG.asteroids.bossFieldCap;
 
 /** how long boom-launch and MK3 rocks live (seconds) before they quietly burn out */
-export const BOSS_ROCK_LIFESPAN = 30;
+export const BOSS_ROCK_LIFESPAN = GAME_CONFIG.asteroids.bossRockLifetime;
 
 /** MK1–MK3 health may never reach the MK5 / MK6 figures, whatever wave they are summoned on */
-export const EARLY_BOSS_HP_CEILING = 13000;
+export const EARLY_BOSS_HP_CEILING = GAME_CONFIG.bosses.earlyHpCeiling;
 
 /**
  * Boom asteroids: slower and heavier than other rocks, a short creeper fuse,
@@ -372,17 +342,17 @@ export const EARLY_BOSS_HP_CEILING = 13000;
  */
 export const BOOM = {
   /** seconds on the fuse once the ship is inside trigger range */
-  fuse: 0.35,
+  fuse: GAME_CONFIG.asteroids.traits.boom.fuse,
   /** the fuse starts this far beyond the rock's own radius */
-  triggerPad: 90,
+  triggerPad: GAME_CONFIG.asteroids.traits.boom.triggerPad,
   /** …but never less than this fraction of the blast radius, so the fuse always starts before the blast can reach the ship */
-  triggerFrac: 0.8,
+  triggerFrac: GAME_CONFIG.asteroids.traits.boom.triggerRadiusFraction,
   /** inside this range (beyond the rock's radius) the rock drifts toward the ship */
-  homeRange: 260,
+  homeRange: GAME_CONFIG.asteroids.traits.boom.homeRange,
   /** radians per second of steering while homing: deliberately lazy */
-  homeTurn: 0.95,
+  homeTurn: GAME_CONFIG.asteroids.traits.boom.homeTurn,
   /** blast radius multiplier over the old values */
-  blastMul: 1.7,
+  blastMul: GAME_CONFIG.asteroids.traits.boom.blastRadiusMultiplier,
   /** fixed cruise speed per size (px/s), well under a plain rock */
   speed: { 3: 24, 2: 30, 1: 36 } as Record<1 | 2 | 3, number>,
 } as const;
@@ -395,11 +365,11 @@ export const BOOM = {
  * 50-wave difficulty ramp while delivering it in half as many waves.
  */
 export const RUN_PACING = {
-  finalWave: 25,
+  finalWave: GAME_CONFIG.waves.wavesPerBoss * 5,
   sectorLength: 5,
-  legacyScale: 2,
+  legacyScale: GAME_CONFIG.asteroids.scaledWaveMultiplier,
   /** random showers never roll while a dreadnought is on the field */
-  meteorShowersAfterWave: 10,
+  meteorShowersAfterWave: GAME_CONFIG.waves.showerAfterWave,
   sentinelBurstsFromWave: 8,
   lateWardenFromWave: 21,
   lateWardenToWave: 24,
@@ -411,8 +381,8 @@ export const RUN_PACING = {
     fast: 21,
   },
   /** wave-completion credit payout: 80 + wave * this */
-  creditsPerWaveBase: 80,
-  creditsPerWaveStep: 24,
+  creditsPerWaveBase: GAME_CONFIG.waves.waveCreditsBase,
+  creditsPerWaveStep: GAME_CONFIG.waves.waveCreditsPerWave,
 } as const;
 
 /**
@@ -420,19 +390,18 @@ export const RUN_PACING = {
  * pressure builds gradually sector by sector.
  */
 export function maxSentinels(wave: number) {
-  if (wave <= 5) return 2;
-  if (wave <= 10) return 3;
-  if (wave <= 15) return 4;
-  if (wave <= 20) return 5;
-  return 6;
+  const thresholds = GAME_CONFIG.enemies.sentinels.countWaveThresholds;
+  const caps = GAME_CONFIG.enemies.sentinels.waveCaps;
+  const index = thresholds.filter((threshold) => wave > threshold).length;
+  return caps[index] ?? caps[caps.length - 1];
 }
 
 /** How many sentinels this wave should introduce, before the cap is applied. */
 export function sentinelWaveCount(wave: number) {
-  if (wave <= 1) return 0;
-  if (wave <= 3) return 1;
-  if (wave <= 5) return 2;
-  return 3;
+  const thresholds = GAME_CONFIG.enemies.sentinels.countWaveThresholds;
+  const counts = GAME_CONFIG.enemies.sentinels.countPerBand;
+  const index = thresholds.filter((threshold) => wave > threshold).length;
+  return counts[index] ?? counts[counts.length - 1];
 }
 
 /** Main-run sector index. The separate bonus boss uses sector/theme index 6. */
@@ -463,72 +432,72 @@ export const BOSS_SPECS: Record<number, BossSpec> = {
     suffix: "MK1 · KOMETENHÜLLE",
     trait: "none",
     edge: "#c05a3a",
-    hpMul: 1.2,
-    timerMul: 1,
-    spawnWeight: 0.7,
-    driftX: 0,
-    bulletMul: 1,
-    rocksPer: 1,
+    hpMul: GAME_CONFIG.bosses.profiles[1].hpMultiplier,
+    timerMul: GAME_CONFIG.bosses.profiles[1].timerMultiplier,
+    spawnWeight: GAME_CONFIG.bosses.profiles[1].spawnWeight,
+    driftX: GAME_CONFIG.bosses.profiles[1].driftX,
+    bulletMul: GAME_CONFIG.bosses.profiles[1].projectileMultiplier,
+    rocksPer: GAME_CONFIG.bosses.profiles[1].rocksPerSpawn,
   },
   2: {
     name: "DREADNOUGHT",
     suffix: "MK2 · JAGDZELL",
     trait: "homing",
     edge: "#ff6f9a",
-    hpMul: 1.495,
-    timerMul: 0.92,
-    spawnWeight: 0.7,
-    driftX: 6,
-    bulletMul: 1.1,
-    rocksPer: 1,
+    hpMul: GAME_CONFIG.bosses.profiles[2].hpMultiplier,
+    timerMul: GAME_CONFIG.bosses.profiles[2].timerMultiplier,
+    spawnWeight: GAME_CONFIG.bosses.profiles[2].spawnWeight,
+    driftX: GAME_CONFIG.bosses.profiles[2].driftX,
+    bulletMul: GAME_CONFIG.bosses.profiles[2].projectileMultiplier,
+    rocksPer: GAME_CONFIG.bosses.profiles[2].rocksPerSpawn,
   },
   3: {
     name: "DREADNOUGHT",
     suffix: "MK3 · RICHTZELL",
     trait: "bounce",
     edge: ICE,
-    hpMul: 1.89,
-    timerMul: 1.05,
-    spawnWeight: 0.9,
-    driftX: 10,
-    bulletMul: 1.05,
-    rocksPer: 2,
+    hpMul: GAME_CONFIG.bosses.profiles[3].hpMultiplier,
+    timerMul: GAME_CONFIG.bosses.profiles[3].timerMultiplier,
+    spawnWeight: GAME_CONFIG.bosses.profiles[3].spawnWeight,
+    driftX: GAME_CONFIG.bosses.profiles[3].driftX,
+    bulletMul: GAME_CONFIG.bosses.profiles[3].projectileMultiplier,
+    rocksPer: GAME_CONFIG.bosses.profiles[3].rocksPerSpawn,
   },
   4: {
     name: "DREADNOUGHT",
     suffix: "MK4 · BRANDZELL",
     trait: "boom",
     edge: ORANGE,
-    hpMul: 3.0,
-    timerMul: 0.9,
-    spawnWeight: 0.7,
-    driftX: -4,
-    bulletMul: 1.35,
-    rocksPer: 2,
+    hpMul: GAME_CONFIG.bosses.profiles[4].hpMultiplier,
+    timerMul: GAME_CONFIG.bosses.profiles[4].timerMultiplier,
+    spawnWeight: GAME_CONFIG.bosses.profiles[4].spawnWeight,
+    driftX: GAME_CONFIG.bosses.profiles[4].driftX,
+    bulletMul: GAME_CONFIG.bosses.profiles[4].projectileMultiplier,
+    rocksPer: GAME_CONFIG.bosses.profiles[4].rocksPerSpawn,
   },
   5: {
     name: "THE CORE",
     suffix: "MK5 · STURMZELL",
     trait: "fast",
     edge: "#f4f7ff",
-    hpMul: 1,
-    timerMul: 1.15,
-    spawnWeight: 0.55,
-    driftX: 0,
-    bulletMul: 1.35,
-    rocksPer: 2,
+    hpMul: GAME_CONFIG.bosses.profiles[5].hpMultiplier,
+    timerMul: GAME_CONFIG.bosses.profiles[5].timerMultiplier,
+    spawnWeight: GAME_CONFIG.bosses.profiles[5].spawnWeight,
+    driftX: GAME_CONFIG.bosses.profiles[5].driftX,
+    bulletMul: GAME_CONFIG.bosses.profiles[5].projectileMultiplier,
+    rocksPer: GAME_CONFIG.bosses.profiles[5].rocksPerSpawn,
   },
   6: {
     name: "THE METEOR",
     suffix: "MK6 · OMEGAZELL",
     trait: "meteorite",
     edge: "#ffd27a",
-    hpMul: 1,
-    timerMul: 1,
-    spawnWeight: 0,
-    driftX: 0,
-    bulletMul: 1,
-    rocksPer: 0,
+    hpMul: GAME_CONFIG.bosses.profiles[6].hpMultiplier,
+    timerMul: GAME_CONFIG.bosses.profiles[6].timerMultiplier,
+    spawnWeight: GAME_CONFIG.bosses.profiles[6].spawnWeight,
+    driftX: GAME_CONFIG.bosses.profiles[6].driftX,
+    bulletMul: GAME_CONFIG.bosses.profiles[6].projectileMultiplier,
+    rocksPer: GAME_CONFIG.bosses.profiles[6].rocksPerSpawn,
   },
 };
 
@@ -545,38 +514,38 @@ export function freshPlayer() {
     vx: 0,
     vy: 0,
     angle: -Math.PI / 2,
-    hull: 100,
-    maxHull: 100,
-    armor: 0,
-    thrust: 460,
-    maxSpeed: 540,
-    turn: 4.4,
-    fireRateMul: 1,
-    damageMul: 1,
-    bulletSpeed: 720,
+    hull: GAME_CONFIG.player.hull,
+    maxHull: GAME_CONFIG.player.hull,
+    armor: GAME_CONFIG.player.armor,
+    thrust: GAME_CONFIG.player.thrust,
+    maxSpeed: GAME_CONFIG.player.maxSpeed,
+    turn: GAME_CONFIG.player.turn,
+    fireRateMul: GAME_CONFIG.player.fireRateMul,
+    damageMul: GAME_CONFIG.player.damageMul,
+    bulletSpeed: GAME_CONFIG.player.bulletSpeed,
     primary: "pulse" as WeaponId,
     weapons,
     extraShots: 0,
     pierce: 0,
-    crit: 0.06,
-    critMult: 2.2,
-    inaccuracy: 0.045,
+    crit: GAME_CONFIG.player.crit,
+    critMult: GAME_CONFIG.player.critMult,
+    inaccuracy: GAME_CONFIG.player.inaccuracy,
     heat: 0,
     overheated: false,
     beamOn: false,
     arcTimer: 0,
-    missiles: 3,
-    maxMissiles: 3,
-    blastDmg: 68,
-    blastR: 96,
+    missiles: GAME_CONFIG.player.missiles,
+    maxMissiles: GAME_CONFIG.player.maxMissiles,
+    blastDmg: GAME_CONFIG.player.blastDamage,
+    blastR: GAME_CONFIG.player.blastRadius,
     missileTimer: 0,
-    missileRegen: 6.5,
+    missileRegen: GAME_CONFIG.player.missileRegen,
     missileCharge: 0,
     missileHeld: false,
-    magnet: 150,
-    creditChance: 0.72,
-    creditValue: 1,
-    leech: 0,
+    magnet: GAME_CONFIG.player.magnet,
+    creditChance: GAME_CONFIG.player.creditChance,
+    creditValue: GAME_CONFIG.player.creditValue,
+    leech: GAME_CONFIG.player.leech,
     fireTimer: 0,
     invuln: 0,
     thrusting: false,
@@ -594,13 +563,13 @@ export function freshSalvageDrone(): SalvageDrone {
     vx: 0,
     vy: 0,
     angle: 0,
-    hp: 24,
-    maxHp: 24,
+    hp: GAME_CONFIG.salvage.startingHp,
+    maxHp: GAME_CONFIG.salvage.startingHp,
     rebuilding: 0,
     assembly: 0,
     orbit: 0,
     fireTimer: 0,
-    pulseTimer: 4,
+    pulseTimer: GAME_CONFIG.salvage.startingPulseTimer,
     hitTimer: 0,
     weapon: null,
     devCount: 1,
