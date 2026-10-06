@@ -3,12 +3,35 @@
    so there are no asset downloads and no decode hitches mid-run.        */
 
 export type Sfx =
-  | "pulse" | "rail" | "spread" | "seeker" | "ricochet" | "flak" | "arc"
-  | "beamStart" | "beamStop" | "overheat"
-  | "missile" | "explodeBig" | "explodeSmall" | "hit" | "crit"
-  | "hurt" | "pickup" | "creditDrop" | "levelup" | "wave" | "death" | "ui" | "buy"
-  | "droneAssemble" | "droneDestroyed" | "droneRebuild"
-  | "cycle" | "bossCharge" | "bossDeath";
+  | "pulse"
+  | "rail"
+  | "spread"
+  | "seeker"
+  | "ricochet"
+  | "flak"
+  | "arc"
+  | "beamStart"
+  | "beamStop"
+  | "overheat"
+  | "missile"
+  | "explodeBig"
+  | "explodeSmall"
+  | "hit"
+  | "crit"
+  | "hurt"
+  | "pickup"
+  | "creditDrop"
+  | "levelup"
+  | "wave"
+  | "death"
+  | "ui"
+  | "buy"
+  | "droneAssemble"
+  | "droneDestroyed"
+  | "droneRebuild"
+  | "cycle"
+  | "bossCharge"
+  | "bossDeath";
 
 const MASTER_KEY = "helios-drift-muted-v1";
 
@@ -18,12 +41,21 @@ class AudioEngine {
   comp: DynamicsCompressorNode | null = null;
   noise: AudioBuffer | null = null;
   muted = false;
-  private beam: { osc: OscillatorNode; sub: OscillatorNode; gain: GainNode; filt: BiquadFilterNode } | null = null;
+  private beam: {
+    osc: OscillatorNode;
+    sub: OscillatorNode;
+    gain: GainNode;
+    filt: BiquadFilterNode;
+  } | null = null;
   private voices = 0;
   private lastAt: Record<string, number> = {};
 
   constructor() {
-    try { this.muted = localStorage.getItem(MASTER_KEY) === "1"; } catch { /* ignore */ }
+    try {
+      this.muted = localStorage.getItem(MASTER_KEY) === "1";
+    } catch {
+      /* ignore */
+    }
   }
 
   /** Must be called from a user gesture (browsers block autoplay). */
@@ -52,12 +84,19 @@ class AudioEngine {
     const data = buf.getChannelData(0);
     for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
 
-    this.ctx = ctx; this.comp = comp; this.master = master; this.noise = buf;
+    this.ctx = ctx;
+    this.comp = comp;
+    this.master = master;
+    this.noise = buf;
   }
 
   setMuted(m: boolean) {
     this.muted = m;
-    try { localStorage.setItem(MASTER_KEY, m ? "1" : "0"); } catch { /* ignore */ }
+    try {
+      localStorage.setItem(MASTER_KEY, m ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
     if (this.master && this.ctx) {
       this.master.gain.cancelScheduledValues(this.ctx.currentTime);
       this.master.gain.setTargetAtTime(m ? 0 : 0.42, this.ctx.currentTime, 0.02);
@@ -84,7 +123,11 @@ class AudioEngine {
   }
 
   private tone(
-    type: OscillatorType, f0: number, f1: number, dur: number, peak: number,
+    type: OscillatorType,
+    f0: number,
+    f1: number,
+    dur: number,
+    peak: number,
     opts: { attack?: number; filter?: number; detune?: number; delay?: number } = {},
   ) {
     if (!this.ready() || this.voices > 22) return;
@@ -110,7 +153,9 @@ class AudioEngine {
     osc.start(t);
     osc.stop(t + dur + 0.08);
     this.voices++;
-    osc.onended = () => { this.voices--; };
+    osc.onended = () => {
+      this.voices--;
+    };
   }
 
   private burst(dur: number, peak: number, f0: number, f1: number, q = 1) {
@@ -131,7 +176,9 @@ class AudioEngine {
     src.start(t);
     src.stop(t + dur + 0.05);
     this.voices++;
-    src.onended = () => { this.voices--; };
+    src.onended = () => {
+      this.voices--;
+    };
   }
 
   play(s: Sfx) {
@@ -191,8 +238,12 @@ class AudioEngine {
           this.tone("triangle", f, f * 0.5, 0.6, 0.08, { delay: 0.25 + i * 0.09, attack: 0.02 }),
         );
         break;
-      case "beamStart": this.startBeam(); break;
-      case "beamStop": this.stopBeam(); break;
+      case "beamStart":
+        this.startBeam();
+        break;
+      case "beamStop":
+        this.stopBeam();
+        break;
       case "overheat":
         this.tone("square", 180, 60, 0.4, 0.16, { filter: 900 });
         this.burst(0.35, 0.12, 900, 120);
@@ -233,7 +284,9 @@ class AudioEngine {
         this.burst(0.11, 0.06, 4200, 1300);
         break;
       case "droneAssemble":
-        [220, 330, 495, 660].forEach((f, i) => this.tone("triangle", f, f * 1.2, 0.42, 0.11, { delay: i * 0.08, attack: 0.02 }));
+        [220, 330, 495, 660].forEach((f, i) =>
+          this.tone("triangle", f, f * 1.2, 0.42, 0.11, { delay: i * 0.08, attack: 0.02 }),
+        );
         this.burst(0.35, 0.08, 2800, 700);
         break;
       case "droneDestroyed":
@@ -251,7 +304,9 @@ class AudioEngine {
         this.tone("sine", 130.8, 130.8, 0.9, 0.12, { attack: 0.05 });
         break;
       case "wave":
-        [392, 523.25].forEach((f, i) => this.tone("square", f, f, 0.3, 0.1, { delay: i * 0.1, filter: 1800 }));
+        [392, 523.25].forEach((f, i) =>
+          this.tone("square", f, f, 0.3, 0.1, { delay: i * 0.1, filter: 1800 }),
+        );
         break;
       case "death":
         this.tone("sawtooth", 420, 24, 1.5, 0.34, { filter: 1400 });
@@ -276,14 +331,21 @@ class AudioEngine {
     const sub = ctx.createOscillator();
     const filt = ctx.createBiquadFilter();
     const gain = ctx.createGain();
-    osc.type = "sawtooth"; osc.frequency.value = 660; osc.detune.value = 6;
-    sub.type = "square"; sub.frequency.value = 164;
-    filt.type = "bandpass"; filt.frequency.value = 1300; filt.Q.value = 3.2;
+    osc.type = "sawtooth";
+    osc.frequency.value = 660;
+    osc.detune.value = 6;
+    sub.type = "square";
+    sub.frequency.value = 164;
+    filt.type = "bandpass";
+    filt.frequency.value = 1300;
+    filt.Q.value = 3.2;
     gain.gain.setValueAtTime(0.0001, t);
     gain.gain.linearRampToValueAtTime(0.16, t + 0.05);
-    osc.connect(filt); sub.connect(filt);
+    osc.connect(filt);
+    sub.connect(filt);
     filt.connect(gain).connect(this.comp!);
-    osc.start(t); sub.start(t);
+    osc.start(t);
+    sub.start(t);
     this.beam = { osc, sub, gain, filt };
   }
 
@@ -301,12 +363,15 @@ class AudioEngine {
     const t = this.ctx.currentTime;
     gain.gain.cancelScheduledValues(t);
     gain.gain.setTargetAtTime(0.0001, t, 0.03);
-    osc.stop(t + 0.2); sub.stop(t + 0.2);
+    osc.stop(t + 0.2);
+    sub.stop(t + 0.2);
     this.beam = null;
   }
 
   /** hard stop for pause / game over */
-  silence() { this.stopBeam(); }
+  silence() {
+    this.stopBeam();
+  }
 }
 
 export const audio = new AudioEngine();

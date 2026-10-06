@@ -3,9 +3,21 @@ import { STAT_UPGRADES, WEAPON_ORDER } from "../game/balance";
 import marqueeImg from "../assets/marquee.jpg";
 
 const STATS: { k: string; v: string; n: string }[] = [
-  { k: "Arsenal", v: "08", n: "Pulse · Scatter · Seeker · Ricochet · Flak · Arc · Beam · Rail — six levels each" },
-  { k: "Upgrades", v: String(STAT_UPGRADES.length + WEAPON_ORDER.length).padStart(2, "0"), n: `${STAT_UPGRADES.length} stacking stat upgrades plus ${WEAPON_ORDER.length} weapon tracks` },
-  { k: "Sectors", v: "06", n: "The map recolours after every dreadnought — five bosses, one final Core" },
+  {
+    k: "Arsenal",
+    v: "08",
+    n: "Pulse · Scatter · Seeker · Ricochet · Flak · Arc · Beam · Rail — six levels each",
+  },
+  {
+    k: "Upgrades",
+    v: String(STAT_UPGRADES.length + WEAPON_ORDER.length).padStart(2, "0"),
+    n: `${STAT_UPGRADES.length} stacking stat upgrades plus ${WEAPON_ORDER.length} weapon tracks`,
+  },
+  {
+    k: "Sectors",
+    v: "06",
+    n: "The map recolours after every dreadnought — five bosses, one final Core",
+  },
   { k: "Target", v: "60", n: "Frames per second, desktop and mobile, capped particles" },
 ];
 
@@ -24,7 +36,10 @@ export default function MarqueeBand() {
       <div className="absolute inset-0 bg-void/72" />
       <div
         className="absolute inset-0 mix-blend-color"
-        style={{ background: "linear-gradient(120deg, rgba(255,176,58,0.42), rgba(7,9,17,0.2) 55%, rgba(111,231,255,0.28))" }}
+        style={{
+          background:
+            "linear-gradient(120deg, rgba(255,176,58,0.42), rgba(7,9,17,0.2) 55%, rgba(111,231,255,0.28))",
+        }}
       />
       <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-amber/50 to-transparent" />
 
@@ -50,7 +65,9 @@ export default function MarqueeBand() {
           {STATS.map((s) => (
             <div key={s.k} className="bg-void/80 px-5 py-7 transition-colors hover:bg-void/50">
               <dt className="legend text-amber/55">{s.k}</dt>
-              <dd className="mt-2 font-display text-[clamp(2.1rem,5vw,3.1rem)] leading-none text-amber">{s.v}</dd>
+              <dd className="mt-2 font-display text-[clamp(2.1rem,5vw,3.1rem)] leading-none text-amber">
+                {s.v}
+              </dd>
               <dd className="mt-3 text-[11px] leading-relaxed text-amber/50">{s.n}</dd>
             </div>
           ))}
