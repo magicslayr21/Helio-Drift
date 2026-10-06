@@ -6,9 +6,25 @@ import type { Game } from "./engine";
 /* ------------------------------------------------------------ core unions */
 
 export type Mode = "menu" | "playing" | "paused" | "levelup" | "gameover" | "victory";
-export type WeaponId = "pulse" | "spread" | "seeker" | "ricochet" | "flak" | "arc" | "laser" | "rail";
+export type WeaponId =
+  | "pulse"
+  | "spread"
+  | "seeker"
+  | "ricochet"
+  | "flak"
+  | "arc"
+  | "laser"
+  | "rail";
 export type RockTrait = "none" | "homing" | "bounce" | "boom" | "fast" | "meteor" | "meteorite";
-export type SalvageUpgradeId = "twinCannons" | "overcharge" | "piercing" | "armor" | "repairPulse" | "magnet" | "scan" | "speed";
+export type SalvageUpgradeId =
+  | "twinCannons"
+  | "overcharge"
+  | "piercing"
+  | "armor"
+  | "repairPulse"
+  | "magnet"
+  | "scan"
+  | "speed";
 export type Rarity = "common" | "rare" | "epic";
 
 /* ------------------------------------------------------------ HUD & shop */
@@ -109,16 +125,34 @@ export interface SalvageShopInfo {
 /* ------------------------------------------------------------ entities */
 
 export interface Bullet {
-  x: number; y: number; vx: number; vy: number;
-  r: number; life: number; dmg: number;
-  kind: "plasma" | "enemy" | "droneShot" | "rail" | "missile" | "seeker" | "ricochet" | "flak" | "shrap" | "wardenOrb" | "wardenShard";
-  pierce: number; color: string; hitIds: Set<number>;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  r: number;
+  life: number;
+  dmg: number;
+  kind:
+    | "plasma"
+    | "enemy"
+    | "droneShot"
+    | "rail"
+    | "missile"
+    | "seeker"
+    | "ricochet"
+    | "flak"
+    | "shrap"
+    | "wardenOrb"
+    | "wardenShard";
+  pierce: number;
+  color: string;
+  hitIds: Set<number>;
   target?: number;
   turn: number;
   bounces: number;
   fuse: number;
-  extra: number;     // flak: shrapnel count
-  extraDmg: number;  // flak: shrapnel damage
+  extra: number; // flak: shrapnel count
+  extraDmg: number; // flak: shrapnel damage
   /** enemy shells that detonate when they expire without hitting anything */
   blast?: number;
   /** Smart turret nest fields (persistent warden nest) */
@@ -132,13 +166,27 @@ export interface Bullet {
   volleyCharge?: number;
 }
 
-export interface Crack { pts: { x: number; y: number }[]; at: number }
+export interface Crack {
+  pts: { x: number; y: number }[];
+  at: number;
+}
 
 export interface Rock {
-  id: number; x: number; y: number; vx: number; vy: number;
-  r: number; size: 1 | 2 | 3; hp: number; maxHp: number;
-  rot: number; rotSpeed: number; pts: number[]; flash: number;
-  cracks: Crack[]; trait: RockTrait;
+  id: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  r: number;
+  size: 1 | 2 | 3;
+  hp: number;
+  maxHp: number;
+  rot: number;
+  rotSpeed: number;
+  pts: number[];
+  flash: number;
+  cracks: Crack[];
+  trait: RockTrait;
   /** wall rocks self-destruct so big patterns can never clog the arena */
   life?: number;
   /** launched by a boss ability on its own lifespan timer: survives the stage-change purge and passes the remaining time to its fragments */
@@ -151,10 +199,22 @@ export interface Rock {
 /* sentinels: small single-shot hunters · wardens: larger heavies —
    more HP, heavier bolts, a much longer cooldown */
 export interface Drone {
-  id: number; kind: "sentinel" | "warden";
-  x: number; y: number; vx: number; vy: number;
-  r: number; hp: number; maxHp: number; angle: number; fire: number; flash: number;
-  orbitDir: number; orbitTimer: number; evadeCd: number; burst: number;
+  id: number;
+  kind: "sentinel" | "warden";
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  r: number;
+  hp: number;
+  maxHp: number;
+  angle: number;
+  fire: number;
+  flash: number;
+  orbitDir: number;
+  orbitTimer: number;
+  evadeCd: number;
+  burst: number;
   /** Warden miniboss ability: sniper telegraph countdown + splitter-turret charge state */
   pulseCharge?: number;
   volleyCd?: number;
@@ -165,26 +225,47 @@ export interface Drone {
 }
 
 export interface Boss {
-  id: number; name: string; suffix: string; mk: number;
+  id: number;
+  name: string;
+  suffix: string;
+  mk: number;
   /** which asteroid trait its hull shards (and escorts) carry */
-  spawnTrait: RockTrait; edgeColor: string; spawnWeight: number;
-  hpMul: number; timerMul: number;
+  spawnTrait: RockTrait;
+  edgeColor: string;
+  spawnWeight: number;
+  hpMul: number;
+  timerMul: number;
   /** projectile multiplier and rocks shed per spawn event — MK4/MK5 are packed */
-  bulletMul: number; rocksPer: number;
+  bulletMul: number;
+  rocksPer: number;
   final: boolean;
-  x: number; y: number; vx: number; vy: number; r: number;
-  hp: number; maxHp: number; rot: number; rotSpeed: number;
-  pts: number[]; cracks: Crack[]; flash: number; t: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  r: number;
+  hp: number;
+  maxHp: number;
+  rot: number;
+  rotSpeed: number;
+  pts: number[];
+  cracks: Crack[];
+  flash: number;
+  t: number;
   attackTimer: number;
   /** stage tracking — a new signature attack set fires at each stage change */
   phase: number;
-  rainT: number; rainN: number;
-  flankT: number; flankSide: number;
+  rainT: number;
+  rainN: number;
+  flankT: number;
+  flankSide: number;
   /** t0 keeps each telegraph's progress relative to its own countdown */
   strikes: { x: number; y: number; t: number; t0: number }[];
   /** MK4 · Boom Launch — marked drop points that become boom rocks when their warning runs out */
   boomDrops: { x: number; y: number; t: number; t0: number }[];
-  wallT: number; wallN: number; wallSide: number;
+  wallT: number;
+  wallN: number;
+  wallSide: number;
   /** MK3 · Pinball Cascade — launched bounce rocks and their rebound charge */
   cascadeN: number;
   cascadeT: number;
@@ -209,7 +290,15 @@ export interface Boss {
    * slate before entering its scripted side-raid.
    */
   movement: {
-    mode: "drift" | "mk5Telegraph" | "mk5Dash" | "mk6Vanish" | "mk6Left" | "mk6Right" | "mk6ReturnTelegraph" | "mk6Return";
+    mode:
+      | "drift"
+      | "mk5Telegraph"
+      | "mk5Dash"
+      | "mk6Vanish"
+      | "mk6Left"
+      | "mk6Right"
+      | "mk6ReturnTelegraph"
+      | "mk6Return";
     timer: number;
     timerTotal?: number;
     startX?: number;
@@ -241,7 +330,15 @@ export interface Boss {
   } | null;
 }
 
-export type Mk6Attack = "idle" | "shower" | "barrage" | "beam" | "strikes" | "field" | "hole" | "heal";
+export type Mk6Attack =
+  | "idle"
+  | "shower"
+  | "barrage"
+  | "beam"
+  | "strikes"
+  | "field"
+  | "hole"
+  | "heal";
 
 export interface Mk6Slot {
   attack: Mk6Attack;
@@ -254,7 +351,14 @@ export interface Mk6Slot {
   healBlasts: { t: number; fired: boolean; silent?: boolean }[];
 }
 
-export interface Hostile { id: number; x: number; y: number; r: number; vx: number; vy: number }
+export interface Hostile {
+  id: number;
+  x: number;
+  y: number;
+  r: number;
+  vx: number;
+  vy: number;
+}
 
 export interface Singularity {
   id: number;
@@ -276,11 +380,52 @@ export interface Singularity {
 
 /* ------------------------------------------------------------ fx */
 
-export interface Particle { x: number; y: number; vx: number; vy: number; life: number; max: number; size: number; color: string; drag: number }
-export interface Ring { x: number; y: number; r: number; max: number; life: number; color: string; w: number }
-export interface Text { x: number; y: number; vy: number; life: number; text: string; color: string; size: number }
-export interface Pickup { x: number; y: number; vx: number; vy: number; kind: "credit" | "repair"; value: number; life: number; pulse?: number }
-export interface Arc { x1: number; y1: number; x2: number; y2: number; life: number }
+export interface Particle {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  max: number;
+  size: number;
+  color: string;
+  drag: number;
+}
+export interface Ring {
+  x: number;
+  y: number;
+  r: number;
+  max: number;
+  life: number;
+  color: string;
+  w: number;
+}
+export interface Text {
+  x: number;
+  y: number;
+  vy: number;
+  life: number;
+  text: string;
+  color: string;
+  size: number;
+}
+export interface Pickup {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  kind: "credit" | "repair";
+  value: number;
+  life: number;
+  pulse?: number;
+}
+export interface Arc {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  life: number;
+}
 
 /* ------------------------------------------------------------ salvage drone */
 
@@ -312,29 +457,61 @@ export interface SalvageDrone {
 /** a dev-only extra squad member: real position, health and fire state,
  *  sharing the primary drone's build */
 export interface SalvageClone {
-  x: number; y: number; vx: number; vy: number; angle: number;
-  hp: number; orbit: number; fireTimer: number; hitTimer: number;
-  beamOn: boolean; beamAngle: number; beamLen: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  angle: number;
+  hp: number;
+  orbit: number;
+  fireTimer: number;
+  hitTimer: number;
+  beamOn: boolean;
+  beamAngle: number;
+  beamLen: number;
 }
 
 /* ------------------------------------------------------------ tables */
 
-export interface SectorTheme { numeral: string; name: string; tint: string; stars: [string, string] }
+export interface SectorTheme {
+  numeral: string;
+  name: string;
+  tint: string;
+  stars: [string, string];
+}
 
 /* Each dreadnought is a different ship: its own sector shadow, its own
    health and pacing, and its own asteroid offspring — MK1 sheds normals,
    MK2 homings, MK3 bouncers, MK4 explosives, MK5 fast rocks. */
 export interface BossSpec {
-  name: string; suffix: string; trait: RockTrait; edge: string;
-  hpMul: number; timerMul: number; spawnWeight: number; driftX: number;
-  bulletMul: number; rocksPer: number;
+  name: string;
+  suffix: string;
+  trait: RockTrait;
+  edge: string;
+  hpMul: number;
+  timerMul: number;
+  spawnWeight: number;
+  driftX: number;
+  bulletMul: number;
+  rocksPer: number;
 }
 
 export interface StatUpgrade {
-  id: string; name: string; tag: string; desc: string; rarity: Rarity; weight: number; max: number;
+  id: string;
+  name: string;
+  tag: string;
+  desc: string;
+  rarity: Rarity;
+  weight: number;
+  max: number;
   apply: (g: Game) => void;
 }
 
 /* ------------------------------------------------------------ persistence */
 
-export interface ScoreEntry { score: number; wave: number; level: number; date: string }
+export interface ScoreEntry {
+  score: number;
+  wave: number;
+  level: number;
+  date: string;
+}

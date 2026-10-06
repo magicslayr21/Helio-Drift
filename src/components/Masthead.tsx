@@ -23,7 +23,12 @@ export function HeliosMark({ size = 48, className = "" }: { size?: number; class
         opacity="0.55"
       />
       {/* inner facet lines — give the mark its engineered, engraved feel */}
-      <path d="M32 2.5 L32 12 M57.5 46.75 L48.5 41.7 M6.5 46.75 L15.5 41.7" stroke="currentColor" strokeWidth="1.4" opacity="0.35" />
+      <path
+        d="M32 2.5 L32 12 M57.5 46.75 L48.5 41.7 M6.5 46.75 L15.5 41.7"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        opacity="0.35"
+      />
 
       {/* orbital ring */}
       <ellipse
@@ -49,10 +54,20 @@ export function HeliosMark({ size = 48, className = "" }: { size?: number; class
       <path d="M32 22 L32 39" stroke="currentColor" strokeWidth="1.6" opacity="0.8" />
 
       {/* engine trail */}
-      <path d="M27.5 43.5 L24.5 54 M32 45 L32 57 M36.5 43.5 L39.5 54" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" opacity="0.75" />
+      <path
+        d="M27.5 43.5 L24.5 54 M32 45 L32 57 M36.5 43.5 L39.5 54"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        opacity="0.75"
+      />
 
       {/* two drifting rocks */}
-      <path d="M12 20 l4.6 -2.2 3 3.4 -1.6 4 -4.4 0.6 -2.6 -3.2 z" fill="currentColor" opacity="0.7" />
+      <path
+        d="M12 20 l4.6 -2.2 3 3.4 -1.6 4 -4.4 0.6 -2.6 -3.2 z"
+        fill="currentColor"
+        opacity="0.7"
+      />
       <path d="M52 42 l4 -2 2.6 3 -1.4 3.6 -4 0.5 -2.2 -2.8 z" fill="currentColor" opacity="0.7" />
     </svg>
   );
@@ -71,13 +86,21 @@ export default function Masthead() {
       />
 
       <div className="mx-auto flex w-full max-w-[1500px] flex-wrap items-center justify-between gap-x-8 gap-y-4 px-5 py-5 sm:px-10">
-        <a href="#top" className="group flex items-center gap-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber">
-          <HeliosMark size={52} className="text-amber transition-transform duration-500 group-hover:rotate-[24deg]" />
+        <a
+          href="#top"
+          className="group flex items-center gap-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
+        >
+          <HeliosMark
+            size={52}
+            className="text-amber transition-transform duration-500 group-hover:rotate-[24deg]"
+          />
           <span>
             <span className="block font-display text-[clamp(1.15rem,3vw,1.75rem)] leading-none tracking-[-0.02em] text-amber-hot">
               HELIOS DRIFT
             </span>
-            <span className="legend mt-1.5 block text-amber/55">Vector Arcade System · Model HD-79</span>
+            <span className="legend mt-1.5 block text-amber/55">
+              Vector Arcade System · Model HD-79
+            </span>
           </span>
         </a>
 
