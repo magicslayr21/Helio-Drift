@@ -1,0 +1,111 @@
+@import "tailwindcss";
+
+@theme {
+  --color-void: #070911;
+  --color-graphite: #12151f;
+  --color-graphite-2: #1a1d2b;
+  --color-steel: #3a3f55;
+  --color-legend: #7a4b12;
+  --color-amber: #ffb03a;
+  --color-amber-hot: #ffe0a3;
+  --color-ice: #6fe7ff;
+  --color-magenta: #ff3d6e;
+  --font-display: "Archivo Black", "Arial Black", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: #070911;
+  color: #ffe0a3;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* engraved legend text used on the cabinet rails */
+@layer components {
+  .legend {
+    font-family: "IBM Plex Mono", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    font-size: 10px;
+    line-height: 1.4;
+    font-weight: 500;
+    color: rgba(255, 176, 58, 0.62);
+  }
+
+  .rail {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    color: rgba(255, 176, 58, 0.5);
+  }
+}
+
+.scanlines::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 176, 58, 0.045) 0px,
+    rgba(255, 176, 58, 0.045) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  mix-blend-mode: screen;
+}
+
+.vignette::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 42%, rgba(3, 4, 9, 0.72) 100%);
+}
+
+.plate {
+  background: linear-gradient(180deg, rgba(58, 63, 85, 0.22), rgba(10, 12, 20, 0.78));
+}
+
+.meter {
+  background: linear-gradient(90deg, rgba(255, 176, 58, 0.85), rgba(255, 224, 163, 0.95));
+  box-shadow: 0 0 10px rgba(255, 176, 58, 0.55);
+}
+
+button {
+  font-family: inherit;
+}
+
+::selection {
+  background: rgba(255, 176, 58, 0.32);
+}
+
+/* thin scrollbar for the spec section */
+.thin-scroll::-webkit-scrollbar {
+  height: 6px;
+  width: 6px;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  background: #3a3f55;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* details sheet: keep anchor jumps clear of its sticky bar */
+#spec {
+  scroll-margin-top: 3.5rem;
+}
