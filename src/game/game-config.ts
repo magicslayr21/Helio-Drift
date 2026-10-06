@@ -6,6 +6,9 @@
  * Units: px, px/s, seconds, radians, credits, HP, or damage unless stated.
  */
 export const GAME_CONFIG = {
+  // Service code for the developer panel. Access expires on close or reload.
+  developer: { accessCode: "dev" },
+
   colors: {
     amber: "#ffb03a",
     amberHot: "#ffe0a3",

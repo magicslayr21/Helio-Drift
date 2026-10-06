@@ -1,24 +1,24 @@
 import { HeliosMark } from "./Masthead";
-import { STAT_UPGRADES, WEAPON_ORDER } from "../game/balance";
+import { STAT_UPGRADES, WEAPON_ORDER, MAX_WEAPON_LEVEL, RUN_PACING } from "../game/balance";
 import marqueeImg from "../assets/marquee.jpg";
 
-const STATS: { k: string; v: string; n: string }[] = [
+const STATS = [
   {
     k: "Arsenal",
-    v: "08",
-    n: "Pulse · Scatter · Seeker · Ricochet · Flak · Arc · Beam · Rail — six levels each",
+    v: String(WEAPON_ORDER.length).padStart(2, "0"),
+    n: `${MAX_WEAPON_LEVEL} levels per weapon`,
   },
   {
-    k: "Upgrades",
-    v: String(STAT_UPGRADES.length + WEAPON_ORDER.length).padStart(2, "0"),
-    n: `${STAT_UPGRADES.length} stacking stat upgrades plus ${WEAPON_ORDER.length} weapon tracks`,
+    k: "Ship Upgrades",
+    v: String(STAT_UPGRADES.length).padStart(2, "0"),
+    n: "Build your own loadout",
   },
   {
     k: "Sectors",
-    v: "06",
-    n: "The map recolours after every dreadnought — five bosses, one final Core",
+    v: String(RUN_PACING.finalWave / RUN_PACING.sectorLength).padStart(2, "0"),
+    n: "A boss in every sector",
   },
-  { k: "Target", v: "60", n: "Frames per second, desktop and mobile, capped particles" },
+  { k: "Waves", v: String(RUN_PACING.finalWave), n: "Plus an optional bonus boss" },
 ];
 
 export default function MarqueeBand() {
@@ -43,7 +43,7 @@ export default function MarqueeBand() {
       />
       <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-amber/50 to-transparent" />
 
-      <div className="relative mx-auto w-full max-w-[1500px] px-5 py-16 sm:px-10 sm:py-24">
+      <div className="relative mx-auto w-full max-w-[1500px] px-4 py-4 sm:px-10 sm:py-10">
         <div className="flex items-start gap-5">
           <HeliosMark size={44} className="mt-1 shrink-0 text-amber/80" />
           <div className="max-w-2xl">
@@ -52,18 +52,15 @@ export default function MarqueeBand() {
               INERTIA IS THE VERB.
             </h2>
             <p className="mt-5 max-w-xl text-[12.5px] leading-[1.9] text-amber/72 sm:text-[13.5px]">
-              Everything in Helios Drift is a decision about momentum — lining up a shot, dodging a
-              magenta bolt, drifting through a field of credit shards before it scatters. Boost
-              exists to erase momentum, not to go fast. The upgrade rack exists so that by wave six
-              your ship handles like a different machine than the one you started with.
+              Master momentum, collect credits, and build a ship that can survive the belt.
             </p>
           </div>
         </div>
 
         {/* engraved spec plate */}
-        <dl className="mt-14 grid grid-cols-2 gap-px border border-steel/35 bg-steel/25 lg:grid-cols-4">
+        <dl className="mt-6 grid grid-cols-2 gap-px border border-steel/35 bg-steel/25 lg:grid-cols-4">
           {STATS.map((s) => (
-            <div key={s.k} className="bg-void/80 px-5 py-7 transition-colors hover:bg-void/50">
+            <div key={s.k} className="bg-void/80 px-4 py-4 transition-colors hover:bg-void/50">
               <dt className="legend text-amber/55">{s.k}</dt>
               <dd className="mt-2 font-display text-[clamp(2.1rem,5vw,3.1rem)] leading-none text-amber">
                 {s.v}

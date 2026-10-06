@@ -72,6 +72,7 @@ import type {
   SectorTheme,
 } from "./types";
 import { GAME_CONFIG } from "./game-config";
+import { RunSave } from "./run-save";
 
 /* The React shell imports everything from "./engine" — keep that surface
    stable by re-exporting the extracted modules. */
@@ -82,6 +83,9 @@ export * from "./balance";
 /* ------------------------------------------------------------ game */
 
 export class Game {
+  private readonly runSave = new RunSave();
+  private lastSave = 0;
+
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
   w = 1000;
@@ -174,6 +178,8 @@ export class Game {
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     this.makeStars();
     this.resetRun();
+    window.addEventListener("pagehide", this.onPageHide);
+    document.addEventListener("visibilitychange", this.onVisibilityChange);
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
     window.addEventListener("resize", this.resize);
@@ -191,6 +197,9 @@ export class Game {
   }
 
   destroy() {
+    this.saveRun();
+    window.removeEventListener("pagehide", this.onPageHide);
+    document.removeEventListener("visibilitychange", this.onVisibilityChange);
     cancelAnimationFrame(this.raf);
     window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("keyup", this.onKeyUp);
@@ -225,7 +234,41 @@ export class Game {
     }
   }
 
+  saveRun() {
+    this.runSave.write(this);
+  }
+
+  restoreRun() {
+    if (!this.runSave.restore(this)) return;
+    this.theme = THEMES[this.themeIdx];
+    this.setMode(
+      this.bonusAvailable || this.bonusDefeated
+        ? "victory"
+        : this.choices.length
+          ? "levelup"
+          : "paused",
+    );
+    this.onHud(this.snapshot());
+  }
+
+  private onPageHide = () => {
+    this.saveRun();
+    this.god = false;
+  };
+
+  private onVisibilityChange = () => {
+    if (document.visibilityState !== "hidden") return;
+    if (this.mode === "playing") this.setMode("paused");
+    this.keys = {};
+    this.mouseDown = false;
+    this.touchFire = false;
+    this.stick.on = false;
+    this.saveRun();
+  };
+
   resetRun() {
+    this.choices = [];
+    this.rerollCost = 0;
     this.p = freshPlayer();
     this.salvageDrone = freshSalvageDrone();
     this.salvageClones = [];
@@ -272,6 +315,7 @@ export class Game {
     this.resetRun();
     this.setMode("playing");
     this.nextWave();
+    this.runSave.begin(this);
   }
 
   setMode(m: Mode) {
@@ -281,6 +325,7 @@ export class Game {
       this.p.beamOn = false;
     }
     this.onMode(m);
+    this.saveRun();
   }
 
   /* ------------------------------------------------------------ input */
@@ -754,6 +799,10 @@ export class Game {
             : 1;
       this.timeScale += (target - this.timeScale) * Math.min(1, dt * 7);
       this.update(dt * this.timeScale);
+    }
+    if (now - this.lastSave >= 1000) {
+      this.saveRun();
+      this.lastSave = now;
     }
     this.render();
     if (this.frame % 4 === 0) this.onHud(this.snapshot());
@@ -3281,6 +3330,7 @@ export class Game {
   }
 
   chooseUpgrade(id: string) {
+    this.choices = [];
     const def = STAT_UPGRADES.find((u) => u.id === id);
     if (def) {
       def.apply(this);
@@ -3296,6 +3346,8 @@ export class Game {
     const p = this.p;
     if (this.god || p.invuln > 0) return;
     p.hull -= dmg * (1 - p.armor);
+    if (p.hull <= 0) this.runSave.end();
+    else this.saveRun();
     this.burst(p.x, p.y, 10, p.armor > 0 ? ICE : AMBER);
     this.rings.push({
       x: p.x,
@@ -3315,6 +3367,7 @@ export class Game {
   }
 
   gameOver() {
+    this.runSave.end();
     this.p.hull = 0;
     audio.silence();
     audio.play("death");

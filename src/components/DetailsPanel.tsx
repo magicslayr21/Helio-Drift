@@ -5,7 +5,15 @@ import MarqueeBand from "./MarqueeBand";
 import SpecSection from "./SpecSection";
 
 /** Full-screen sheet holding everything that used to sit under the game. */
-export default function DetailsPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
+export default function DetailsPanel({
+  open,
+  onClose,
+  developer,
+}: {
+  open: boolean;
+  onClose: () => void;
+  developer: boolean;
+}) {
   useEffect(() => {
     if (!open) return;
     const h = (e: KeyboardEvent) => {
@@ -42,7 +50,7 @@ export default function DetailsPanel({ open, onClose }: { open: boolean; onClose
           </div>
           <Masthead />
           <MarqueeBand />
-          <SpecSection />
+          <SpecSection developer={developer} />
         </motion.div>
       )}
     </AnimatePresence>

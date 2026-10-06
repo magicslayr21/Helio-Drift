@@ -375,3 +375,15 @@ upgrades, stat upgrades, and critical hits; boss explosions can apply distance
 falloff; and some attack timings and spawn counts include random ranges. The
 code may contain additional presentation-only numbers for colors, animation,
 layout, and particles. This reference focuses on gameplay balance values.
+
+## Developer access and saved runs
+
+Change `developer.accessCode` in `src/game/game-config.ts` to change the
+service code (default: `dev`). Entry ignores surrounding spaces and letter case.
+Developer access lasts for the current open page and expires on close or reload.
+
+Active runs save automatically in the same browser, including the current fight,
+hull, wave, level, XP, credits, weapons, upgrades, and salvage drone. Reopening
+restores the run paused, or returns to a pending upgrade choice. Death clears
+saved run data immediately; high scores and settings remain. The Arena prompt
+is collapsed by default and appears in Details only with developer access.
