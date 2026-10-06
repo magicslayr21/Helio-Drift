@@ -63,7 +63,7 @@ armor tops out at 36% damage reduction after three Reactive Armor stacks. At
 maximum stacks, Overclock multiplies fire rate by 1.6771×; Hollow-Point
 multiplies weapon damage by 1.9738×; critical chance reaches 41%; and four
 Thruster Kit stacks produce 649.3 thrust, 681.7 maximum speed, and 5.15 turn
-rate. Twin-Linked Feeder adds 3 shots and Sabot Rounds add 3 pierce.
+rate. Twin-Linked Feeder adds 1 shot and Sabot Rounds add 3 pierce.
 
 ## Player weapons
 
@@ -255,7 +255,7 @@ of maximum boss HP for 30 seconds.
 | Vector Thruster Kit    |          4 | Common / 1.0         | Thrust ×1.09; max speed ×1.06; turn rate ×1.04                 |
 | Reinforced Hull        |          6 | Common / 1.0         | Maximum hull +18 and immediately repairs 18                    |
 | Reactive Armor Plating |          3 | Rare / 0.7           | Incoming damage −12 percentage points; maximum 36% reduction   |
-| Twin-Linked Feeder     |          3 | Rare / 0.7           | +1 projectile per projectile volley                            |
+| Twin-Linked Feeder     |          1 | Rare / 0.7           | +1 projectile per projectile volley                            |
 | Sabot Rounds           |          3 | Rare / 0.7           | +1 projectile pierce                                           |
 | Targeting Optics       |          5 | Common / 1.0         | +7 percentage points critical chance; critical multiplier 2.2× |
 
@@ -375,3 +375,15 @@ upgrades, stat upgrades, and critical hits; boss explosions can apply distance
 falloff; and some attack timings and spawn counts include random ranges. The
 code may contain additional presentation-only numbers for colors, animation,
 layout, and particles. This reference focuses on gameplay balance values.
+
+## Developer access and saved runs
+
+Change `developer.accessCode` in `src/game/game-config.ts` to change the
+service code (default: `dev`). Entry ignores surrounding spaces and letter case.
+Developer access lasts for the current open page and expires on close or reload.
+
+Active runs save automatically in the same browser, including the current fight,
+hull, wave, level, XP, credits, weapons, upgrades, and salvage drone. Reopening
+restores the run paused, or returns to a pending upgrade choice. Death clears
+saved run data immediately; high scores and settings remain. The Arena prompt
+is collapsed by default and appears in Details only with developer access.

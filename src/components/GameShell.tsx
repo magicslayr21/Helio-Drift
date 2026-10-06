@@ -19,6 +19,7 @@ import {
 } from "../game/engine";
 import { HeliosMark } from "./Masthead";
 import { audio } from "../game/audio";
+import { GAME_CONFIG } from "../game/game-config";
 import nebulaImg from "../assets/nebula.jpg";
 import marqueeImg from "../assets/marquee.jpg";
 
@@ -59,6 +60,9 @@ const EMPTY_HUD: Hud = {
   bonusActive: false,
   bonusDefeated: false,
 };
+
+const APP_VERSION = (import.meta as ImportMeta & { env: { VITE_APP_VERSION?: string } }).env
+  .VITE_APP_VERSION;
 
 const SECTORS = [
   { numeral: "I", name: "Deep Void" },
@@ -147,9 +151,11 @@ function LevelPips({ level, max, color }: { level: number; max: number; color: s
 export default function GameShell({
   onOpenDetails,
   detailsOpen = false,
+  onDeveloperChange,
 }: {
   onOpenDetails?: () => void;
   detailsOpen?: boolean;
+  onDeveloperChange: (enabled: boolean) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gameRef = useRef<Game | null>(null);
@@ -177,20 +183,37 @@ export default function GameShell({
   const [shopWeapon, setShopWeapon] = useState<WeaponId>("pulse");
   const [shopTab, setShopTab] = useState<"weapons" | "drone">("weapons");
   const shopReturnMode = useRef<Mode>("playing");
-  const [devUnlocked, setDevUnlocked] = useState(() => {
-    try {
-      return localStorage.getItem("helios-dev-unlocked") === "1";
-    } catch {
-      return false;
-    }
-  });
+  const [devUnlocked, setDevUnlocked] = useState(false);
   const [devOpen, setDevOpen] = useState(false);
   const [devPage, setDevPage] = useState<1 | 2>(1);
+
+  useEffect(() => {
+    onDeveloperChange(devUnlocked);
+  }, [devUnlocked, onDeveloperChange]);
+
+  useEffect(() => {
+    // Retire permissions saved by older releases. Do not use sessionStorage:
+    // browsers may restore it when a closed tab is reopened.
+    try {
+      localStorage.removeItem("helios-dev-unlocked");
+    } catch {
+      /* unavailable */
+    }
+    const revoke = () => {
+      setDevUnlocked(false);
+      setDevOpen(false);
+      onDeveloperChange(false);
+      if (gameRef.current) gameRef.current.god = false;
+    };
+    window.addEventListener("pagehide", revoke);
+    return () => window.removeEventListener("pagehide", revoke);
+  }, [onDeveloperChange]);
 
   useEffect(() => {
     setScores(loadScores());
     const canvas = canvasRef.current;
     if (!canvas) return;
+    let restoring = false;
     const g = new Game(canvas, {
       onHud: setHud,
       onMode: (m) => {
@@ -205,12 +228,15 @@ export default function GameShell({
             date: new Date().toLocaleDateString(undefined, { month: "short", day: "numeric" }),
           };
           setRun(entry);
-          setScores(saveScore(entry));
+          if (!restoring) setScores(saveScore(entry));
         }
         if (m !== "paused" && m !== "menu") setPanel("none");
       },
     });
     gameRef.current = g;
+    restoring = true;
+    g.restoreRun();
+    restoring = false;
     return () => {
       g.destroy();
       gameRef.current = null;
@@ -318,15 +344,10 @@ export default function GameShell({
     setCodeError(false);
   }, []);
   const submitCode = useCallback(() => {
-    if (codeInput.trim().toLowerCase() === "dev") {
+    if (codeInput.trim().toLowerCase() === GAME_CONFIG.developer.accessCode.trim().toLowerCase()) {
       setDevUnlocked(true);
       setDevOpen(true);
       closePanel();
-      try {
-        localStorage.setItem("helios-dev-unlocked", "1");
-      } catch {
-        /* ignore */
-      }
       audio.play("levelup");
     } else {
       setCodeError(true);
@@ -455,6 +476,12 @@ export default function GameShell({
 
           {/* playfield */}
           <div className="scanlines vignette relative min-h-[320px] w-full flex-1 overflow-hidden border-x border-steel/20 bg-void">
+            <span
+              aria-label={`Game version ${APP_VERSION || "local"}`}
+              className="pointer-events-none absolute bottom-2 left-2 z-10 border border-steel/30 bg-void/70 px-1.5 py-0.5 font-mono text-[9px] tracking-wider text-amber/45"
+            >
+              v{APP_VERSION || "local"}
+            </span>
             <div
               className="absolute inset-0 opacity-[0.55]"
               style={{

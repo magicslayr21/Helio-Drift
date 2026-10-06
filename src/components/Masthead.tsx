@@ -106,9 +106,9 @@ export default function Masthead() {
 
         <nav className="flex flex-wrap items-center gap-x-6 gap-y-2">
           <a href="#spec" className="legend text-amber/55 transition-colors hover:text-amber">
-            Build Spec
+            Flight Manual
           </a>
-          <a href="#spec" className="legend text-amber/55 transition-colors hover:text-amber">
+          <a href="#controls" className="legend text-amber/55 transition-colors hover:text-amber">
             Control Map
           </a>
           <span className="hidden items-center gap-2 border border-steel/40 px-3 py-1.5 md:flex">
