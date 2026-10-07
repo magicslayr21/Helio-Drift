@@ -211,6 +211,10 @@ export function queueRun(report: RunReport | null) {
 }
 export async function flushPendingRuns() {
   if (!API || flushing || !readPending().length) return;
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
   flushing = true;
   syncStatus = "syncing";
   try {
@@ -255,5 +259,13 @@ export async function flushPendingRuns() {
     }
   } finally {
     flushing = false;
+    // A death/restart can queue a newer snapshot while an older request is in flight.
+    // Drain it immediately instead of waiting for the next periodic report.
+    if (!retryTimer && readPending().length) {
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        void flushPendingRuns();
+      }, 0);
+    }
   }
 }

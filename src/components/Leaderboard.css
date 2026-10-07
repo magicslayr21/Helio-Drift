@@ -17,7 +17,9 @@
   overflow: hidden;
   border: 1px solid rgba(255, 176, 58, 0.32);
   background: #0c0f18;
-  box-shadow: 0 24px 100px #000b, 0 0 60px #ffb03a06;
+  box-shadow:
+    0 24px 100px #000b,
+    0 0 60px #ffb03a06;
   font-size: 12px;
 }
 
@@ -86,7 +88,9 @@
   background: transparent;
   color: #d2c2a2;
   cursor: pointer;
-  transition: background 120ms, border-color 120ms;
+  transition:
+    background 120ms,
+    border-color 120ms;
 }
 
 .lb-icon-button {
@@ -778,73 +782,219 @@
 }
 
 @keyframes lb-rotate {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (max-width: 760px) {
-  .lb-overlay { padding: 12px; }
-  .lb-window { max-height: calc(100dvh - 24px); }
-  .lb-main { max-height: calc(100dvh - 26px); }
-  .lb-header { padding: 23px 20px 22px; }
-  .lb-body { padding: 20px 20px 10px; }
-  .lb-footer { padding: 12px 20px; }
-  .lb-profile { grid-template-columns: 1fr; gap: 13px; }
-  .lb-profile-note { grid-column: 1; }
-  .lb-columns { display: none; }
-  .lb-record, .lb-record.lb-with-actions {
+  .lb-overlay {
+    padding: 12px;
+  }
+  .lb-window {
+    max-height: calc(100dvh - 24px);
+  }
+  .lb-main {
+    max-height: calc(100dvh - 26px);
+  }
+  .lb-header {
+    padding: 23px 20px 22px;
+  }
+  .lb-body {
+    padding: 20px 20px 10px;
+  }
+  .lb-footer {
+    padding: 12px 20px;
+  }
+  .lb-profile {
+    grid-template-columns: 1fr;
+    gap: 13px;
+  }
+  .lb-profile-note {
+    grid-column: 1;
+  }
+  .lb-columns {
+    display: none;
+  }
+  .lb-record,
+  .lb-record.lb-with-actions {
     grid-template-columns: 28px minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 30px;
     row-gap: 16px;
     column-gap: 10px;
     padding: 17px 10px;
     border-top: 1px solid #3a3f5533;
   }
-  .lb-rank { grid-column: 1; grid-row: 1; }
-  .lb-pilot { grid-column: 2 / 5; grid-row: 1; }
-  .lb-pilot-name { font-size: 13px; }
-  .lb-pilot p { margin-top: 6px; }
-  .lb-progress { grid-column: 2; grid-row: 2; text-align: left; }
-  .lb-score { grid-column: 3; grid-row: 2; text-align: left; }
-  .lb-credits { grid-column: 4 / 6; grid-row: 2; text-align: right; }
-  .lb-actions { grid-column: 5; grid-row: 1; }
-  .lb-mobile-label { display: block; margin-bottom: 7px; color: #9d9280; font-size: 7px; letter-spacing: 0.12em; }
-  .lb-progress strong { font-size: 9px; }
-  .lb-score strong { font-size: 12px; }
-  .lb-record:nth-last-child(-n + 2) .lb-action-menu { top: 38px; bottom: auto; }
-  .lb-record:last-child .lb-action-menu { top: auto; bottom: 38px; }
+  .lb-rank {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .lb-pilot {
+    grid-column: 2 / 5;
+    grid-row: 1;
+  }
+  .lb-pilot-name {
+    font-size: 13px;
+  }
+  .lb-pilot p {
+    margin-top: 6px;
+  }
+  .lb-progress {
+    grid-column: 2;
+    grid-row: 2;
+    text-align: left;
+  }
+  .lb-score {
+    grid-column: 3;
+    grid-row: 2;
+    text-align: left;
+  }
+  .lb-credits {
+    grid-column: 4 / 6;
+    grid-row: 2;
+    text-align: right;
+  }
+  .lb-actions {
+    grid-column: 5;
+    grid-row: 1;
+  }
+  .lb-mobile-label {
+    display: block;
+    margin-bottom: 7px;
+    color: #9d9280;
+    font-size: 7px;
+    letter-spacing: 0.12em;
+  }
+  .lb-progress strong {
+    font-size: 9px;
+  }
+  .lb-score strong {
+    font-size: 12px;
+  }
+  .lb-record:nth-last-child(-n + 2) .lb-action-menu {
+    top: 38px;
+    bottom: auto;
+  }
+  .lb-record:last-child .lb-action-menu {
+    top: auto;
+    bottom: 38px;
+  }
 }
 
 @media (max-width: 430px) {
-  .lb-overlay { padding: 0; }
-  .lb-window { width: 100%; max-height: 100dvh; border-right: 0; border-left: 0; }
-  .lb-main { max-height: calc(100dvh - 2px); }
-  .lb-header { padding: 20px 15px; }
-  .lb-heading h2 { font-size: 28px; }
-  .lb-heading > p { font-size: 9px; max-width: 260px; }
-  .lb-eyebrow { font-size: 8px; letter-spacing: 0.12em; gap: 6px; }
-  .lb-eyebrow span { display: none; }
-  .lb-body { padding: 17px 12px 8px; }
-  .lb-profile { padding: 13px 12px; }
-  .lb-profile-note { font-size: 8px; }
-  .lb-profile-label > div > p { font-size: 12px; }
-  .lb-name-form { gap: 6px; }
-  .lb-button { padding: 8px 10px; font-size: 9px; }
-  .lb-name-form .lb-button > svg { display: none; }
-  .lb-toolbar { gap: 8px; }
-  .lb-toolbar-controls { gap: 8px; }
-  .lb-connection { max-width: 100px; font-size: 7px; line-height: 1.7; letter-spacing: 0; }
-  .lb-connection > svg { flex: none; }
-  .lb-record, .lb-record.lb-with-actions { column-gap: 7px; padding: 15px 7px; grid-template-columns: 22px minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 25px; }
-  .lb-actions .lb-icon-button { width: 29px; }
-  .lb-pilot-name { font-size: 11px; }
-  .lb-progress strong { font-size: 8px; letter-spacing: 0; }
-  .lb-pagination { gap: 6px; font-size: 9px; }
-  .lb-pagination > div { gap: 5px; }
-  .lb-pagination .lb-button { padding: 7px; font-size: 8px; gap: 4px; }
-  .lb-footer { padding: 11px 15px; }
-  .lb-sheet { padding: 20px 17px; }
-  .lb-sheet-header h3 { font-size: 21px; }
-  .lb-edit-grid { gap: 14px; }
-  .lb-detail-stats { gap: 17px 12px; }
-  .lb-detail-stats dd { font-size: 11px; }
-  .lb-error { flex-wrap: wrap; }
+  .lb-overlay {
+    padding: 0;
+  }
+  .lb-window {
+    width: 100%;
+    max-height: 100dvh;
+    border-right: 0;
+    border-left: 0;
+  }
+  .lb-main {
+    max-height: calc(100dvh - 2px);
+  }
+  .lb-header {
+    padding: 20px 15px;
+  }
+  .lb-heading h2 {
+    font-size: 28px;
+  }
+  .lb-heading > p {
+    font-size: 9px;
+    max-width: 260px;
+  }
+  .lb-eyebrow {
+    font-size: 8px;
+    letter-spacing: 0.12em;
+    gap: 6px;
+  }
+  .lb-eyebrow span {
+    display: none;
+  }
+  .lb-body {
+    padding: 17px 12px 8px;
+  }
+  .lb-profile {
+    padding: 13px 12px;
+  }
+  .lb-profile-note {
+    font-size: 8px;
+  }
+  .lb-profile-label > div > p {
+    font-size: 12px;
+  }
+  .lb-name-form {
+    gap: 6px;
+  }
+  .lb-button {
+    padding: 8px 10px;
+    font-size: 9px;
+  }
+  .lb-name-form .lb-button > svg {
+    display: none;
+  }
+  .lb-toolbar {
+    gap: 8px;
+  }
+  .lb-toolbar-controls {
+    gap: 8px;
+  }
+  .lb-connection {
+    max-width: 100px;
+    font-size: 7px;
+    line-height: 1.7;
+    letter-spacing: 0;
+  }
+  .lb-connection > svg {
+    flex: none;
+  }
+  .lb-record,
+  .lb-record.lb-with-actions {
+    column-gap: 7px;
+    padding: 15px 7px;
+    grid-template-columns: 22px minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 25px;
+  }
+  .lb-actions .lb-icon-button {
+    width: 29px;
+  }
+  .lb-pilot-name {
+    font-size: 11px;
+  }
+  .lb-progress strong {
+    font-size: 8px;
+    letter-spacing: 0;
+  }
+  .lb-pagination {
+    gap: 6px;
+    font-size: 9px;
+  }
+  .lb-pagination > div {
+    gap: 5px;
+  }
+  .lb-pagination .lb-button {
+    padding: 7px;
+    font-size: 8px;
+    gap: 4px;
+  }
+  .lb-footer {
+    padding: 11px 15px;
+  }
+  .lb-sheet {
+    padding: 20px 17px;
+  }
+  .lb-sheet-header h3 {
+    font-size: 21px;
+  }
+  .lb-edit-grid {
+    gap: 14px;
+  }
+  .lb-detail-stats {
+    gap: 17px 12px;
+  }
+  .lb-detail-stats dd {
+    font-size: 11px;
+  }
+  .lb-error {
+    flex-wrap: wrap;
+  }
 }
