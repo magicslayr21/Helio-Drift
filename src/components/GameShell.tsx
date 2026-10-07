@@ -17,6 +17,8 @@ import {
   type SalvageShopInfo,
   type SalvageUpgradeId,
 } from "../game/engine";
+import { PlayerStatus } from "./PlayerStatus";
+import { DevWindow } from "./DevWindow";
 import { HeliosMark } from "./Masthead";
 import { audio } from "../game/audio";
 import { GAME_CONFIG } from "../game/game-config";
@@ -504,66 +506,7 @@ export default function GameShell({
               aria-label="Helios Drift playfield"
             />
 
-            {mode !== "menu" && (
-              <div
-                className="pointer-events-none absolute right-2 top-2 z-20 w-40 border border-steel/45 bg-void/85 p-2 sm:right-3 sm:top-3 sm:w-52 sm:p-3"
-                aria-label="Player status"
-              >
-                <div className="mb-1 flex items-center justify-between gap-2">
-                  <span className="legend">Health</span>
-                  <span className="text-[11px] text-amber-hot">
-                    {hud.hull}/{hud.maxHull}
-                  </span>
-                </div>
-                <Meter
-                  value={hud.hull}
-                  max={hud.maxHull}
-                  color="linear-gradient(90deg,#ff8a3a,#ffe0a3)"
-                  glow="rgba(255,176,58,.5)"
-                />
-                <div className="mb-1 mt-2 flex items-center justify-between">
-                  <span className="legend">Level {hud.level}</span>
-                  <span className="text-[10px] text-ice">
-                    {Math.floor((hud.xp / hud.xpNext) * 100)}% XP
-                  </span>
-                </div>
-                <Meter
-                  value={hud.xp}
-                  max={hud.xpNext}
-                  color="linear-gradient(90deg,#2f8fa8,#6fe7ff)"
-                  glow="rgba(111,231,255,.4)"
-                />
-                <div
-                  className="mt-2 flex items-center gap-2"
-                  aria-label={`Equipped ${curWeapon.name}, weapon level ${hud.weaponLevel}`}
-                >
-                  <svg
-                    viewBox="0 0 32 32"
-                    className="h-7 w-7 shrink-0 text-amber"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    aria-hidden="true"
-                  >
-                    <path d="M16 3 24 25 16 21 8 25Z M16 9V18 M5 9V3 M27 9V3" />
-                    <path d="M12 27h8" />
-                  </svg>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-[10px] font-semibold text-amber-hot">
-                      {curWeapon.short} · LV {hud.weaponLevel}
-                    </p>
-                    <div className="mt-1 flex gap-0.5" aria-hidden="true">
-                      {Array.from({ length: MAX_WEAPON_LEVEL }, (_, i) => (
-                        <span
-                          key={i}
-                          className={`h-1 flex-1 ${i < hud.weaponLevel ? "bg-amber" : "bg-steel/40"}`}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
+            {mode !== "menu" && <PlayerStatus hud={hud} />}
 
             <AnimatePresence>
               {hud.banner && mode === "playing" && (
@@ -573,7 +516,7 @@ export default function GameShell({
                   animate={{ opacity: 1, y: 0, letterSpacing: "0.22em" }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.5 }}
-                  className="pointer-events-none absolute inset-x-0 top-[25%] text-center sm:top-[16%]"
+                  className="pointer-events-none absolute inset-x-0 top-[45%] text-center sm:top-[16%]"
                 >
                   <p className="font-display text-[clamp(1.8rem,6vw,3.4rem)] text-amber-hot drop-shadow-[0_0_28px_rgba(255,176,58,0.55)]">
                     {hud.banner}
@@ -1432,12 +1375,7 @@ export default function GameShell({
             </AnimatePresence>
 
             {devOpen && devUnlocked && (
-              <motion.div
-                initial={{ opacity: 0, x: 18 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ type: "spring", stiffness: 300, damping: 28 }}
-                className="thin-scroll absolute right-2 top-2 z-50 max-h-[calc(100%-1rem)] w-[276px] overflow-y-auto border border-magenta/60 bg-black/88 p-3 backdrop-blur-sm"
-              >
+              <DevWindow>
                 <div className="flex items-center justify-between border-b border-steel/30 pb-2">
                   <p className="legend text-magenta">
                     Dev Console · P{devPage} · Press ` to Toggle
@@ -1858,7 +1796,7 @@ export default function GameShell({
                     <DevBtn label="Restart" onClick={start} />
                   </DevRow>
                 </div>
-              </motion.div>
+              </DevWindow>
             )}
 
             {/* In-play hotbar: every installed weapon and its actual level. */}
