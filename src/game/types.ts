@@ -153,6 +153,8 @@ export interface Bullet {
   fuse: number;
   extra: number; // flak: shrapnel count
   extraDmg: number; // flak: shrapnel damage
+  /** Human-readable source for the fatal-hit report; has no combat effect. */
+  damageCause?: string;
   /** enemy shells that detonate when they expire without hitting anything */
   blast?: number;
   /** Smart turret nest fields (persistent warden nest) */

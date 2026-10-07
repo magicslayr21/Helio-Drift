@@ -8,7 +8,10 @@
     "build": "vite build",
     "preview": "vite preview",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"*.{ts,json,html}\"",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"*.{ts,json,html}\""
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"*.{ts,json,html}\"",
+    "leaderboard:dev": "node --watch server/index.mjs",
+    "leaderboard:start": "node server/index.mjs",
+    "leaderboard:test": "node --test server/test/*.test.mjs"
   },
   "dependencies": {
     "clsx": "2.1.1",

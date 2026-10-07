@@ -19,6 +19,14 @@ import {
 } from "../game/engine";
 import { PlayerStatus } from "./PlayerStatus";
 import { DevWindow } from "./DevWindow";
+import { Leaderboard } from "./Leaderboard";
+import {
+  authenticateDeveloper,
+  clearDeveloperSession,
+  flushPendingRuns,
+  isLeaderboardConfigured,
+  queueRun,
+} from "../leaderboard/client";
 import { HeliosMark } from "./Masthead";
 import { audio } from "../game/audio";
 import { GAME_CONFIG } from "../game/game-config";
@@ -189,6 +197,7 @@ export default function GameShell({
   const [devUnlocked, setDevUnlocked] = useState(false);
   const [devOpen, setDevOpen] = useState(false);
   const [devPage, setDevPage] = useState<1 | 2>(1);
+  const [leaderboardOpen, setLeaderboardOpen] = useState(false);
 
   useEffect(() => {
     onDeveloperChange(devUnlocked);
@@ -203,6 +212,7 @@ export default function GameShell({
       /* unavailable */
     }
     const revoke = () => {
+      clearDeveloperSession();
       setDevUnlocked(false);
       setDevOpen(false);
       onDeveloperChange(false);
@@ -219,6 +229,7 @@ export default function GameShell({
     let restoring = false;
     const g = new Game(canvas, {
       onHud: setHud,
+      onRunReport: queueRun,
       onMode: (m) => {
         setMode(m);
         if (m === "levelup") setChoices([...g.choices]);
@@ -240,7 +251,25 @@ export default function GameShell({
     restoring = true;
     g.restoreRun();
     restoring = false;
+    // Low-frequency reporting is outside the canvas loop. Network failures never stop a run.
+    const reportRun = () => {
+      if (g.mode !== "menu") queueRun(g.leaderboardReport());
+      void flushPendingRuns();
+    };
+    const reportTimer = window.setInterval(reportRun, 15000);
+    const onVisibility = () => {
+      if (document.hidden) reportRun();
+    };
+    window.addEventListener("online", reportRun);
+    window.addEventListener("pagehide", reportRun);
+    document.addEventListener("visibilitychange", onVisibility);
+    void flushPendingRuns();
     return () => {
+      window.clearInterval(reportTimer);
+      window.removeEventListener("online", reportRun);
+      window.removeEventListener("pagehide", reportRun);
+      document.removeEventListener("visibilitychange", onVisibility);
+      reportRun();
       g.destroy();
       gameRef.current = null;
     };
@@ -275,6 +304,25 @@ export default function GameShell({
     setPanel("none");
     onOpenDetails?.();
   }, [onOpenDetails]);
+
+  const openLeaderboard = useCallback(() => {
+    const game = gameRef.current;
+    if (game) {
+      game.inputSuspended = true;
+      game.keys = {};
+      game.touchFire = false;
+      game.mouseDown = false;
+      if (game.mode === "playing") game.setMode("paused");
+      queueRun(game.leaderboardReport());
+    }
+    setLeaderboardOpen(true);
+    audio.play("ui");
+  }, []);
+  const closeLeaderboard = useCallback(() => {
+    setLeaderboardOpen(false);
+    if (gameRef.current) gameRef.current.inputSuspended = false;
+  }, []);
+  const unlockLeaderboardDeveloper = useCallback(() => setDevUnlocked(true), []);
 
   const start = useCallback(() => {
     audio.unlock();
@@ -351,20 +399,31 @@ export default function GameShell({
     setCodeInput("");
     setCodeError(false);
   }, []);
-  const submitCode = useCallback(() => {
-    if (codeInput.trim().toLowerCase() === GAME_CONFIG.developer.accessCode.trim().toLowerCase()) {
+  const submitCode = useCallback(async () => {
+    const code = codeInput.trim();
+    const localCode = code.toLowerCase() === GAME_CONFIG.developer.accessCode.trim().toLowerCase();
+    if (localCode) {
       setDevUnlocked(true);
       setDevOpen(true);
       closePanel();
       audio.play("levelup");
-    } else {
+      if (isLeaderboardConfigured()) void authenticateDeveloper(code).catch(() => {});
+      return;
+    }
+    try {
+      await authenticateDeveloper(code);
+      setDevUnlocked(true);
+      setDevOpen(true);
+      closePanel();
+      audio.play("levelup");
+    } catch {
       setCodeError(true);
       audio.play("overheat");
     }
   }, [codeInput, closePanel]);
 
   useEffect(() => {
-    if (panel === "none" && !shopOpen) return;
+    if (leaderboardOpen || (panel === "none" && !shopOpen)) return;
     const close = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.stopPropagation();
@@ -373,11 +432,11 @@ export default function GameShell({
     };
     window.addEventListener("keydown", close, true);
     return () => window.removeEventListener("keydown", close, true);
-  }, [panel, shopOpen, closePanel, closeShop]);
+  }, [panel, shopOpen, closePanel, closeShop, leaderboardOpen]);
 
   // backquote toggles the dev console — only once the service code has been entered
   useEffect(() => {
-    if (!devUnlocked) return;
+    if (!devUnlocked || leaderboardOpen) return;
     const h = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
@@ -389,17 +448,19 @@ export default function GameShell({
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [devUnlocked]);
+  }, [devUnlocked, leaderboardOpen]);
 
   const dev = useCallback((fn: (x: Game) => void) => {
     const x = gameRef.current;
     if (!x) return;
+    x.markLeaderboardAssisted();
     fn(x);
     audio.play("ui");
   }, []);
   const devPlaying = useCallback((fn: (x: Game) => void) => {
     const x = gameRef.current;
     if (!x || x.mode !== "playing") return;
+    x.markLeaderboardAssisted();
     fn(x);
     audio.play("ui");
   }, []);
@@ -407,6 +468,7 @@ export default function GameShell({
   const devStat = useCallback((fn: (x: Game) => void) => {
     const x = gameRef.current;
     if (!x) return;
+    x.markLeaderboardAssisted();
     fn(x);
     setHud(x.snapshot());
     forceTick((v) => v + 1);
@@ -423,6 +485,13 @@ export default function GameShell({
 
   return (
     <section className="relative h-dvh w-full overflow-y-auto overflow-x-hidden">
+      {leaderboardOpen && (
+        <Leaderboard
+          onClose={closeLeaderboard}
+          devUnlocked={devUnlocked}
+          onDeveloperUnlock={unlockLeaderboardDeveloper}
+        />
+      )}
       <div className="relative flex h-full w-full gap-0">
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           {/* top telemetry strip */}
@@ -574,6 +643,12 @@ export default function GameShell({
                         className="border border-steel/60 px-5 py-3 text-[11px] uppercase tracking-[0.28em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
                       >
                         Settings
+                      </button>
+                      <button
+                        onClick={openLeaderboard}
+                        className="border border-ice/60 px-5 py-3 text-[11px] uppercase tracking-[0.22em] text-ice transition-colors hover:bg-ice/10 focus-visible:outline focus-visible:outline-ice"
+                      >
+                        Global Leaderboard
                       </button>
                       <button
                         onClick={openDetails}
@@ -1028,6 +1103,22 @@ export default function GameShell({
                         X
                       </button>
                     </div>
+                    <button
+                      onClick={openLeaderboard}
+                      className="mt-5 w-full border border-ice/60 px-4 py-3 text-[11px] uppercase tracking-[0.2em] text-ice hover:bg-ice/10 focus-visible:outline focus-visible:outline-ice"
+                    >
+                      Global Leaderboard
+                    </button>
+                    <button
+                      onClick={() => {
+                        setPanel("code");
+                        setCodeInput("");
+                        setCodeError(false);
+                      }}
+                      className="mt-2 w-full border border-steel/50 px-4 py-2 text-[10px] uppercase tracking-[0.18em] text-amber/70 hover:border-amber"
+                    >
+                      Developer Access
+                    </button>
                     <div className="mt-5">
                       <SettingRow
                         label="Auto-Fire"

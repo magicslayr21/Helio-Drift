@@ -12,6 +12,7 @@ const __dirname = path.dirname(__filename);
 export default defineConfig({
   // GitHub Pages serves this project from /Helio-Drift/, not the domain root.
   base: "/Helio-Drift/",
+  server: { proxy: { "/api": "http://127.0.0.1:8787" } },
   plugins: [react(), tailwindcss(), viteSingleFile()],
   resolve: {
     alias: {

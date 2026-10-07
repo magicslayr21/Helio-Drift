@@ -72,7 +72,8 @@ import type {
   SectorTheme,
 } from "./types";
 import { GAME_CONFIG } from "./game-config";
-import { RunSave } from "./run-save";
+import { RunSave, type SavedLeaderboardRun } from "./run-save";
+import type { RunReport, RunStatus } from "../leaderboard/types";
 
 /* The React shell imports everything from "./engine" — keep that surface
    stable by re-exporting the extracted modules. */
@@ -85,6 +86,8 @@ export * from "./balance";
 export class Game {
   private readonly runSave = new RunSave();
   private lastSave = 0;
+  leaderboardRun: SavedLeaderboardRun | null = null;
+  inputSuspended = false;
 
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
@@ -99,6 +102,7 @@ export class Game {
 
   onHud: (h: Hud) => void;
   onMode: (m: Mode) => void;
+  onRunReport?: (report: RunReport) => void;
 
   p = freshPlayer();
   salvageDrone = freshSalvageDrone();
@@ -168,12 +172,17 @@ export class Game {
 
   constructor(
     canvas: HTMLCanvasElement,
-    cb: { onHud: (h: Hud) => void; onMode: (m: Mode) => void },
+    cb: {
+      onHud: (h: Hud) => void;
+      onMode: (m: Mode) => void;
+      onRunReport?: (report: RunReport) => void;
+    },
   ) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d", { alpha: true })!;
     this.onHud = cb.onHud;
     this.onMode = cb.onMode;
+    this.onRunReport = cb.onRunReport;
     this.resize();
     this.reduced =
       typeof window.matchMedia === "function" &&
@@ -242,6 +251,66 @@ export class Game {
     this.runSave.write(this);
   }
 
+  /** Detached snapshots keep networking and moderation outside the simulation. */
+  leaderboardReport(statusOverride?: RunStatus): RunReport | null {
+    const run = this.leaderboardRun;
+    if (!run || this.wave < 1) return null;
+    const report = run.finalReport ?? this.captureLeaderboardReport(statusOverride);
+    if (!report) return null;
+    const snapshot: RunReport = {
+      ...report,
+      revision: ++run.revision,
+      weapons: { ...report.weapons },
+      upgrades: { ...report.upgrades },
+      drone: { ...report.drone, upgrades: { ...report.drone.upgrades } },
+    };
+    this.saveRun();
+    return snapshot;
+  }
+
+  private captureLeaderboardReport(statusOverride?: RunStatus): RunReport | null {
+    const run = this.leaderboardRun;
+    if (!run || this.wave < 1) return null;
+    return {
+      runId: run.runId,
+      revision: run.revision,
+      score: Math.max(0, Math.floor(this.score)),
+      credits: Math.max(0, Math.floor(this.credits)),
+      wave: Math.floor(this.wave),
+      level: Math.floor(this.level),
+      stage: this.bonusDefeated ? "mk6-cleared" : this.bonusActive ? "mk6" : "sectors",
+      status:
+        statusOverride ??
+        (this.mode === "gameover"
+          ? "dead"
+          : this.mode === "victory"
+            ? "victory"
+            : this.mode === "playing"
+              ? "active"
+              : "paused"),
+      durationSeconds: Math.floor(run.durationSeconds),
+      sector: this.themeIdx + 1,
+      primary: this.p.primary,
+      weapons: { ...this.p.weapons },
+      upgrades: { ...this.stacks },
+      deathCause: run.deathCause,
+      assisted: run.assisted,
+      drone: {
+        purchased: this.salvageDrone.purchased,
+        weapon: this.salvageDrone.weapon,
+        upgrades: { ...this.salvageDrone.upgrades },
+      },
+    };
+  }
+
+  markLeaderboardAssisted() {
+    const run = this.leaderboardRun;
+    if (!run || run.assisted) return;
+    run.assisted = true;
+    if (run.finalReport) run.finalReport.assisted = true;
+    this.saveRun();
+  }
+
   restoreRun() {
     if (!this.runSave.restore(this)) return;
     this.theme = THEMES[this.themeIdx];
@@ -277,6 +346,7 @@ export class Game {
   };
 
   resetRun() {
+    this.leaderboardRun = null;
     this.choices = [];
     this.rerollCost = 0;
     this.p = freshPlayer();
@@ -321,8 +391,20 @@ export class Game {
   }
 
   startGame() {
+    if (this.leaderboardRun && !this.leaderboardRun.finalReport) {
+      const abandoned = this.leaderboardReport("abandoned");
+      if (abandoned) this.onRunReport?.(abandoned);
+    }
     audio.unlock();
     this.resetRun();
+    this.leaderboardRun = {
+      runId: crypto.randomUUID(),
+      revision: 0,
+      durationSeconds: 0,
+      deathCause: null,
+      assisted: this.god,
+      finalReport: null,
+    };
     this.setMode("playing");
     this.nextWave();
     this.runSave.begin(this);
@@ -330,6 +412,14 @@ export class Game {
 
   setMode(m: Mode) {
     this.mode = m;
+    if (m === "playing" && this.leaderboardRun) this.leaderboardRun.finalReport = null;
+    if ((m === "gameover" || m === "victory") && this.leaderboardRun) {
+      // Capture before callbacks and before the existing celebration/death effects
+      // can award more points or collect drops after the run has finished.
+      this.leaderboardRun.finalReport ??= this.captureLeaderboardReport();
+      const finalReport = this.leaderboardReport();
+      if (finalReport) this.onRunReport?.(finalReport);
+    }
     this.last = performance.now();
     this.lastIdleRender = 0;
     if (m === "playing") this.timeScale = 1;
@@ -344,6 +434,7 @@ export class Game {
   /* ------------------------------------------------------------ input */
 
   onKeyDown = (e: KeyboardEvent) => {
+    if (this.inputSuspended) return;
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
     const k = e.key.toLowerCase();
@@ -382,6 +473,7 @@ export class Game {
   onPointerDown = (e: PointerEvent) => {
     audio.unlock();
     this.updateMouse(e);
+    if (this.inputSuspended) return;
     if (this.mode !== "playing") return;
     if (this.settings.mouseControl && e.pointerType === "mouse") {
       this.mouseDown = true;
@@ -913,6 +1005,7 @@ export class Game {
   /* ------------------------------------------------------------ update */
 
   update(dt: number) {
+    if (this.mode === "playing" && this.leaderboardRun) this.leaderboardRun.durationSeconds += dt;
     const p = this.p;
     const k = this.keys;
 
@@ -2016,6 +2109,7 @@ export class Game {
             life: 2.2,
             dmg: WARDEN_BOLT_DMG,
             kind: "enemy",
+            damageCause: "Warden sniper shot",
             pierce: 99,
             color: "#ff8800",
             hitIds: new Set(),
@@ -2079,6 +2173,7 @@ export class Game {
           life: 4.2,
           dmg: SENTINEL_BOLT_DMG,
           kind: "enemy",
+          damageCause: "Sentinel projectile",
           pierce: 0,
           color: MAGENTA,
           hitIds: new Set(),
@@ -2192,7 +2287,14 @@ export class Game {
         color: AMBER_HOT,
         w: 2,
       });
-      this.damagePlayer(dmg);
+      this.damagePlayer(
+        dmg,
+        meteor
+          ? "Meteor collision"
+          : r.trait === "meteorite"
+            ? "Meteorite collision"
+            : `${r.trait === "none" ? "Asteroid" : `${r.trait} asteroid`} collision`,
+      );
       p.invuln = collision.invulnerability;
       if (meteor) this.shake += 6;
       const idx = this.rocks.indexOf(r);
@@ -2221,7 +2323,7 @@ export class Game {
         p.vy += ny * 340;
         b.flash = 1;
         this.burst(p.x - nx * 8, p.y - ny * 8, 16, MAGENTA);
-        this.damagePlayer(GAME_CONFIG.bosses.contactDamage);
+        this.damagePlayer(GAME_CONFIG.bosses.contactDamage, `MK${b.mk} boss collision`);
         p.invuln = collision.invulnerability;
       }
     }
@@ -2237,7 +2339,10 @@ export class Game {
         d.vx -= Math.cos(ang) * 160;
         d.vy -= Math.sin(ang) * 160;
         this.burst(p.x, p.y, 16, MAGENTA);
-        this.damagePlayer(GAME_CONFIG.enemies.sentinels.playerContactDamage);
+        this.damagePlayer(
+          GAME_CONFIG.enemies.sentinels.playerContactDamage,
+          d.kind === "warden" ? "Warden collision" : "Sentinel collision",
+        );
         p.invuln = collision.invulnerability;
         this.damageDrone(
           this.drones.indexOf(d),
@@ -2456,7 +2561,7 @@ export class Game {
         if (b.kind === "missile") this.explode(b.x, b.y, p.blastR, p.blastDmg);
         if (b.kind === "flak") this.detonateFlak(b);
         // a warden shell that found nothing still goes off where it died
-        if (b.blast) this.enemyBlast(b.x, b.y, b.blast, b.dmg * 0.6);
+        if (b.blast) this.enemyBlast(b.x, b.y, b.blast, b.dmg * 0.6, b.damageCause);
         this.bullets.splice(i, 1);
         continue;
       }
@@ -2489,7 +2594,11 @@ export class Game {
           continue;
         }
         if (Math.hypot(b.x - p.x, b.y - p.y) < b.r + 15) {
-          this.damagePlayer(b.dmg);
+          this.damagePlayer(
+            b.dmg,
+            b.damageCause ??
+              (b.kind === "wardenShard" ? "Warden homing shard" : "Hostile projectile"),
+          );
           this.bullets.splice(i, 1);
         }
         continue;
@@ -3157,7 +3266,8 @@ export class Game {
     this.shake += 5 + r.size * 3;
     audio.play(r.size === 3 ? "explodeBig" : "flak");
     const p = this.p;
-    if (Math.hypot(p.x - r.x, p.y - r.y) < radius + 14) this.damagePlayer(pdmg);
+    if (Math.hypot(p.x - r.x, p.y - r.y) < radius + 14)
+      this.damagePlayer(pdmg, "Explosive asteroid blast");
     const rockIds = this.rocks
       .filter((o) => o.id !== r.id && Math.hypot(o.x - r.x, o.y - r.y) < radius + o.r)
       .map((o) => o.id);
@@ -3359,10 +3469,12 @@ export class Game {
     this.setMode("playing");
   }
 
-  damagePlayer(dmg: number) {
+  damagePlayer(dmg: number, cause = "Unknown damage") {
     const p = this.p;
     if (this.god || p.invuln > 0) return;
     p.hull -= dmg * (1 - p.armor);
+    if (p.hull <= 0 && this.mode === "playing" && this.leaderboardRun)
+      this.leaderboardRun.deathCause = cause;
     if (p.hull <= 0) this.runSave.end();
     else this.saveRun();
     this.burst(p.x, p.y, 10, p.armor > 0 ? ICE : AMBER);
@@ -3396,7 +3508,7 @@ export class Game {
     this.setMode("gameover");
   }
 
-  explode(x: number, y: number, radius: number, dmg: number) {
+  explode(x: number, y: number, radius: number, dmg: number, cause = "Missile blast") {
     this.rings.push({ x, y, r: 8, max: radius * 1.6, life: 0.55, color: MAGENTA, w: 3 });
     this.burst(x, y, 26, MAGENTA);
     audio.play("explodeBig");
@@ -3437,7 +3549,7 @@ export class Game {
       }
     }
     if (Math.hypot(this.p.x - x, this.p.y - y) < radius * 0.6)
-      this.damagePlayer(GAME_CONFIG.asteroids.genericExplosionPlayerDamage);
+      this.damagePlayer(GAME_CONFIG.asteroids.genericExplosionPlayerDamage, cause);
     this.timeScale = GAME_CONFIG.simulation.explosionTimeScale;
   }
 
@@ -3855,12 +3967,12 @@ export class Game {
 
   /** a hostile shell detonating on its own — hurts the player and the drone,
    *  but never the fleet that fired it */
-  enemyBlast(x: number, y: number, radius: number, dmg: number) {
+  enemyBlast(x: number, y: number, radius: number, dmg: number, cause = "Hostile shell explosion") {
     this.rings.push({ x, y, r: 6, max: radius * 1.4, life: 0.34, color: "#ff7aa0", w: 2 });
     this.burst(x, y, 14, "#ff7aa0");
     audio.play("explodeSmall");
     this.shake += 2.5;
-    if (Math.hypot(this.p.x - x, this.p.y - y) < radius) this.damagePlayer(dmg);
+    if (Math.hypot(this.p.x - x, this.p.y - y) < radius) this.damagePlayer(dmg, cause);
     if (
       this.salvageDrone.active &&
       Math.hypot(this.salvageDrone.x - x, this.salvageDrone.y - y) < radius
@@ -3879,6 +3991,7 @@ export class Game {
       life: 5,
       dmg,
       kind: "enemy",
+      damageCause: this.boss ? `MK${this.boss.mk} boss projectile` : "Hostile projectile",
       pierce: 0,
       color: MAGENTA,
       hitIds: new Set(),
@@ -4346,7 +4459,7 @@ export class Game {
             ry = this.p.y - b.y;
           const t = rx * dx + ry * dy;
           if (t > 0 && t < len && Math.abs(rx * dy - ry * dx) < 16 && m.beamCd <= 0) {
-            this.damagePlayer(9);
+            this.damagePlayer(9, "MK6 solar beam");
             m.beamCd = 0.6;
           }
           if (this.frame % 3 === 0) {
@@ -4372,9 +4485,10 @@ export class Game {
           s.t -= dt;
           if (s.t <= 0) {
             slot.strikes.splice(i, 1);
-            this.explode(s.x, s.y, s.r, 74);
+            this.explode(s.x, s.y, s.r, 74, "MK6 meteor strike");
             this.shatterMeteor(s.x, s.y, 0, 0);
-            if (Math.hypot(this.p.x - s.x, this.p.y - s.y) < s.r) this.damagePlayer(30);
+            if (Math.hypot(this.p.x - s.x, this.p.y - s.y) < s.r)
+              this.damagePlayer(30, "MK6 meteor strike");
           }
         }
         break;
@@ -4413,7 +4527,8 @@ export class Game {
             this.burst(b.x, b.y, 35, "#ff8800");
             this.shake += 14;
             audio.play("explodeBig");
-            if (Math.hypot(this.p.x - b.x, this.p.y - b.y) < radius) this.damagePlayer(28);
+            if (Math.hypot(this.p.x - b.x, this.p.y - b.y) < radius)
+              this.damagePlayer(28, "MK6 regenesis blast");
           }
         }
         break;
@@ -4900,7 +5015,8 @@ export class Game {
         this.burst(b.x, b.y, 40, ORANGE);
         this.shake += 12;
         audio.play("explodeBig");
-        if (Math.hypot(this.p.x - b.x, this.p.y - b.y) < radius + 18) this.damagePlayer(22);
+        if (Math.hypot(this.p.x - b.x, this.p.y - b.y) < radius + 18)
+          this.damagePlayer(22, `MK${b.mk} boss shockwave`);
         if (
           this.salvageDrone.active &&
           Math.hypot(this.salvageDrone.x - b.x, this.salvageDrone.y - b.y) < radius + 18
@@ -5094,8 +5210,9 @@ export class Game {
       s.t -= dt;
       if (s.t <= 0) {
         b.strikes.splice(i, 1);
-        this.explode(s.x, s.y, 175, 62);
-        if (Math.hypot(this.p.x - s.x, this.p.y - s.y) < 150) this.damagePlayer(24);
+        this.explode(s.x, s.y, 175, 62, `MK${b.mk} ignition strike`);
+        if (Math.hypot(this.p.x - s.x, this.p.y - s.y) < 150)
+          this.damagePlayer(24, `MK${b.mk} ignition strike`);
       }
     }
 

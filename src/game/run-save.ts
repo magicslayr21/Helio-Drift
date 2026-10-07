@@ -1,4 +1,14 @@
 import type { Game } from "./engine";
+import type { RunReport } from "../leaderboard/types";
+
+export interface SavedLeaderboardRun {
+  runId: string;
+  revision: number;
+  durationSeconds: number;
+  deathCause: string | null;
+  assisted: boolean;
+  finalReport: RunReport | null;
+}
 
 const KEY = "helios-run-v1";
 // Only simulation data belongs in a save. Developer access, god mode, input,
@@ -36,7 +46,12 @@ const FIELDS = [
   "bannerT",
 ] as const;
 type RunState = Pick<Game, (typeof FIELDS)[number]>;
-type SavedRun = { version: 1; id: string; state: RunState | null };
+type SavedRun = {
+  version: 1;
+  id: string;
+  state: RunState | null;
+  leaderboard?: SavedLeaderboardRun;
+};
 
 function read(): SavedRun | null {
   const raw = localStorage.getItem(KEY);
@@ -50,6 +65,52 @@ function finiteData(value: unknown): boolean {
   if (Array.isArray(value)) return value.every(finiteData);
   if (value && typeof value === "object") return Object.values(value).every(finiteData);
   return value === null || ["string", "boolean"].includes(typeof value);
+}
+
+function validLeaderboard(value: unknown, id: string, game: Game): value is SavedLeaderboardRun {
+  if (!value || typeof value !== "object" || !finiteData(value)) return false;
+  const run = value as SavedLeaderboardRun;
+  if (
+    run.runId !== id ||
+    !Number.isSafeInteger(run.revision) ||
+    run.revision < 0 ||
+    typeof run.durationSeconds !== "number" ||
+    run.durationSeconds < 0 ||
+    (run.deathCause !== null && typeof run.deathCause !== "string") ||
+    typeof run.assisted !== "boolean"
+  )
+    return false;
+  const report = run.finalReport;
+  return (
+    report === null ||
+    (!!report &&
+      report.runId === id &&
+      Number.isSafeInteger(report.revision) &&
+      report.revision >= 0 &&
+      report.revision <= run.revision &&
+      [
+        report.score,
+        report.credits,
+        report.wave,
+        report.level,
+        report.durationSeconds,
+        report.sector,
+      ].every((n) => Number.isSafeInteger(n) && n >= 0) &&
+      ["sectors", "mk6", "mk6-cleared"].includes(report.stage) &&
+      ["dead", "victory"].includes(report.status) &&
+      typeof report.assisted === "boolean" &&
+      (report.deathCause === null || typeof report.deathCause === "string") &&
+      Object.prototype.hasOwnProperty.call(game.p.weapons, report.primary) &&
+      matches(report.weapons, game.p.weapons) &&
+      !!report.upgrades &&
+      typeof report.upgrades === "object" &&
+      Object.values(report.upgrades).every((n) => Number.isSafeInteger(n) && n >= 0) &&
+      !!report.drone &&
+      typeof report.drone.purchased === "boolean" &&
+      (report.drone.weapon === null ||
+        Object.prototype.hasOwnProperty.call(game.p.weapons, report.drone.weapon)) &&
+      matches(report.drone.upgrades, game.salvageDrone.upgrades))
+  );
 }
 
 // Match required fields against a fresh run before assigning any saved data.
@@ -74,7 +135,7 @@ export class RunSave {
   private ended = false;
 
   begin(game: Game) {
-    this.id = crypto.randomUUID();
+    this.id = game.leaderboardRun?.runId ?? crypto.randomUUID();
     this.ended = false;
     this.write(game, true);
   }
@@ -125,6 +186,18 @@ export class RunSave {
       for (const key of FIELDS) {
         Object.assign(game, { [key]: state[key] });
       }
+      // Older saves keep their existing stable ID and start telemetry here.
+      // Metadata stays outside FIELDS so adding it never invalidates a run save.
+      game.leaderboardRun = validLeaderboard(saved.leaderboard, saved.id, game)
+        ? saved.leaderboard
+        : {
+            runId: saved.id,
+            revision: 0,
+            durationSeconds: 0,
+            deathCause: null,
+            assisted: false,
+            finalReport: null,
+          };
       game.p.beamOn = false;
       game.p.missileHeld = false;
       game.p.thrusting = false;
@@ -150,7 +223,10 @@ export class RunSave {
       // A dead or superseded run cannot be resurrected by another open tab.
       if (!replace && (!current || current.id !== this.id || !current.state)) return;
       const state = Object.fromEntries(FIELDS.map((key) => [key, game[key]]));
-      localStorage.setItem(KEY, JSON.stringify({ version: 1, id: this.id, state }));
+      localStorage.setItem(
+        KEY,
+        JSON.stringify({ version: 1, id: this.id, state, leaderboard: game.leaderboardRun }),
+      );
     } catch {
       // Play remains available when the browser blocks or fills storage.
     }
