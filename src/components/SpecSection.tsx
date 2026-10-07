@@ -26,7 +26,7 @@ const MANUAL_ROWS = [
   {
     n: "05",
     title: "Pick up where you left off",
-    body: "Your run saves automatically in this browser. Reopen the game to continue with your wave, hull, weapons, credits, and upgrades. Death clears that run immediately; high scores remain.",
+    body: "Your run saves automatically in this browser. Reopen the game to continue with your wave, health, weapons, credits, and upgrades. Death clears that run immediately; high scores remain.",
   },
 ];
 

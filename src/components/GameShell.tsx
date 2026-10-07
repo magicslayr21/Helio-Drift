@@ -91,6 +91,7 @@ const EMPTY_SETTINGS = {
   autoFire: false,
   mouseControl: false,
   hybridAim: true,
+  trackpad: false,
   legacyMovement: false,
   shake: true,
 };
@@ -249,6 +250,7 @@ export default function GameShell({
       g.settings.autoFire = settings.autoFire;
       g.settings.mouseControl = settings.mouseControl;
       g.settings.hybridAim = settings.hybridAim;
+      g.settings.trackpad = settings.trackpad;
       g.settings.legacyMovement = settings.legacyMovement;
       g.settings.shake = settings.shake;
     }
@@ -304,21 +306,25 @@ export default function GameShell({
     setSettings((s) => ({ ...s, [key]: !s[key] }));
   }, []);
 
-  // The three flight schemes are mutually exclusive. Switching one on clears the
+  // The flight schemes are mutually exclusive. Switching one on clears the
   // others; switching the active one off falls back to Legacy Movement, since
   // that is plain keyboard steering with no mouse assist.
-  const toggleMovement = useCallback((key: "mouseControl" | "hybridAim" | "legacyMovement") => {
-    audio.play("ui");
-    setSettings((s) => {
-      const on = !s[key];
-      return {
-        ...s,
-        mouseControl: on && key === "mouseControl",
-        hybridAim: on && key === "hybridAim",
-        legacyMovement: on ? key === "legacyMovement" : true,
-      };
-    });
-  }, []);
+  const toggleMovement = useCallback(
+    (key: "mouseControl" | "hybridAim" | "legacyMovement" | "trackpad") => {
+      audio.play("ui");
+      setSettings((s) => {
+        const on = !s[key];
+        return {
+          ...s,
+          mouseControl: on && key === "mouseControl",
+          hybridAim: on && key === "hybridAim",
+          trackpad: on && key === "trackpad",
+          legacyMovement: on ? key === "legacyMovement" : true,
+        };
+      });
+    },
+    [],
+  );
   const cycleWeapon = useCallback(() => gameRef.current?.cycleWeapon(1), []);
 
   const openShop = useCallback(() => {
@@ -494,9 +500,70 @@ export default function GameShell({
             />
             <canvas
               ref={canvasRef}
-              className={`absolute inset-0 block h-full w-full touch-none select-none ${!settings.legacyMovement && (settings.mouseControl || settings.hybridAim) ? "cursor-crosshair" : ""}`}
+              className={`absolute inset-0 block h-full w-full touch-none select-none ${!settings.legacyMovement && (settings.mouseControl || settings.hybridAim || settings.trackpad) ? "cursor-crosshair" : ""}`}
               aria-label="Helios Drift playfield"
             />
+
+            {mode !== "menu" && (
+              <div
+                className="pointer-events-none absolute right-2 top-2 z-20 w-40 border border-steel/45 bg-void/85 p-2 sm:right-3 sm:top-3 sm:w-52 sm:p-3"
+                aria-label="Player status"
+              >
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="legend">Health</span>
+                  <span className="text-[11px] text-amber-hot">
+                    {hud.hull}/{hud.maxHull}
+                  </span>
+                </div>
+                <Meter
+                  value={hud.hull}
+                  max={hud.maxHull}
+                  color="linear-gradient(90deg,#ff8a3a,#ffe0a3)"
+                  glow="rgba(255,176,58,.5)"
+                />
+                <div className="mb-1 mt-2 flex items-center justify-between">
+                  <span className="legend">Level {hud.level}</span>
+                  <span className="text-[10px] text-ice">
+                    {Math.floor((hud.xp / hud.xpNext) * 100)}% XP
+                  </span>
+                </div>
+                <Meter
+                  value={hud.xp}
+                  max={hud.xpNext}
+                  color="linear-gradient(90deg,#2f8fa8,#6fe7ff)"
+                  glow="rgba(111,231,255,.4)"
+                />
+                <div
+                  className="mt-2 flex items-center gap-2"
+                  aria-label={`Equipped ${curWeapon.name}, weapon level ${hud.weaponLevel}`}
+                >
+                  <svg
+                    viewBox="0 0 32 32"
+                    className="h-7 w-7 shrink-0 text-amber"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    aria-hidden="true"
+                  >
+                    <path d="M16 3 24 25 16 21 8 25Z M16 9V18 M5 9V3 M27 9V3" />
+                    <path d="M12 27h8" />
+                  </svg>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[10px] font-semibold text-amber-hot">
+                      {curWeapon.short} · LV {hud.weaponLevel}
+                    </p>
+                    <div className="mt-1 flex gap-0.5" aria-hidden="true">
+                      {Array.from({ length: MAX_WEAPON_LEVEL }, (_, i) => (
+                        <span
+                          key={i}
+                          className={`h-1 flex-1 ${i < hud.weaponLevel ? "bg-amber" : "bg-steel/40"}`}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <AnimatePresence>
               {hud.banner && mode === "playing" && (
@@ -506,7 +573,7 @@ export default function GameShell({
                   animate={{ opacity: 1, y: 0, letterSpacing: "0.22em" }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.5 }}
-                  className="pointer-events-none absolute inset-x-0 top-[16%] text-center"
+                  className="pointer-events-none absolute inset-x-0 top-[25%] text-center sm:top-[16%]"
                 >
                   <p className="font-display text-[clamp(1.8rem,6vw,3.4rem)] text-amber-hot drop-shadow-[0_0_28px_rgba(255,176,58,0.55)]">
                     {hud.banner}
@@ -763,7 +830,7 @@ export default function GameShell({
                 >
                   <div className="mb-4 flex items-end justify-between">
                     <div>
-                      <p className="legend text-amber">Upgrade Available</p>
+                      <p className="legend text-amber">Upgrade Available · Game Paused</p>
                       <h2 className="font-display text-[clamp(1.5rem,4.6vw,2.6rem)] leading-none text-amber-hot">
                         LEVEL {String(hud.level).padStart(2, "0")}
                       </h2>
@@ -873,7 +940,7 @@ export default function GameShell({
                   className="absolute inset-0 flex items-center justify-center overflow-y-auto bg-void/90 py-6"
                 >
                   <div className="w-[min(520px,92%)] border border-magenta/40 plate p-6 sm:p-8">
-                    <p className="legend text-magenta">Hull Breach · Signal Lost</p>
+                    <p className="legend text-magenta">Health Depleted · Signal Lost</p>
                     <h2 className="mt-1 font-display text-[clamp(2rem,7vw,3.4rem)] leading-none text-amber-hot">
                       RUN ENDED
                     </h2>
@@ -943,8 +1010,8 @@ export default function GameShell({
                         <p className="mt-2 text-[11px] leading-relaxed text-amber/60">
                           A primordial meteor titan is warping the edge of known space.
                           Golden-orange molten rings, devastating meteor showers, eight scorching
-                          beams, crushing singularities, and explosive strikes await. Your hull and
-                          missiles are fully restored if you accept the challenge.
+                          beams, crushing singularities, and explosive strikes await. Your health
+                          and missiles are fully restored if you accept the challenge.
                         </p>
                         <button
                           onClick={() => {
@@ -1026,8 +1093,14 @@ export default function GameShell({
                         onToggle={() => toggleSetting("autoFire")}
                       />
                       <SettingRow
+                        label="Trackpad Mode"
+                        hint="WASD / arrows move; glide on the trackpad to aim. Fires automatically — no click-hold needed. E launches missiles; Q / Tab switches weapons; P pauses."
+                        on={settings.trackpad}
+                        onToggle={() => toggleMovement("trackpad")}
+                      />
+                      <SettingRow
                         label="Hybrid Aim"
-                        hint="Default scheme. Twin-stick style: the hull always tracks the cursor while WASD / arrows push the ship in world space. Click to fire."
+                        hint="Default scheme. Twin-stick style: the ship always tracks the cursor while WASD / arrows push the ship in world space. Click to fire."
                         on={settings.hybridAim}
                         onToggle={() => toggleMovement("hybridAim")}
                       />
@@ -1039,7 +1112,7 @@ export default function GameShell({
                       />
                       <SettingRow
                         label="Legacy Movement"
-                        hint="Classic cabinet handling: A/D or Left/Right rotate the hull, W thrusts. No mouse aiming at all."
+                        hint="Classic cabinet handling: A/D or Left/Right rotate the ship, W thrusts. No mouse aiming at all."
                         on={settings.legacyMovement}
                         onToggle={() => toggleMovement("legacyMovement")}
                       />
@@ -1442,7 +1515,7 @@ export default function GameShell({
                       }
                     />
                   </DevRow>
-                  <DevRow label="Hull">
+                  <DevRow label="Health">
                     <DevBtn
                       label="-25"
                       onClick={() =>
@@ -1825,21 +1898,7 @@ export default function GameShell({
           </div>
 
           {/* bottom status deck */}
-          <div className="grid shrink-0 grid-cols-2 gap-x-6 gap-y-3 border-t border-steel/25 px-3 py-3 sm:grid-cols-4 sm:px-5">
-            <div>
-              <div className="mb-1 flex items-baseline justify-between">
-                <p className="legend">Hull</p>
-                <p className="text-[11px] text-amber-hot">
-                  {hud.hull}/{hud.maxHull}
-                </p>
-              </div>
-              <Meter
-                value={hud.hull}
-                max={hud.maxHull}
-                color="linear-gradient(90deg,#ff8a3a,#ffe0a3)"
-                glow="rgba(255,176,58,.5)"
-              />
-            </div>
+          <div className="grid shrink-0 grid-cols-2 gap-x-6 gap-y-3 border-t border-steel/25 px-3 py-3 sm:grid-cols-3 sm:px-5">
             <div>
               <div className="mb-1 flex items-baseline justify-between">
                 <p className="legend">Sector</p>
@@ -2103,7 +2162,7 @@ function SalvageShopPanel({
           </p>
           {info.purchased && (
             <p className="mt-1 text-[10px] text-amber/55">
-              Hull {info.hp}/{info.maxHp}
+              Health {info.hp}/{info.maxHp}
             </p>
           )}
         </div>
@@ -2113,7 +2172,7 @@ function SalvageShopPanel({
         <div className="mt-5 border border-ice/30 bg-ice/[0.04] p-4">
           <p className="legend text-ice">Base chassis · one-time purchase</p>
           <p className="mt-2 text-[11px] leading-relaxed text-amber/55">
-            The base frame has no weapons and a small hull. Buy it once, then shape it across the
+            The base frame has no weapons and low health. Buy it once, then shape it across the
             three paths below. If it is destroyed, it rebuilds for free at the next wave.
           </p>
           <button

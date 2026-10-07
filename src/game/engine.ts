@@ -95,6 +95,7 @@ export class Game {
   raf = 0;
   last = 0;
   frame = 0;
+  private lastIdleRender = 0;
 
   onHud: (h: Hud) => void;
   onMode: (m: Mode) => void;
@@ -153,6 +154,7 @@ export class Game {
     autoFire: false,
     mouseControl: false,
     hybridAim: true,
+    trackpad: false,
     legacyMovement: false,
     shake: true,
   };
@@ -183,6 +185,7 @@ export class Game {
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
     window.addEventListener("resize", this.resize);
+    window.addEventListener("blur", this.onBlur);
     // the playfield now fills whatever the HUD leaves free, so follow its box, not just the window
     if (typeof ResizeObserver !== "undefined") {
       this.ro = new ResizeObserver(() => this.resize());
@@ -204,6 +207,7 @@ export class Game {
     window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("keyup", this.onKeyUp);
     window.removeEventListener("resize", this.resize);
+    window.removeEventListener("blur", this.onBlur);
     this.ro?.disconnect();
     this.canvas.removeEventListener("pointerdown", this.onPointerDown);
     this.canvas.removeEventListener("pointermove", this.onPointerMove);
@@ -257,7 +261,13 @@ export class Game {
   };
 
   private onVisibilityChange = () => {
-    if (document.visibilityState !== "hidden") return;
+    // Never carry an inactive tab's elapsed time into simulation or autosave.
+    this.last = this.lastSave = performance.now();
+    this.lastIdleRender = 0;
+    if (document.visibilityState === "hidden") this.onBlur();
+  };
+
+  private onBlur = () => {
     if (this.mode === "playing") this.setMode("paused");
     this.keys = {};
     this.mouseDown = false;
@@ -320,6 +330,9 @@ export class Game {
 
   setMode(m: Mode) {
     this.mode = m;
+    this.last = performance.now();
+    this.lastIdleRender = 0;
+    if (m === "playing") this.timeScale = 1;
     if (m !== "playing") {
       audio.silence();
       this.p.beamOn = false;
@@ -377,7 +390,7 @@ export class Game {
     }
     // hybrid aim steers with the keyboard, so a mouse click is a trigger and
     // must never spawn the virtual thumbstick
-    if (this.settings.hybridAim && e.pointerType === "mouse") {
+    if ((this.settings.hybridAim || this.settings.trackpad) && e.pointerType === "mouse") {
       this.touchFire = true;
       this.canvas.setPointerCapture?.(e.pointerId);
       return;
@@ -402,7 +415,7 @@ export class Game {
   onPointerUp = (e: PointerEvent) => {
     if (e.pointerType === "mouse") {
       this.mouseDown = false;
-      if (this.settings.hybridAim) this.touchFire = false;
+      if (this.settings.hybridAim || this.settings.trackpad) this.touchFire = false;
     }
     if (e.pointerId === this.stick.id) this.stick = { on: false, id: -1, ox: 0, oy: 0, x: 0, y: 0 };
     else this.touchFire = false;
@@ -780,29 +793,28 @@ export class Game {
 
   loop = (now: number) => {
     this.raf = requestAnimationFrame(this.loop);
+    if (document.hidden) {
+      this.last = now;
+      return;
+    }
     let dt = (now - this.last) / 1000;
     this.last = now;
     if (dt > GAME_CONFIG.simulation.frameDeltaCap) dt = GAME_CONFIG.simulation.frameDeltaCap;
     this.frame++;
 
-    if (
-      this.mode === "playing" ||
-      this.mode === "levelup" ||
-      this.mode === "gameover" ||
-      this.mode === "victory"
-    ) {
-      const target =
-        this.mode === "levelup"
-          ? 0.16
-          : this.mode === "gameover" || this.mode === "victory"
-            ? 0.3
-            : 1;
+    if (this.mode === "playing" || this.mode === "gameover" || this.mode === "victory") {
+      const target = this.mode === "gameover" || this.mode === "victory" ? 0.3 : 1;
       this.timeScale += (target - this.timeScale) * Math.min(1, dt * 7);
       this.update(dt * this.timeScale);
     }
-    if (now - this.lastSave >= 1000) {
+    if (this.mode === "playing" && now - this.lastSave >= 1000) {
       this.saveRun();
       this.lastSave = now;
+    }
+    // Static menus need occasional refreshes for HUD/dev changes, not 60 costly canvas draws.
+    if (this.mode === "paused" || this.mode === "levelup" || this.mode === "menu") {
+      if (now - this.lastIdleRender < 1000 / 15) return;
+      this.lastIdleRender = now;
     }
     this.render();
     if (this.frame % 4 === 0) this.onHud(this.snapshot());
@@ -882,7 +894,7 @@ export class Game {
       totals.push({ label: "Top speed", value: pct(p.maxSpeed / base.maxSpeed) });
     if (p.maxHull !== base.maxHull)
       totals.push({
-        label: "Max hull",
+        label: "Max health",
         value: `${Math.round(p.maxHull)} (+${Math.round(p.maxHull - base.maxHull)})`,
       });
     if (p.armor > 0)
@@ -920,7 +932,7 @@ export class Game {
       }
     } else if (
       this.settings.legacyMovement ||
-      (!this.settings.hybridAim && !this.settings.mouseControl)
+      (!this.settings.hybridAim && !this.settings.mouseControl && !this.settings.trackpad)
     ) {
       // Legacy Movement: the classic cabinet scheme. Rotate with A/D or the
       // arrows, thrust with W. No mouse aiming whatsoever.
@@ -931,7 +943,7 @@ export class Game {
         p.vy += Math.sin(p.angle) * p.thrust * dt;
         p.thrusting = true;
       }
-    } else if (this.settings.hybridAim) {
+    } else if (this.settings.hybridAim || this.settings.trackpad) {
       // twin-stick hybrid: the hull always tracks the cursor while WASD /
       // arrows push the ship in world space, decoupling aim from movement
       const desired = Math.atan2(this.mouse.y - p.y, this.mouse.x - p.x);
@@ -972,7 +984,12 @@ export class Game {
     // ---- firing ----
     p.fireTimer -= dt;
     p.missileTimer -= dt;
-    const firing = this.settings.autoFire || !!k[" "] || this.touchFire || !!k["control"];
+    const firing =
+      this.settings.trackpad ||
+      this.settings.autoFire ||
+      !!k[" "] ||
+      this.touchFire ||
+      !!k["control"];
     const L = p.weapons[p.primary] || 1;
 
     if (p.primary === "laser") {
@@ -1272,7 +1289,7 @@ export class Game {
           audio.play("pickup");
         } else {
           p.hull = Math.min(p.maxHull, p.hull + u.value);
-          this.floatText(u.x, u.y, `+${Math.round(u.value)} HULL`, ICE, 13);
+          this.floatText(u.x, u.y, `+${Math.round(u.value)} HEALTH`, ICE, 13);
         }
         this.pickups.splice(i, 1);
         continue;
@@ -2962,7 +2979,7 @@ export class Game {
     const m = bo.movement;
     if (this.frame - (m.mk6LockFrame ?? -999) > 50 && bo.x > 0 && bo.x < this.w) {
       m.mk6LockFrame = this.frame;
-      this.floatText(bo.x, bo.y - bo.r - 16, "HULL LOCKED", ICE, 14);
+      this.floatText(bo.x, bo.y - bo.r - 16, "HEALTH LOCKED", ICE, 14);
       this.rings.push({
         x: bo.x,
         y: bo.y,
@@ -3247,7 +3264,7 @@ export class Game {
           this.p.maxHull - this.p.hull,
         );
         this.p.hull += healed;
-        this.floatText(this.p.x, this.p.y - 52, `+${Math.round(healed)} HULL`, ICE, 14);
+        this.floatText(this.p.x, this.p.y - 52, `+${Math.round(healed)} HEALTH`, ICE, 14);
       }
       this.floatText(this.p.x, this.p.y - 74, "ALL UPGRADES MAXED", AMBER_HOT, 13);
       return;
@@ -3259,7 +3276,7 @@ export class Game {
         this.p.maxHull - this.p.hull,
       );
       this.p.hull += healed;
-      this.floatText(this.p.x, this.p.y - 52, `+${Math.round(healed)} HULL`, ICE, 14);
+      this.floatText(this.p.x, this.p.y - 52, `+${Math.round(healed)} HEALTH`, ICE, 14);
       this.rings.push({ x: this.p.x, y: this.p.y, r: 12, max: 74, life: 0.5, color: ICE, w: 2 });
     }
     audio.silence();

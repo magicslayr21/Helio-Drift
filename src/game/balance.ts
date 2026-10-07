@@ -161,12 +161,12 @@ export const STAT_UPGRADES: StatUpgrade[] = [
   },
   {
     id: "hull",
-    name: "Reinforced Hull",
+    name: "Reinforced Health",
     tag: "Survival",
     rarity: GAME_CONFIG.statUpgrades.hull.rarity,
     weight: GAME_CONFIG.statUpgrades.hull.weight,
     max: GAME_CONFIG.statUpgrades.hull.max,
-    desc: "Max hull +18 and immediately repair 18 hull.",
+    desc: "Max health +18 and immediately restore 18 health.",
     apply: (g) => {
       const hull = GAME_CONFIG.statUpgrades.hull.hullPerStack;
       g.p.maxHull += hull;
@@ -267,7 +267,7 @@ export const SALVAGE_UPGRADES: Record<
   repairPulse: {
     name: "Repair Pulse",
     path: "support",
-    desc: "A slow support pulse repairs the player's hull when the drone is nearby.",
+    desc: "A slow support pulse restores the player's health when the drone is nearby.",
     ...GAME_CONFIG.salvageUpgradePrices.repairPulse,
   },
 
