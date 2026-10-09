@@ -129,7 +129,7 @@ export class Game {
   wave = 0;
   level = 1;
   xp = 0;
-  xpNext = GAME_CONFIG.progression.startingXpNext;
+  xpNext: number = GAME_CONFIG.progression.startingXpNext;
   combo = 0;
   comboTimer = 0;
   private shakeAmount = 0;
@@ -563,7 +563,24 @@ export class Game {
     const p = this.p;
     const lv = Math.max(0, L - 1);
     const weapon = GAME_CONFIG.weaponProgression.weapons[W];
-    const s = {
+    const s: {
+      rate: number;
+      dmg: number;
+      shots: number;
+      arc: number;
+      speed: number;
+      life: number;
+      r: number;
+      pierce: number;
+      bounces: number;
+      fuse: number;
+      turn: number;
+      extra: number;
+      extraDmg: number;
+      kind: Bullet["kind"];
+      color: string;
+      sfx: Sfx;
+    } = {
       rate: weapon.baseRate,
       dmg: "baseDamage" in weapon ? weapon.baseDamage : 16,
       shots: "baseShots" in weapon ? weapon.baseShots : 1,
@@ -577,24 +594,29 @@ export class Game {
       turn: 0,
       extra: 0,
       extraDmg: 0,
-      kind: "plasma" as Bullet["kind"],
+      kind: "plasma",
       color: AMBER_HOT,
-      sfx: "pulse" as Sfx,
+      sfx: "pulse",
     };
     switch (W) {
-      case "pulse":
+      case "pulse": {
+        const weapon = GAME_CONFIG.weaponProgression.weapons[W];
         s.rate *= 1 + weapon.ratePerLevel * lv;
         s.dmg *= 1 + weapon.damagePerLevel * lv;
         s.shots += Math.floor(lv / weapon.shotsEveryLevels);
         break;
-      case "spread":
+      }
+      case "spread": {
+        const weapon = GAME_CONFIG.weaponProgression.weapons[W];
         s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
         s.dmg = weapon.baseDamage * (1 + weapon.damagePerLevel * lv);
         s.shots = weapon.baseShots + Math.floor(lv * weapon.shotsPerLevel);
         s.arc = weapon.arc;
         s.sfx = "spread";
         break;
-      case "seeker":
+      }
+      case "seeker": {
+        const weapon = GAME_CONFIG.weaponProgression.weapons[W];
         s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
         s.dmg = weapon.baseDamage * (1 + weapon.damagePerLevel * lv);
         s.shots = weapon.baseShots + Math.floor(lv / weapon.shotsEveryLevels);
@@ -607,7 +629,9 @@ export class Game {
         s.color = "#ff8fb0";
         s.sfx = "seeker";
         break;
-      case "ricochet":
+      }
+      case "ricochet": {
+        const weapon = GAME_CONFIG.weaponProgression.weapons[W];
         s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
         s.dmg = weapon.baseDamage * (1 + weapon.damagePerLevel * lv);
         s.shots = weapon.baseShots + Math.floor(lv / weapon.shotsEveryLevels);
@@ -619,7 +643,9 @@ export class Game {
         s.color = ICE;
         s.sfx = "ricochet";
         break;
-      case "flak":
+      }
+      case "flak": {
+        const weapon = GAME_CONFIG.weaponProgression.weapons[W];
         s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
         s.dmg = weapon.baseDamage;
         s.shots = weapon.baseShots + Math.floor(lv / weapon.shotsEveryLevels);
@@ -633,7 +659,9 @@ export class Game {
         s.extra = weapon.baseShrapnel + weapon.shrapnelPerLevel * lv;
         s.extraDmg = weapon.shrapnelDamage * (1 + weapon.shrapnelDamagePerLevel * lv);
         break;
-      case "rail":
+      }
+      case "rail": {
+        const weapon = GAME_CONFIG.weaponProgression.weapons[W];
         s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
         s.dmg =
           weapon.baseDamage *
@@ -649,7 +677,9 @@ export class Game {
         s.color = ICE;
         s.sfx = "rail";
         break;
-      case "laser":
+      }
+      case "laser": {
+        const weapon = GAME_CONFIG.weaponProgression.weapons[W];
         // the player fires a raycast beam; a drone mount fires coherent bolts
         // that still read unmistakably as beam energy
         s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
@@ -663,7 +693,9 @@ export class Game {
         s.color = ICE;
         s.sfx = "arc";
         break;
-      case "arc":
+      }
+      case "arc": {
+        const weapon = GAME_CONFIG.weaponProgression.weapons[W];
         s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
         s.dmg = weapon.baseDamage * (1 + weapon.damagePerLevel * lv);
         s.speed = weapon.speed;
@@ -672,6 +704,7 @@ export class Game {
         s.color = "#bff3ff";
         s.sfx = "arc";
         break;
+      }
       default:
         break;
     }
@@ -1970,7 +2003,119 @@ export class Game {
     audio.play("droneRebuild");
   }
 
+  spikerShots(): 4 | 8 {
+    return this.wave >= GAME_CONFIG.enemies.spikers.eightShotWave ? 8 : 4;
+  }
+
+  spikerHp() {
+    const tuning = GAME_CONFIG.enemies.spikers;
+    return tuning.hpBase + this.wave * tuning.hpPerWave;
+  }
+
+  spikerCap() {
+    const tuning = GAME_CONFIG.enemies.spikers;
+    return this.wave >= tuning.latePairFromWave && this.wave <= tuning.latePairToWave ? 2 : 1;
+  }
+
+  /** Natural reinforcements share a live cap; developer batches remain explicit overrides. */
+  spawnSpikers(count = 1) {
+    if (this.wave < GAME_CONFIG.enemies.spikers.unlockWave) return 0;
+    const live = this.drones.filter((d) => d.kind === "spiker").length;
+    const amount = Math.max(0, Math.min(count, this.spikerCap() - live));
+    for (let i = 0; i < amount; i++) {
+      // Choose the edge furthest from the ship to leave a clear entry path.
+      const margin = GAME_CONFIG.enemies.spikers.radius + 20;
+      const candidates = [
+        { x: margin, y: rnd(margin, this.h - margin) },
+        { x: this.w - margin, y: rnd(margin, this.h - margin) },
+        { x: rnd(margin, this.w - margin), y: margin },
+        { x: rnd(margin, this.w - margin), y: this.h - margin },
+      ];
+      const point = candidates.reduce((best, next) =>
+        Math.hypot(next.x - this.p.x, next.y - this.p.y) >
+        Math.hypot(best.x - this.p.x, best.y - this.p.y)
+          ? next
+          : best,
+      );
+      this.drones.push(this.spawnDrone(point.x, point.y, this.spikerHp(), "spiker"));
+    }
+    return amount;
+  }
+
+  updateSpiker(d: Drone, dt: number) {
+    const tuning = GAME_CONFIG.enemies.spikers;
+    d.flash = Math.max(0, d.flash - dt * 4);
+    d.orbitTimer -= dt;
+    if (d.orbitTimer <= 0) {
+      const heading = Math.atan2(d.vy, d.vx) + rnd(-tuning.turnAngle, tuning.turnAngle);
+      const speed = rnd(tuning.speedMin, tuning.speedMax);
+      d.vx = Math.cos(heading) * speed;
+      d.vy = Math.sin(heading) * speed;
+      d.orbitTimer = rnd(tuning.turnIntervalMin, tuning.turnIntervalMax);
+    }
+    // No pursuit or evasion: momentum carries it around the arena like a rock.
+    const speed = Math.hypot(d.vx, d.vy);
+    if (speed > tuning.speedMax) {
+      d.vx = (d.vx / speed) * tuning.speedMax;
+      d.vy = (d.vy / speed) * tuning.speedMax;
+    }
+    d.x += d.vx * dt;
+    d.y += d.vy * dt;
+    const margin = d.r + 6;
+    if (d.x < margin || d.x > this.w - margin) {
+      d.x = clamp(d.x, margin, this.w - margin);
+      d.vx = d.x === margin ? Math.abs(d.vx) : -Math.abs(d.vx);
+    }
+    if (d.y < margin || d.y > this.h - margin) {
+      d.y = clamp(d.y, margin, this.h - margin);
+      d.vy = d.y === margin ? Math.abs(d.vy) : -Math.abs(d.vy);
+    }
+    // Lock the visible spike directions during the warning and fire them together.
+    if (d.fire > tuning.fireWarning) d.angle += tuning.spinRate * d.orbitDir * dt;
+    if (this.mode !== "playing") return;
+    d.fire -= dt;
+    if (d.fire > 0) return;
+    const shots = this.spikerShots();
+    for (let i = 0; i < shots; i++) {
+      const a = d.angle + (i * TAU) / shots;
+      this.bullets.push({
+        x: d.x + Math.cos(a) * (d.r + 6),
+        y: d.y + Math.sin(a) * (d.r + 6),
+        vx: Math.cos(a) * tuning.boltSpeed,
+        vy: Math.sin(a) * tuning.boltSpeed,
+        r: tuning.boltRadius,
+        life: tuning.boltLifetime,
+        dmg: tuning.boltDamage,
+        kind: "enemy",
+        damageCause: "Spiker radial volley",
+        pierce: 0,
+        color: "#ff7aa0",
+        hitIds: new Set(),
+        turn: 0,
+        bounces: 0,
+        fuse: 0,
+        extra: 0,
+        extraDmg: 0,
+      });
+    }
+    d.fire = shots === 8 ? tuning.lateFireInterval : tuning.fireInterval;
+    this.rings.push({
+      x: d.x,
+      y: d.y,
+      r: d.r * 0.5,
+      max: d.r * 1.7,
+      life: 0.3,
+      color: MAGENTA,
+      w: 2,
+    });
+    audio.play("pulse");
+  }
+
   updateDrone(d: Drone, dt: number) {
+    if (d.kind === "spiker") {
+      this.updateSpiker(d, dt);
+      return;
+    }
     const p = this.p;
     const warden = d.kind === "warden";
     const ang = Math.atan2(p.y - d.y, p.x - d.x);
@@ -2356,15 +2501,23 @@ export class Game {
         d.vy -= Math.sin(ang) * 160;
         this.burst(p.x, p.y, 16, MAGENTA);
         this.damagePlayer(
-          GAME_CONFIG.enemies.sentinels.playerContactDamage,
-          d.kind === "warden" ? "Warden collision" : "Sentinel collision",
+          d.kind === "spiker"
+            ? GAME_CONFIG.enemies.spikers.playerContactDamage
+            : GAME_CONFIG.enemies.sentinels.playerContactDamage,
+          d.kind === "spiker"
+            ? "Spiker collision"
+            : d.kind === "warden"
+              ? "Warden collision"
+              : "Sentinel collision",
         );
         p.invuln = collision.invulnerability;
-        this.damageDrone(
-          this.drones.indexOf(d),
-          GAME_CONFIG.enemies.sentinels.contactDamageToEnemy,
-          false,
-        );
+        if (d.kind !== "spiker") {
+          this.damageDrone(
+            this.drones.indexOf(d),
+            GAME_CONFIG.enemies.sentinels.contactDamageToEnemy,
+            false,
+          );
+        }
         break;
       }
     }
@@ -3314,6 +3467,7 @@ export class Game {
     if (!d) return;
     this.drones.splice(index, 1);
     const warden = d.kind === "warden";
+    const heavy = warden || d.kind === "spiker";
     if (warden) {
       // Despawn every splitter nest + seeking orbs owned by this warden
       for (let i = this.bullets.length - 1; i >= 0; i--) {
@@ -3321,23 +3475,23 @@ export class Game {
         if (bb.kind === "wardenOrb" || bb.kind === "wardenShard") this.bullets.splice(i, 1);
       }
     }
-    this.burst(d.x, d.y, warden ? 40 : 26, MAGENTA);
+    this.burst(d.x, d.y, heavy ? 40 : 26, MAGENTA);
     this.rings.push({
       x: d.x,
       y: d.y,
       r: 8,
-      max: warden ? 130 : 90,
+      max: heavy ? 130 : 90,
       life: 0.5,
       color: MAGENTA,
-      w: warden ? 4 : 3,
+      w: heavy ? 4 : 3,
     });
-    audio.play(warden ? "bossDeath" : "explodeBig");
-    this.shake += warden ? 13 : 9;
-    this.flashAlpha = warden ? 0.45 : 0.35;
-    const base = warden ? 700 : 360;
+    audio.play(heavy ? "bossDeath" : "explodeBig");
+    this.shake += heavy ? 13 : 9;
+    this.flashAlpha = heavy ? 0.45 : 0.35;
+    const base = heavy ? 700 : 360;
     this.score += base * (1 + Math.floor(this.combo / 4) * 0.5);
-    this.floatText(d.x, d.y, `+${base}`, MAGENTA, warden ? 18 : 16);
-    const shards = warden ? 4 : 3;
+    this.floatText(d.x, d.y, `+${base}`, MAGENTA, heavy ? 18 : 16);
+    const shards = heavy ? 4 : 3;
     for (let i = 0; i < shards; i++) {
       this.pickups.push({
         x: d.x,
@@ -3345,12 +3499,12 @@ export class Game {
         vx: rnd(-70, 70),
         vy: rnd(-70, 70),
         kind: "credit",
-        value: Math.round((warden ? 20 : 14) * this.p.creditValue),
+        value: Math.round((heavy ? 20 : 14) * this.p.creditValue),
         life: GAME_CONFIG.pickups.lifetime,
         pulse: Math.random() * TAU,
       });
     }
-    this.gainXp((warden ? 120 : 60) * this.xpScale());
+    this.gainXp((heavy ? 120 : 60) * this.xpScale());
     this.combo++;
     this.comboTimer = 4;
   }
@@ -3585,14 +3739,14 @@ export class Game {
     const w = this.wave;
     const roll = Math.random();
     const gates = RUN_PACING.traitWaves;
-    // A few homing mutations appear even in the opening sector.
+    // Homing mutations unlock after the MK1 encounter, on wave 6.
     if (w < gates.homing) return "none";
     const pool: RockTrait[] = ["homing"];
     if (w >= gates.bounce) pool.push("bounce");
     if (w >= gates.boom && this.boomRoom() > 0) pool.push("boom");
     if (w >= gates.fast) pool.push("fast");
     // Mutations ramp up in each unlocked band; late waves use an exact normal quota.
-    const chance = Math.min(0.95, 0.15 + (w - gates.homing) * 0.04);
+    const chance = Math.min(0.95, 0.15 + (w - 1) * 0.04);
     if (!forceMutation && roll > chance) return "none";
     // the newest trait for this band shows up a little more often
     if (Math.random() < 0.4) return pool[pool.length - 1];
@@ -3735,8 +3889,8 @@ export class Game {
     };
   }
 
-  spawnDrone(x: number, y: number, hp: number, kind: "sentinel" | "warden" = "sentinel"): Drone {
-    return {
+  spawnDrone(x: number, y: number, hp: number, kind: Drone["kind"] = "sentinel"): Drone {
+    const drone: Drone = {
       id: this.nextId++,
       kind,
       x,
@@ -3756,6 +3910,17 @@ export class Game {
       sniperAimX: x,
       sniperAimY: y,
     };
+    if (kind === "spiker") {
+      const tuning = GAME_CONFIG.enemies.spikers;
+      const heading = Math.random() * TAU;
+      const speed = rnd(tuning.speedMin, tuning.speedMax);
+      drone.r = tuning.radius;
+      drone.vx = Math.cos(heading) * speed;
+      drone.vy = Math.sin(heading) * speed;
+      drone.angle = Math.random() * TAU;
+      drone.fire = tuning.fireInterval;
+    }
+    return drone;
   }
 
   nextWave() {
@@ -3915,6 +4080,14 @@ export class Game {
       this.bannerT = 2.2;
     }
 
+    if (this.wave >= GAME_CONFIG.enemies.spikers.unlockWave) {
+      const tuning = GAME_CONFIG.enemies.spikers;
+      const second = this.spikerCap() === 2 && Math.random() < tuning.secondSpawnChance;
+      const target = second ? 2 : 1;
+      const live = this.drones.filter((d) => d.kind === "spiker").length;
+      const spawned = this.spawnSpikers(Math.max(0, target - live));
+      if (spawned) this.bannerSub += ` · +${spawned} SPIKER${spawned > 1 ? "S" : ""}`;
+    }
     this.p.missiles = Math.min(this.p.maxMissiles, this.p.missiles + 1);
     audio.play("wave");
     // Between-wave salvage is generous enough that a player can afford the
@@ -4281,7 +4454,10 @@ export class Game {
         ),
       );
     }
-    this.banner = label;
+    // MK6 keeps at most one radial heavy alive across reinforcement calls.
+    const hasSpiker = this.drones.some((d) => d.kind === "spiker");
+    const spikers = hasSpiker ? 0 : this.spawnSpikers(1);
+    this.banner = label + (spikers ? " + SPIKER" : "");
     this.bannerSub = "THE METEOR CALLS ITS ESCORT";
     this.bannerT = 2.2;
     this.flashAlpha = 0.45;
@@ -5528,7 +5704,7 @@ export class Game {
   }
 
   /** Medium enemies retain their normal size and health. */
-  devSpawnMob(kind: "sentinel" | "warden", count = 1, size: 1 | 2 | 3 = 2) {
+  devSpawnMob(kind: Drone["kind"], count = 1, size: 1 | 2 | 3 = 2) {
     const tuningWave = scaledWave(this.wave);
     const hpScale = size === 1 ? 0.65 : size === 3 ? 1.6 : 1;
     const radiusScale = size === 1 ? 0.75 : size === 3 ? 1.35 : 1;
@@ -5539,7 +5715,11 @@ export class Game {
       const mob = this.spawnDrone(
         x,
         y,
-        (kind === "warden" ? 210 + tuningWave * 28 : 55 + tuningWave * 11) * hpScale,
+        (kind === "spiker"
+          ? this.spikerHp()
+          : kind === "warden"
+            ? 210 + tuningWave * 28
+            : 55 + tuningWave * 11) * hpScale,
         kind,
       );
       mob.r *= radiusScale;
@@ -6051,6 +6231,87 @@ export class Game {
     }
   }
 
+  renderSpiker(ctx: CanvasRenderingContext2D, d: Drone) {
+    const spikes = this.spikerShots();
+    const warning = clamp(1 - d.fire / GAME_CONFIG.enemies.spikers.fireWarning, 0, 1);
+    const edge = d.flash > 0 ? "#fff0f4" : "#ff7aa0";
+    ctx.save();
+    ctx.translate(d.x, d.y);
+    ctx.rotate(d.angle);
+
+    // Four long gun-spines unfold into an eight-point crown in the late waves.
+    ctx.beginPath();
+    for (let i = 0; i < spikes * 2; i++) {
+      const a = (i * Math.PI) / spikes;
+      const radius = d.r * (i % 2 === 0 ? 1.18 : spikes === 8 ? 0.58 : 0.48);
+      const x = Math.cos(a) * radius,
+        y = Math.sin(a) * radius;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = d.flash > 0 ? "rgba(255,61,110,0.55)" : "rgba(35,9,25,0.94)";
+    ctx.fill();
+    ctx.strokeStyle = edge;
+    ctx.lineWidth = 2.2;
+    ctx.shadowColor = MAGENTA;
+    ctx.shadowBlur = 14 + warning * 12;
+    ctx.stroke();
+
+    // Armored ribs lead to each muzzle, so the silhouette advertises the volley.
+    for (let i = 0; i < spikes; i++) {
+      const a = (i * TAU) / spikes;
+      const dx = Math.cos(a),
+        dy = Math.sin(a);
+      ctx.beginPath();
+      ctx.moveTo(dx * d.r * 0.3, dy * d.r * 0.3);
+      ctx.lineTo(dx * d.r * 0.87, dy * d.r * 0.87);
+      ctx.strokeStyle = warning > 0 ? AMBER_HOT : "#8e1438";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(dx * d.r * 1.05, dy * d.r * 1.05, 2 + warning * 1.5, 0, TAU);
+      ctx.fillStyle = warning > 0 ? AMBER_HOT : edge;
+      ctx.fill();
+      if (warning > 0) {
+        ctx.save();
+        ctx.globalAlpha = 0.2 + warning * 0.5;
+        ctx.setLineDash([4, 6]);
+        ctx.beginPath();
+        ctx.moveTo(dx * (d.r + 8), dy * (d.r + 8));
+        ctx.lineTo(dx * (d.r + 65), dy * (d.r + 65));
+        ctx.strokeStyle = AMBER_HOT;
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+    ctx.beginPath();
+    ctx.arc(0, 0, d.r * 0.34, 0, TAU);
+    ctx.fillStyle = "#170a18";
+    ctx.fill();
+    ctx.strokeStyle = edge;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, 0, d.r * (0.13 + warning * 0.05), 0, TAU);
+    ctx.fillStyle = warning > 0 ? AMBER_HOT : "#fff0f4";
+    ctx.fill();
+    ctx.restore();
+
+    // Keep its health readable while the hull rotates.
+    ctx.save();
+    const barW = d.r * 1.7,
+      barY = d.y - d.r * 1.18 - 10;
+    ctx.fillStyle = "rgba(0,0,0,0.7)";
+    ctx.fillRect(d.x - barW / 2 - 1, barY - 1, barW + 2, 5);
+    ctx.fillStyle = "rgba(255,61,110,0.25)";
+    ctx.fillRect(d.x - barW / 2, barY, barW, 3);
+    ctx.fillStyle = edge;
+    ctx.fillRect(d.x - barW / 2, barY, barW * clamp(d.hp / d.maxHp, 0, 1), 3);
+    ctx.restore();
+  }
+
   render() {
     const ctx = this.ctx;
     const { w, h } = this;
@@ -6240,8 +6501,12 @@ export class Game {
       ctx.shadowBlur = 0;
     }
 
-    // sentinels and wardens
+    // Enemy silhouettes share the same magenta vector armor language.
     for (const d of this.drones) {
+      if (d.kind === "spiker") {
+        this.renderSpiker(ctx, d);
+        continue;
+      }
       const warden = d.kind === "warden";
       const s = d.r / 21;
 

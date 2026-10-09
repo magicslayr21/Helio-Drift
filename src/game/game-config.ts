@@ -302,7 +302,7 @@ export const GAME_CONFIG = {
       invulnerability: 0.75,
     },
     traits: {
-      homing: { unlockWave: 1, turnRates: { small: 1.3, medium: 1.8, large: 2.4 } },
+      homing: { unlockWave: 6, turnRates: { small: 1.3, medium: 1.8, large: 2.4 } },
       bounce: {
         unlockWave: 11,
         speeds: { small: 185, medium: 150, large: 120 },
@@ -357,6 +357,30 @@ export const GAME_CONFIG = {
   },
 
   enemies: {
+    spikers: {
+      unlockWave: 11,
+      eightShotWave: 20,
+      latePairFromWave: 20,
+      latePairToWave: 25,
+      secondSpawnChance: 0.25,
+      hpBase: 215,
+      hpPerWave: 44,
+      radius: 31,
+      speedMin: 105,
+      speedMax: 145,
+      turnIntervalMin: 2.2,
+      turnIntervalMax: 4.2,
+      turnAngle: 0.65,
+      spinRate: 0.24,
+      fireInterval: 4,
+      lateFireInterval: 3.2,
+      fireWarning: 0.65,
+      boltSpeed: 225,
+      boltDamage: 7,
+      boltRadius: 5,
+      boltLifetime: 4.2,
+      playerContactDamage: 14,
+    },
     sentinels: {
       hpBase: 55,
       hpPerWave: 22,

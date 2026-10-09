@@ -151,7 +151,7 @@ these damage amounts by up to 36%.
 
 | Trait         | Speed / behavior                                                                       | Extra values                                                                               |
 | ------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Homing        | Turns toward the ship; size-based turn rate 1.3 / 1.8 / 2.4 rad/s (small/medium/large) | Trait unlocks wave 1                                                                       |
+| Homing        | Turns toward the ship; size-based turn rate 1.3 / 1.8 / 2.4 rad/s (small/medium/large) | Trait unlocks wave 6                                                                       |
 | Bounce        | Fixed speed: small 185, medium 150, large 120                                          | Wall/player bounce speed cap is 1.3× those speeds; unlock wave 11                          |
 | Boom          | Fixed speed: small 36, medium 30, large 24                                             | Fuse 0.35 s; home range 260; turn 0.95 rad/s; blast-radius multiplier 1.7×; unlock wave 16 |
 | Fast          | Fixed speed: small 260, medium 292, large 320                                          | Unlock wave 21                                                                             |
@@ -209,6 +209,31 @@ Sentinel health examples: wave 1 = 77; wave 5 = 165; wave 10 = 275; wave 15 =
 
 Ordinary late-wave warden health: wave 21 = 1139; wave 24 = 1271. Boss escort
 warden health: wave 20 = 1330; wave 25 = 1610.
+
+### Spikers
+
+Spikers are drifting radial heavies with magenta armor and a glowing core.
+They have four long firing spikes on waves 11–19 and an eight-point crown from
+wave 20 onward. The spikes light up and hold their firing directions during a
+0.65-second warning before all shots fire simultaneously.
+
+| Value | Setting |
+| --- | --- |
+| First appearance | Wave 11 |
+| Health | `215 + wave × 44`, matching ordinary Wardens |
+| Hull radius | 31 px |
+| Volley before wave 20 | 4 shots, 90° apart, every 4 seconds |
+| Volley from wave 20 | 8 shots, 45° apart, every 3.2 seconds |
+| Projectile | 7 damage, 225 px/s, radius 5 px, lifetime 4.2 seconds |
+| Movement | Drift at 105–145 px/s, change heading every 2.2–4.2 s, bounce at screen edges |
+| Player collision | Player takes 14 damage before armor; Spiker takes no ram damage |
+| Natural population | One from wave 11; 25% chance of a second on waves 20–25 |
+| Wave-15 escort | One Spiker starts beside MK3 |
+| MK6 reinforcements | Each escort call adds one if none is alive; never stacks live Spikers |
+| Defeat rewards | Warden-equivalent score, XP, and credit drops |
+
+Developer spawning supports Spiker count and size selection. As with Sentinel
+and Warden developer batches, these explicit spawns can exceed natural caps.
 
 ## Bosses
 
@@ -396,7 +421,7 @@ layout, and particles. This reference focuses on gameplay balance values.
 ## Mutation frequency and camera feedback
 
 Random mutation chance is `min(0.95, 0.15 + (wave - 1) × 0.04)`, using unlocked
-traits. Homing starts on wave 1; bounce, boom, and fast unlock on 11, 16, and 21.
+traits. Homing starts on wave 6; bounce, boom, and fast unlock on 11, 16, and 21.
 Waves 21–24 override random normal rolls: exactly one or two initial asteroids
 are normal, and the rest are mutated. Descendants retain their parent's trait.
 
@@ -410,7 +435,7 @@ Change `developer.accessCode` in `src/game/game-config.ts` to change the
 service code (default: `dev`). Entry ignores surrounding spaces and letter case.
 Developer access lasts for the current open page and expires on close or reload.
 The console's spawn controls select a count from 1–50 and small/medium/large
-size for all five asteroid types, sentinels, and wardens. Boom spawning still
+size for all five asteroid types, sentinels, wardens, and Spikers. Boom spawning still
 respects the six-rock cap. Medium enemies retain their standard stats; small
 enemies use 0.75× radius and 0.65× HP, large enemies 1.35× radius and 1.6× HP.
 

@@ -5,6 +5,7 @@
 
 import type {
   BossSpec,
+  Player,
   Rarity,
   RockTrait,
   SalvageDrone,
@@ -503,7 +504,7 @@ export const BOSS_SPECS: Record<number, BossSpec> = {
 /* ------------------------------------------------------------ factories */
 
 /** base ship stats — also the reset target when dev edits rebuild upgrades */
-export function freshPlayer() {
+export function freshPlayer(): Player {
   const weapons = {} as Record<WeaponId, number>;
   for (const w of WEAPON_ORDER) weapons[w] = 0;
   weapons.pulse = 1;
@@ -522,7 +523,7 @@ export function freshPlayer() {
     fireRateMul: GAME_CONFIG.player.fireRateMul,
     damageMul: GAME_CONFIG.player.damageMul,
     bulletSpeed: GAME_CONFIG.player.bulletSpeed,
-    primary: "pulse" as WeaponId,
+    primary: "pulse",
     weapons,
     extraShots: 0,
     pierce: 0,

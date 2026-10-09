@@ -1707,6 +1707,12 @@ export default function GameShell({
                         devPlaying((x) => x.devSpawnMob("warden", devSpawnCount, devSpawnSize))
                       }
                     />
+                    <DevBtn
+                      label="Spiker"
+                      onClick={() =>
+                        devPlaying((x) => x.devSpawnMob("spiker", devSpawnCount, devSpawnSize))
+                      }
+                    />
                   </DevRow>
                   <DevRow label="Shower">
                     <DevBtn

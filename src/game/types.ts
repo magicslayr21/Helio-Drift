@@ -27,6 +27,50 @@ export type SalvageUpgradeId =
   | "speed";
 export type Rarity = "common" | "rare" | "epic";
 
+/** Mutable run state; numeric tuning literals must widen to numbers here. */
+export interface Player {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  angle: number;
+  hull: number;
+  maxHull: number;
+  armor: number;
+  thrust: number;
+  maxSpeed: number;
+  turn: number;
+  fireRateMul: number;
+  damageMul: number;
+  bulletSpeed: number;
+  extraShots: number;
+  pierce: number;
+  crit: number;
+  critMult: number;
+  inaccuracy: number;
+  heat: number;
+  arcTimer: number;
+  missiles: number;
+  maxMissiles: number;
+  blastDmg: number;
+  blastR: number;
+  missileTimer: number;
+  missileRegen: number;
+  missileCharge: number;
+  magnet: number;
+  creditChance: number;
+  creditValue: number;
+  leech: number;
+  fireTimer: number;
+  invuln: number;
+  primary: WeaponId;
+  weapons: Record<WeaponId, number>;
+  overheated: boolean;
+  beamOn: boolean;
+  missileHeld: boolean;
+  thrusting: boolean;
+}
+
 /* ------------------------------------------------------------ HUD & shop */
 
 export interface Hud {
@@ -198,11 +242,10 @@ export interface Rock {
   bounces?: number;
 }
 
-/* sentinels: small single-shot hunters · wardens: larger heavies —
-   more HP, heavier bolts, a much longer cooldown */
+/* Sentinels hunt, wardens snipe, and spikers drift while firing radial volleys. */
 export interface Drone {
   id: number;
-  kind: "sentinel" | "warden";
+  kind: "sentinel" | "warden" | "spiker";
   x: number;
   y: number;
   vx: number;

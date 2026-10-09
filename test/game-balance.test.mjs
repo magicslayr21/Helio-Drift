@@ -188,7 +188,7 @@ test("every late combat wave starts with only one or two normal rocks", (t) => {
   }
 });
 
-test("mutations occur in early waves and grow more frequent through the run", (t) => {
+test("mutations unlock on wave 6 and retain their later-wave frequencies", (t) => {
   seeded(t);
   const g = game();
   const rates = [1, 6, 11, 16].map((wave) => {
@@ -197,7 +197,7 @@ test("mutations occur in early waves and grow more frequent through the run", (t
     for (let i = 0; i < 2000; i++) if (g.rollTrait() !== "none") count++;
     return count / 2000;
   });
-  assert.ok(rates[0] > 0.1);
+  assert.equal(rates[0], 0);
   assert.ok(rates[1] > 0.3);
   assert.ok(rates[2] > 0.5);
   assert.ok(rates[3] > 0.7);
@@ -338,4 +338,248 @@ test("every MK6 attack gets an asteroid spawn opportunity", (t) => {
     g.mk6Begin(b, attack);
   }
   assert.equal(casts, 7);
+});
+
+test("homing asteroids never spawn naturally before wave 6", (t) => {
+  seeded(t);
+  for (let wave = 1; wave <= 5; wave++) {
+    const g = game();
+    g.wave = wave - 1;
+    g.nextWave();
+    assert.ok(
+      g.rocks.every((rock) => rock.trait === "none"),
+      `wave ${wave}`,
+    );
+    for (let i = 0; i < 100; i++) {
+      assert.equal(g.rollTrait(), "none");
+      assert.equal(g.rollTrait(true), "none");
+    }
+    if (g.boss) {
+      g.startSignature(g.boss, 1);
+      for (let i = 0; i < 20; i++) g.updateBoss(g.boss, 0.35);
+      assert.ok(
+        g.rocks.every((rock) => rock.trait === "none"),
+        "MK1 abilities",
+      );
+    }
+  }
+});
+
+test("wave-6 unlock preserves the existing later mutation probabilities", (t) => {
+  const g = game();
+  let roll = 0;
+  t.mock.method(Math, "random", () => roll);
+  for (const [wave, probability] of [
+    [6, 0.35],
+    [11, 0.55],
+    [16, 0.75],
+  ]) {
+    g.wave = wave;
+    roll = probability - 0.001;
+    assert.notEqual(g.rollTrait(), "none", `wave ${wave} below threshold`);
+    roll = probability + 0.001;
+    assert.equal(g.rollTrait(), "none", `wave ${wave} above threshold`);
+  }
+});
+
+test("Spiker volleys fire four or eight simultaneous, equally spaced shots", () => {
+  for (const [wave, count] of [
+    [11, 4],
+    [19, 4],
+    [20, 8],
+    [25, 8],
+  ]) {
+    const g = game();
+    g.wave = wave;
+    const d = g.spawnDrone(700, 450, g.spikerHp(), "spiker");
+    d.angle = 0.37;
+    d.fire = 0;
+    g.updateDrone(d, 0);
+    assert.equal(g.bullets.length, count);
+    g.bullets.forEach((bullet, i) => {
+      const expected = d.angle + (i * Math.PI * 2) / count;
+      assert.ok(Math.abs(bullet.vx - Math.cos(expected) * 225) < 1e-9);
+      assert.ok(Math.abs(bullet.vy - Math.sin(expected) * 225) < 1e-9);
+      assert.equal(bullet.kind, "enemy");
+      assert.equal(bullet.damageCause, "Spiker radial volley");
+      assert.equal(bullet.dmg, 7);
+      assert.equal(bullet.life, 4.2);
+    });
+    g.updateDrone(d, 0.1);
+    assert.equal(g.bullets.length, count, "the volley does not become a sequential burst");
+  }
+});
+
+test("Spiker warning locks its firing directions, and paused enemies cannot shoot", () => {
+  const g = game();
+  const d = g.spawnDrone(700, 450, g.spikerHp(), "spiker");
+  d.fire = 0.5;
+  const angle = d.angle;
+  g.updateDrone(d, 0.2);
+  assert.equal(d.angle, angle);
+  assert.equal(g.bullets.length, 0);
+  g.updateDrone(d, 0.31);
+  assert.equal(d.angle, angle);
+  assert.equal(g.bullets.length, 8);
+  g.bullets = [];
+  g.mode = "paused";
+  d.fire = 0;
+  g.updateDrone(d, 1);
+  assert.equal(g.bullets.length, 0);
+});
+
+test("Spikers drift independently of the player and bounce back inside the arena", () => {
+  const a = game(),
+    b = game();
+  const d = a.spawnDrone(400, 400, a.spikerHp(), "spiker");
+  d.orbitTimer = 100;
+  d.vx = 100;
+  d.vy = 80;
+  const other = structuredClone(d);
+  a.p.x = 0;
+  a.p.y = 0;
+  b.p.x = 1400;
+  b.p.y = 900;
+  a.updateDrone(d, 0.1);
+  b.updateDrone(other, 0.1);
+  assert.deepEqual(d, other);
+  assert.equal(d.x, 410);
+  assert.equal(d.y, 408);
+  d.x = a.w - d.r - 6;
+  d.y = a.h - d.r - 6;
+  a.updateDrone(d, 0.1);
+  assert.ok(d.vx < 0 && d.vy < 0);
+  assert.ok(d.x <= a.w - d.r - 6 && d.y <= a.h - d.r - 6);
+});
+
+test("Spikers change drift direction on a timer without speeding up indefinitely", (t) => {
+  const g = game();
+  const d = g.spawnDrone(500, 500, g.spikerHp(), "spiker");
+  d.vx = 140;
+  d.vy = 0;
+  d.orbitTimer = 0;
+  t.mock.method(Math, "random", () => 0.9);
+  g.updateDrone(d, 0.01);
+  assert.ok(d.vy > 0);
+  assert.ok(d.orbitTimer > 2);
+  d.vx = 1000;
+  g.updateDrone(d, 0.01);
+  assert.ok(Math.hypot(d.vx, d.vy) <= 145 + 1e-9);
+});
+
+test("Spiker hull matches ordinary Warden health and resists player ramming only", () => {
+  const g = game();
+  g.wave = 21;
+  assert.equal(g.spikerHp(), 1139);
+  const d = g.spawnDrone(500, 500, g.spikerHp(), "spiker");
+  g.drones.push(d);
+  g.p.x = 505;
+  g.p.y = 500;
+  g.shipCollisions(0.016);
+  assert.equal(d.hp, d.maxHp);
+  assert.equal(g.p.hull, 86);
+  g.damageDrone(0, 100, false, true);
+  assert.equal(d.hp, d.maxHp - 100, "weapons still damage the hull");
+});
+
+test("Spikers appear from wave 11, including one with the wave-15 boss", (t) => {
+  seeded(t);
+  for (let wave = 1; wave <= 19; wave++) {
+    const g = game();
+    g.wave = wave - 1;
+    g.nextWave();
+    const spikers = g.drones.filter((d) => d.kind === "spiker");
+    assert.equal(spikers.length, wave >= 11 ? 1 : 0, `wave ${wave}`);
+    if (wave === 15) assert.equal(g.boss.mk, 3);
+    for (const d of spikers) {
+      assert.ok(Math.hypot(d.x - g.p.x, d.y - g.p.y) > 240);
+      assert.equal(d.maxHp, 215 + wave * 44);
+    }
+  }
+});
+
+test("late waves sometimes spawn a second Spiker and natural spawns obey the cap", (t) => {
+  let roll = 0.1;
+  t.mock.method(Math, "random", () => roll);
+  for (const wave of [20, 21, 22, 23, 24, 25]) {
+    for (const [random, expected] of [
+      [0.1, 2],
+      [0.9, 1],
+    ]) {
+      roll = random;
+      const g = game();
+      g.wave = wave - 1;
+      g.nextWave();
+      assert.equal(g.drones.filter((d) => d.kind === "spiker").length, expected);
+      g.spawnSpikers(50);
+      assert.equal(g.drones.filter((d) => d.kind === "spiker").length, 2);
+    }
+  }
+  const g = game();
+  g.wave = 11;
+  g.spawnSpikers(50);
+  assert.equal(g.drones.length, 1);
+  g.wave = 10;
+  g.drones = [];
+  assert.equal(g.spawnSpikers(1), 0);
+});
+
+test("MK6 escorts include one Spiker, replace a defeated one, and never accumulate them", () => {
+  const g = game();
+  g.wave = 25;
+  const b = g.makeBoss(false, 6);
+  for (const [wardens, sentinels] of [
+    [2, 0],
+    [2, 4],
+    [3, 0],
+  ]) {
+    g.mk6Reinforce(b, wardens, sentinels, "ESCORT");
+    assert.equal(g.drones.filter((d) => d.kind === "spiker").length, 1);
+  }
+  g.drones = g.drones.filter((d) => d.kind !== "spiker");
+  g.mk6Reinforce(b, 1, 1, "ESCORT");
+  assert.equal(g.drones.filter((d) => d.kind === "spiker").length, 1);
+});
+
+test("Spikers survive save/restore with their drift and volley timers intact", async (t) => {
+  const { RunSave } = await import("../src/game/run-save.ts");
+  let data = null;
+  t.mock.method(localStorage, "getItem", () => data);
+  t.mock.method(localStorage, "setItem", (_key, value) => {
+    data = value;
+  });
+  const g = game();
+  g.spawnSpikers(1);
+  g.drones[0].fire = 0.4;
+  const expected = structuredClone(g.drones[0]);
+  const save = new RunSave();
+  save.begin(g);
+  const restored = game();
+  assert.equal(save.restore(restored), true);
+  assert.deepEqual(restored.drones[0], expected);
+  restored.mode = "playing";
+  restored.updateDrone(restored.drones[0], 0.41);
+  assert.equal(restored.bullets.length, 8);
+});
+
+test("dev console can spawn Spikers in the chosen count and size", () => {
+  const g = game();
+  g.devSpawnMob("spiker", 3, 3);
+  assert.equal(g.drones.length, 3);
+  for (const d of g.drones) {
+    assert.equal(d.kind, "spiker");
+    assert.equal(d.r, 31 * 1.35);
+    assert.equal(d.hp, g.spikerHp() * 1.6);
+  }
+});
+
+test("killing a Spiker awards heavy rewards without removing Warden nests", () => {
+  const g = game();
+  g.drones.push(g.spawnDrone(500, 500, g.spikerHp(), "spiker"));
+  g.bullets.push({ kind: "wardenOrb" });
+  g.killDrone(0);
+  assert.equal(g.drones.length, 0);
+  assert.equal(g.score, 700);
+  assert.equal(g.pickups.length, 4);
+  assert.equal(g.bullets.length, 1);
 });
