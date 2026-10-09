@@ -13,7 +13,7 @@
     {
       "binding": "DB",
       "database_name": "helio-drift-leaderboard",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "c561c15b-1901-41d7-aac6-cc2628ad9b97",
       "migrations_dir": "worker/migrations",
     },
   ],
