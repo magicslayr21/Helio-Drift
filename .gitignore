@@ -5,3 +5,8 @@ server/data/
 .env
 .env.local
 .env.*.local
+.wrangler/
+.dev.vars
+.dev.vars.*
+worker-dist/
+leaderboard-backup*.sql

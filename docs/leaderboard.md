@@ -1,6 +1,13 @@
 # Global leaderboard
 
-The game remains a static Vite application on GitHub Pages. A separate Node.js 24 API stores shared records in SQLite. No database credentials or moderation code are included in the game bundle.
+The game remains a static Vite application on GitHub Pages. For free-tier hosting,
+the Cloudflare Worker stores shared records in D1. The original Node.js 24/SQLite
+API remains available for local development and other hosts. Both implement the
+same API. No database credentials or moderation code are included in the game bundle.
+
+**Start here: [Cloudflare free-tier setup guide](cloudflare.md).** It covers creating
+your account, deploying the API, and connecting the published game. Render is an
+optional paid alternative; you do not need it for Cloudflare.
 
 ## Local development
 

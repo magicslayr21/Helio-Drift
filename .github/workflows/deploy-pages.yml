@@ -33,6 +33,11 @@ jobs:
       - name: Test leaderboard API
         run: npm run leaderboard:test
 
+      - name: Test Cloudflare leaderboard
+        run: npm run cf:test
+        env:
+          WRANGLER_SEND_METRICS: false
+
       - name: Build the game
         run: npm run build
         env:

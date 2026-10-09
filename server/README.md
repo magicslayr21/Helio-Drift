@@ -1,5 +1,10 @@
 # Helio Drift global leaderboard API
 
+For Cloudflare Workers + D1 hosting on the free tier, follow
+[the Cloudflare setup guide](../docs/cloudflare.md). The Worker in `worker/index.mjs`
+implements this API with the same validation and moderation rules. This document's
+Node process, filesystem, proxy, and disk settings apply to the original server.
+
 The game sends small run snapshots to this independent service. SQLite persists
 identities, run snapshots, moderation changes and deletion tombstones. A board
 page includes each player's furthest undeleted run, ranked by MK6 clear, MK6
