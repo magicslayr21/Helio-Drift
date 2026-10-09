@@ -186,6 +186,14 @@ export class RunSave {
       for (const key of FIELDS) {
         Object.assign(game, { [key]: state[key] });
       }
+      // Apply current spawn caps to fights saved before the balance update.
+      const savedRocks = game.rocks;
+      game.rocks = [];
+      game.addRocks(...savedRocks);
+      if (game.boss?.mk6) {
+        const liveIds = new Set(game.rocks.map((rock) => rock.id));
+        game.boss.mk6.fieldIds = game.boss.mk6.fieldIds.filter((id) => liveIds.has(id));
+      }
       // Older saves keep their existing stable ID and start telemetry here.
       // Metadata stays outside FIELDS so adding it never invalidates a run save.
       game.leaderboardRun = validLeaderboard(saved.leaderboard, saved.id, game)

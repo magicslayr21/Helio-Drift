@@ -363,6 +363,8 @@ export interface Hostile {
 }
 
 export interface Singularity {
+  /** Continuous time spent inside the core; optional for older saves. */
+  damageTimer?: number;
   id: number;
   x: number;
   y: number;

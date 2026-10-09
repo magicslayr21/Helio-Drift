@@ -27,6 +27,15 @@ npm run preview
 
 Vite writes a self-contained production page to `dist/index.html`.
 
+## Gameplay tests
+
+```sh
+npm run game:test
+```
+
+Runs headless engine checks for weapons, asteroids, boss abilities, damage,
+spawning, and camera feedback. Requires Node.js 24.
+
 ## Formatting
 
 Format the editable source and project configuration with:

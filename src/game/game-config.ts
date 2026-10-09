@@ -302,7 +302,7 @@ export const GAME_CONFIG = {
       invulnerability: 0.75,
     },
     traits: {
-      homing: { unlockWave: 6, turnRates: { small: 1.3, medium: 1.8, large: 2.4 } },
+      homing: { unlockWave: 1, turnRates: { small: 1.3, medium: 1.8, large: 2.4 } },
       bounce: {
         unlockWave: 11,
         speeds: { small: 185, medium: 150, large: 120 },
@@ -310,6 +310,8 @@ export const GAME_CONFIG = {
       },
       boom: {
         unlockWave: 16,
+        maxAlive: 6,
+        shakePerSize: 0.6,
         speeds: { small: 36, medium: 30, large: 24 },
         fuse: 0.35,
         triggerPad: 90,
@@ -321,7 +323,13 @@ export const GAME_CONFIG = {
         playerDamage: { large: 32, medium: 16, small: 8 },
         rockDamage: { large: 42, medium: 22, small: 11 },
       },
-      fast: { unlockWave: 21, speeds: { small: 235, medium: 265, large: 290 } },
+      fast: {
+        unlockWave: 21,
+        speeds: { small: 260, medium: 292, large: 320 },
+        hpMultiplier: 1.5,
+        damageMultiplier: 1.15,
+        knockbackMultiplier: 1.3,
+      },
       meteor: {
         speedMin: 520,
         speedMax: 700,
@@ -420,6 +428,9 @@ export const GAME_CONFIG = {
     baseAttackTimer: 2.6,
     finalAttackTimer: 1.9,
     attackTimerPerPhase: 0.55,
+    abilityRockChance: 0.3,
+    anomaly: { damage: 1, damageInterval: 1, damageRadiusFraction: 0.5 },
+    mk4: { strikeDamage: 16, strikeRadius: 125, strikeWarning: 1.35 },
     mk6: {
       phaseLockFraction: 0.5,
       strikeCount: 5,
@@ -465,11 +476,11 @@ export const GAME_CONFIG = {
         rocksPerSpawn: 2,
       },
       4: {
-        hpMultiplier: 3,
-        timerMultiplier: 0.9,
+        hpMultiplier: 2.4,
+        timerMultiplier: 0.7,
         spawnWeight: 0.7,
         driftX: -4,
-        projectileMultiplier: 1.35,
+        projectileMultiplier: 1.1,
         rocksPerSpawn: 2,
       },
       5: {
@@ -609,6 +620,8 @@ export const GAME_CONFIG = {
   },
 
   simulation: {
+    maxScreenShake: 12,
+    shakeDecayPerSecond: 0.0001,
     frameDeltaCap: 0.05,
     arcTick: 0.12,
     pickupDragPerFrame: 0.985,

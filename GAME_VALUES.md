@@ -117,7 +117,7 @@ Regular rock health is:
 | Small (1)  |      20 |                              18 px | Does not split               |
 
 Trait multiplier is 1.0× for plain rocks and meteor/meteorite event rocks; it is
-1.15× for homing, bounce, boom, and fast rocks. Examples for plain rocks:
+1.15× for homing, bounce, and boom rocks, and 1.5× for fast rocks. Examples for plain rocks:
 
 | Wave | Large HP | Medium HP | Small HP |
 | ---: | -------: | --------: | -------: |
@@ -151,16 +151,21 @@ these damage amounts by up to 36%.
 
 | Trait         | Speed / behavior                                                                       | Extra values                                                                               |
 | ------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Homing        | Turns toward the ship; size-based turn rate 1.3 / 1.8 / 2.4 rad/s (small/medium/large) | Trait unlocks wave 6                                                                       |
+| Homing        | Turns toward the ship; size-based turn rate 1.3 / 1.8 / 2.4 rad/s (small/medium/large) | Trait unlocks wave 1                                                                       |
 | Bounce        | Fixed speed: small 185, medium 150, large 120                                          | Wall/player bounce speed cap is 1.3× those speeds; unlock wave 11                          |
 | Boom          | Fixed speed: small 36, medium 30, large 24                                             | Fuse 0.35 s; home range 260; turn 0.95 rad/s; blast-radius multiplier 1.7×; unlock wave 16 |
-| Fast          | Fixed speed: small 235, medium 265, large 290                                          | Unlock wave 21                                                                             |
+| Fast          | Fixed speed: small 260, medium 292, large 320                                          | Unlock wave 21                                                                             |
 | Meteor streak | Speed 520–700; radius is 1.35× small rock radius                                       | HP `120 + scaled_wave × 4`; hits for 18–34                                                 |
 | Meteorite     | Falls at x speed −70–70, y speed 45–90; radius 0.8× small rock radius                  | HP `6 + scaled_wave × 0.4`; player contact damage 4; pays 10–20 credits                    |
 
 Boom blast radius before multiplier: large 178, medium 108, small 66. Multiply
 each by 1.7. Boom damage to nearby other rocks and enemy drones is 42 / 22 / 11
-for large / medium / small boom rocks.
+for large / medium / small boom rocks. At most six boom asteroids can be alive
+at once, including boss drops and developer spawns. Large boom rocks never
+split into descendants; medium boom rocks can still split into small ones.
+Boom explosions add only `0.6 × size` camera shake, without the ordinary rock
+break shake. Fast asteroids deal 1.15× normal collision damage at the same
+relative speed and apply 1.3× the normal size-based knockback impulse.
 
 ## Enemies
 
@@ -216,13 +221,25 @@ an optional bonus boss.
 | MK1 · Kometenhülle           |     5 | Plain              | `(1800 + 10×140) × 1.2`   |     3,840 |    104 |          1.2× |                   1.00× |                 1.00× |         0.70 |                0 |               1 |
 | MK2 · Jagdzell               |    10 | Homing             | `(1800 + 20×140) × 1.495` |     6,877 |    104 |        1.495× |                   0.92× |                 1.10× |         0.70 |               +6 |               1 |
 | MK3 · Richtzell              |    15 | Bounce             | `(1800 + 30×140) × 1.89`  |    11,340 |    104 |         1.89× |                   1.05× |                 1.05× |         0.90 |              +10 |               2 |
-| MK4 · Brandzell              |    20 | Boom               | `(1800 + 40×140) × 3`     |    22,200 |    104 |          3.0× |                   0.90× |                 1.35× |         0.70 |               −4 |               2 |
+| MK4 · Brandzell              |    20 | Boom               | `(1800 + 40×140) × 2.4`     |    17,760 |    104 |          2.4× |                   0.70× |                 1.10× |         0.70 |               −4 |               2 |
 | MK5 · Sturmzell / The Core   |    25 | Fast               | `14,000 × 1`              |    14,000 |    135 |          1.0× |                   1.15× |                 1.35× |         0.55 |                0 |               2 |
 | MK6 · Omegazell / The Meteor | Bonus | Meteorite          | Fixed                     |    30,000 |    151 |          1.0× |                    1.0× |                  1.0× |            0 |                0 |               0 |
 
 Boss contact with the player deals 24. The MK6 hull cannot fall below 50% until
 its phase-shift raid is complete. Its Regenesis attack can add a shield of 10%
 of maximum boss HP for 30 seconds.
+
+All boss attack casts have a 30% chance to shed an additional small, medium,
+or large asteroid (equal size odds), subject to the 10-rock field cap and the
+six-boom cap. These additional rocks last 30 seconds. Existing rock-producing
+boss abilities also roll all three sizes.
+
+MK4's regular attack interval is `(2.6 - phase × 0.55) × 0.7` seconds.
+Ignition has three entries in its attack pool, boom launch one; ignition accounts
+for 37.5% of regular selections before phase 2, and 30% in phase 2. Independent
+proximity strikes remain on their 3.6 s / 2.7 s cadence above/below half health.
+Anomalies deal one damage per second before armor only within half their visible
+core radius (12–18 px depending on boss); leaving that core resets partial exposure.
 
 ### Boss attack values
 
@@ -233,8 +250,8 @@ of maximum boss HP for 30 seconds.
 | MK2 convergence                 | `6 + 2 × phase` homing rocks                                                                                                              |
 | MK3 pinball cascade             | `4 + phase` bounce rocks; 0.85 s charge; 0.55 s launch cadence                                                                            |
 | MK3 ricochet ring               | Up to `4 + phase` rocks, limited by 10-rock cap                                                                                           |
-| MK4 ignition strikes            | 5 strikes, or 6 at phase 2; first warning 0.95 s, then +0.22 s each; explosion damage 62 and an additional 24 player damage within 150 px |
-| MK4 boom launch                 | 1.1 s warning; launched boom rocks live up to 30 s                                                                                        |
+| MK4 ignition strikes | Phase changes: 3 strikes, or 4 at phase 2. Regular ignition/proximity casts: 2, or 3 below half HP. Warning 1.35 s, then +0.3 s per strike; 62 damage to hostiles and 16 player damage within 125 px (no additional generic blast damage). |
+| MK4 boom launch | Up to 3 drops, reserving live and pending capacity against the six-boom cap; 1.1 s warning; 30 s lifetime. |
 | MK5 meteor wall                 | `9 + 3 × phase` streaks over 3.6 s                                                                                                        |
 | MK6 shower / barrage duration   | 6.2 s each; meteors spawn every 0.34 s                                                                                                    |
 | MK6 meteor beam                 | 4 arms, 8 while enraged; sweep 0.24 rad/s; 9 player damage per 0.6 s contact tick                                                         |
@@ -376,11 +393,28 @@ falloff; and some attack timings and spawn counts include random ranges. The
 code may contain additional presentation-only numbers for colors, animation,
 layout, and particles. This reference focuses on gameplay balance values.
 
+## Mutation frequency and camera feedback
+
+Random mutation chance is `min(0.95, 0.15 + (wave - 1) × 0.04)`, using unlocked
+traits. Homing starts on wave 1; bounce, boom, and fast unlock on 11, 16, and 21.
+Waves 21–24 override random normal rolls: exactly one or two initial asteroids
+are normal, and the rest are mutated. Descendants retain their parent's trait.
+
+Camera shake is capped at 12 pixels and decays in real time, independently of
+combat slow-motion. Turning shake off eliminates all camera shake. The player's
+Beam Emitter follows the ship heading with no aim assist.
+
 ## Developer access and saved runs
 
 Change `developer.accessCode` in `src/game/game-config.ts` to change the
 service code (default: `dev`). Entry ignores surrounding spaces and letter case.
 Developer access lasts for the current open page and expires on close or reload.
+The console's spawn controls select a count from 1–50 and small/medium/large
+size for all five asteroid types, sentinels, and wardens. Boom spawning still
+respects the six-rock cap. Medium enemies retain their standard stats; small
+enemies use 0.75× radius and 0.65× HP, large enemies 1.35× radius and 1.6× HP.
+
+Run gameplay regression tests with `npm run game:test`.
 
 Active runs save automatically in the same browser, including the current fight,
 hull, wave, level, XP, credits, weapons, upgrades, and salvage drone. Reopening

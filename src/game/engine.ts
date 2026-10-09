@@ -132,7 +132,22 @@ export class Game {
   xpNext = GAME_CONFIG.progression.startingXpNext;
   combo = 0;
   comboTimer = 0;
-  shake = 0;
+  private shakeAmount = 0;
+  get shake() {
+    return this.shakeAmount;
+  }
+  set shake(value: number) {
+    this.shakeAmount = clamp(value, 0, GAME_CONFIG.simulation.maxScreenShake);
+  }
+
+  decayShake(dt: number) {
+    this.shake *= Math.pow(GAME_CONFIG.simulation.shakeDecayPerSecond, dt);
+    if (this.shake < 0.1) this.shake = 0;
+  }
+
+  screenShakeAmount() {
+    return this.settings.shake ? this.shake * (this.reduced ? 0.15 : 1) : 0;
+  }
   timeScale = 1;
   flashAlpha = 0;
   banner = "";
@@ -893,6 +908,7 @@ export class Game {
     this.last = now;
     if (dt > GAME_CONFIG.simulation.frameDeltaCap) dt = GAME_CONFIG.simulation.frameDeltaCap;
     this.frame++;
+    this.decayShake(dt);
 
     if (this.mode === "playing" || this.mode === "gameover" || this.mode === "victory") {
       const target = this.mode === "gameover" || this.mode === "victory" ? 0.3 : 1;
@@ -1418,8 +1434,6 @@ export class Game {
       if (this.arcs[i].life <= 0) this.arcs.splice(i, 1);
     }
 
-    this.shake *= Math.pow(0.88, dt * 60);
-    if (this.shake < 0.1) this.shake = 0;
     this.flashAlpha = Math.max(0, this.flashAlpha - dt * 3.2);
 
     if (this.waveHold > 0) this.waveHold -= dt;
@@ -1517,7 +1531,7 @@ export class Game {
     const meteor = GAME_CONFIG.asteroids.traits.meteor;
     rock.hp = rock.maxHp = meteor.hpBase + scaledWave(this.wave) * meteor.hpPerScaledWave;
     rock.rotSpeed = rnd(4, 8) * (fromLeft ? 1 : -1);
-    this.rocks.push(rock);
+    this.addRocks(rock);
   }
 
   /** a meteor breaking apart showers the impact point with salvageable debris */
@@ -1539,7 +1553,7 @@ export class Game {
       rock.hp = rock.maxHp =
         GAME_CONFIG.asteroids.traits.meteorite.hpBase +
         scaledWave(this.wave) * GAME_CONFIG.asteroids.traits.meteorite.hpPerScaledWave;
-      this.rocks.push(rock);
+      this.addRocks(rock);
     }
     this.rings.push({ x, y, r: 8, max: 110, life: 0.5, color: AMBER_HOT, w: 3 });
     this.burst(x, y, 34, AMBER_HOT);
@@ -1556,7 +1570,7 @@ export class Game {
     rock.hp = rock.maxHp =
       GAME_CONFIG.asteroids.traits.meteorite.hpBase +
       scaledWave(this.wave) * GAME_CONFIG.asteroids.traits.meteorite.hpPerScaledWave; // pops in one or two shots
-    this.rocks.push(rock);
+    this.addRocks(rock);
   }
 
   /** dev helper: drop a handful of meteorites right now */
@@ -1568,7 +1582,7 @@ export class Game {
       rock.hp = rock.maxHp =
         GAME_CONFIG.asteroids.traits.meteorite.hpBase +
         scaledWave(this.wave) * GAME_CONFIG.asteroids.traits.meteorite.hpPerScaledWave;
-      this.rocks.push(rock);
+      this.addRocks(rock);
     }
   }
 
@@ -2225,7 +2239,9 @@ export class Game {
       // small rocks shove less and hurt less than large ones —
       // except meteors, which hit like the freight trains they are
       const meteor = r.trait === "meteor";
-      const kick = meteor ? 220 : r.size === 3 ? 130 : r.size === 2 ? 75 : 35;
+      const kick =
+        (meteor ? 220 : r.size === 3 ? 130 : r.size === 2 ? 75 : 35) *
+        (r.trait === "fast" ? GAME_CONFIG.asteroids.traits.fast.knockbackMultiplier : 1);
       const bounce = meteor ? 0.8 : r.size === 3 ? 0.62 : r.size === 2 ? 0.45 : 0.3;
       const dmg = meteor
         ? clamp(
@@ -2288,7 +2304,7 @@ export class Game {
         w: 2,
       });
       this.damagePlayer(
-        dmg,
+        dmg * (r.trait === "fast" ? GAME_CONFIG.asteroids.traits.fast.damageMultiplier : 1),
         meteor
           ? "Meteor collision"
           : r.trait === "meteorite"
@@ -2871,14 +2887,17 @@ export class Game {
 
   beamDamage(dt: number, dps: number) {
     const p = this.p;
-    const a = this.assistAngle(p.angle);
+    const a = p.angle;
     this.beamAngle = a;
     const dx = Math.cos(a),
       dy = Math.sin(a);
     const range = 1100,
       TOL = 7;
-    for (let i = this.rocks.length - 1; i >= 0; i--) {
-      const r = this.rocks[i];
+    // A boom chain reaction may remove several rocks at once. Work from the
+    // original targets, skipping removed ones and leaving new shards for the next tick.
+    for (const r of [...this.rocks].reverse()) {
+      const i = this.rocks.indexOf(r);
+      if (i < 0) continue;
       const rx = r.x - p.x,
         ry = r.y - p.y;
       const t = rx * dx + ry * dy;
@@ -3194,7 +3213,7 @@ export class Game {
       w: 2,
     });
     audio.play(r.size === 3 ? "explodeBig" : "explodeSmall");
-    this.shake += r.size * 3.2;
+    if (r.trait !== "boom") this.shake += r.size * 3.2;
     if (r.size === 3) this.timeScale = 0.72;
 
     if (Math.random() < this.p.creditChance + r.size * 0.07) {
@@ -3224,10 +3243,10 @@ export class Game {
       audio.play("creditDrop");
     }
 
-    // boom detonates before the children exist so it can't kill its own shards
+    // Large explosive asteroids detonate without producing descendants.
     if (r.trait === "boom") this.rockBoom(r);
 
-    if (r.size > 1) {
+    if (r.size > 1 && !(r.trait === "boom" && r.size === 3)) {
       for (let i = 0; i < 2; i++) {
         const a = Math.random() * TAU;
         const child = this.makeRock(
@@ -3242,7 +3261,7 @@ export class Game {
           child.life = r.life;
           child.keep = true;
         }
-        this.rocks.push(child);
+        this.addRocks(child);
       }
     }
     this.gainXp(
@@ -3263,11 +3282,11 @@ export class Game {
     const rdmg = r.size === 3 ? 42 : r.size === 2 ? 22 : 11;
     this.rings.push({ x: r.x, y: r.y, r: 6, max: radius * 1.5, life: 0.5, color: ORANGE, w: 3 });
     this.burst(r.x, r.y, 12 + r.size * 8, ORANGE);
-    this.shake += 5 + r.size * 3;
+    this.shake += r.size * GAME_CONFIG.asteroids.traits.boom.shakePerSize;
     audio.play(r.size === 3 ? "explodeBig" : "flak");
     const p = this.p;
     if (Math.hypot(p.x - r.x, p.y - r.y) < radius + 14)
-      this.damagePlayer(pdmg, "Explosive asteroid blast");
+      this.damagePlayer(pdmg, "Explosive asteroid blast", 0.3);
     const rockIds = this.rocks
       .filter((o) => o.id !== r.id && Math.hypot(o.x - r.x, o.y - r.y) < radius + o.r)
       .map((o) => o.id);
@@ -3469,7 +3488,7 @@ export class Game {
     this.setMode("playing");
   }
 
-  damagePlayer(dmg: number, cause = "Unknown damage") {
+  damagePlayer(dmg: number, cause = "Unknown damage", feedback = 1) {
     const p = this.p;
     if (this.god || p.invuln > 0) return;
     p.hull -= dmg * (1 - p.armor);
@@ -3488,8 +3507,8 @@ export class Game {
       w: 2,
     });
     audio.play("hurt");
-    this.shake += 11;
-    this.flashAlpha = 0.55;
+    this.shake += 11 * feedback;
+    this.flashAlpha = Math.max(this.flashAlpha, 0.55 * feedback);
     this.combo = 0;
     this.comboTimer = 0;
     if (p.hull <= 0 && this.mode === "playing") this.gameOver();
@@ -3508,7 +3527,14 @@ export class Game {
     this.setMode("gameover");
   }
 
-  explode(x: number, y: number, radius: number, dmg: number, cause = "Missile blast") {
+  explode(
+    x: number,
+    y: number,
+    radius: number,
+    dmg: number,
+    cause = "Missile blast",
+    playerDamage: number = GAME_CONFIG.asteroids.genericExplosionPlayerDamage,
+  ) {
     this.rings.push({ x, y, r: 8, max: radius * 1.6, life: 0.55, color: MAGENTA, w: 3 });
     this.burst(x, y, 26, MAGENTA);
     audio.play("explodeBig");
@@ -3548,29 +3574,69 @@ export class Game {
         }
       }
     }
-    if (Math.hypot(this.p.x - x, this.p.y - y) < radius * 0.6)
-      this.damagePlayer(GAME_CONFIG.asteroids.genericExplosionPlayerDamage, cause);
+    if (playerDamage > 0 && Math.hypot(this.p.x - x, this.p.y - y) < radius * 0.6)
+      this.damagePlayer(playerDamage, cause);
     this.timeScale = GAME_CONFIG.simulation.explosionTimeScale;
   }
 
   /* ------------------------------------------------------------ waves */
 
-  rollTrait(): RockTrait {
+  rollTrait(forceMutation = false): RockTrait {
     const w = this.wave;
     const roll = Math.random();
     const gates = RUN_PACING.traitWaves;
-    // Nothing homing until the MK1 boss fight is behind the player.
+    // A few homing mutations appear even in the opening sector.
     if (w < gates.homing) return "none";
     const pool: RockTrait[] = ["homing"];
     if (w >= gates.bounce) pool.push("bounce");
-    if (w >= gates.boom) pool.push("boom");
+    if (w >= gates.boom && this.boomRoom() > 0) pool.push("boom");
     if (w >= gates.fast) pool.push("fast");
-    // Same chance curve as the old run, compressed onto half as many waves.
-    const chance = 0.12 + (scaledWave(w) - 11) * 0.008;
-    if (roll > chance) return "none";
+    // Mutations ramp up in each unlocked band; late waves use an exact normal quota.
+    const chance = Math.min(0.95, 0.15 + (w - gates.homing) * 0.04);
+    if (!forceMutation && roll > chance) return "none";
     // the newest trait for this band shows up a little more often
     if (Math.random() < 0.4) return pool[pool.length - 1];
     return pool[Math.floor(Math.random() * pool.length)];
+  }
+
+  boomRoom() {
+    return Math.max(
+      0,
+      GAME_CONFIG.asteroids.traits.boom.maxAlive -
+        this.rocks.filter((rock) => rock.trait === "boom").length,
+    );
+  }
+
+  addRocks(...rocks: Rock[]) {
+    for (const rock of rocks) {
+      if (rock.trait === "boom" && this.boomRoom() === 0) continue;
+      this.rocks.push(rock);
+    }
+  }
+
+  rollRockSize(): 1 | 2 | 3 {
+    return (1 + Math.floor(Math.random() * 3)) as 1 | 2 | 3;
+  }
+
+  spawnBossAbilityRock(b: Boss) {
+    if (
+      Math.random() >= GAME_CONFIG.bosses.abilityRockChance ||
+      this.rocks.filter((rock) => !isEventRock(rock.trait)).length >= BOSS_ROCK_CAP ||
+      (b.spawnTrait === "boom" && this.boomRoom() === 0)
+    )
+      return;
+    const a = Math.random() * TAU;
+    const rock = this.makeRock(
+      b.x + Math.cos(a) * (b.r + 70),
+      b.y + Math.sin(a) * (b.r + 70),
+      this.rollRockSize(),
+      Math.cos(a) * 120,
+      Math.sin(a) * 120,
+      b.mk === 6 ? this.rollTrait(true) : b.spawnTrait,
+    );
+    rock.life = BOSS_ROCK_LIFESPAN;
+    rock.keep = true;
+    this.addRocks(rock);
   }
 
   makeCracks(r: number, count: number, inner = 0.55): Crack[] {
@@ -3624,7 +3690,8 @@ export class Game {
       vY = vy ?? rnd(-70, 70);
     if (trait === "fast") {
       // fixed pace per size so speed never compounds through generations
-      const target = size === 3 ? 290 : size === 2 ? 265 : 235;
+      const speeds = GAME_CONFIG.asteroids.traits.fast.speeds;
+      const target = size === 3 ? speeds.large : size === 2 ? speeds.medium : speeds.small;
       const a = Math.atan2(vY, vX) + rnd(-0.2, 0.2);
       vX = Math.cos(a) * target;
       vY = Math.sin(a) * target;
@@ -3644,7 +3711,11 @@ export class Game {
     const hp =
       sizeConfig.hp *
       (1 + scaledWave(this.wave) * GAME_CONFIG.asteroids.hpPerScaledWave) *
-      (trait === "none" || isEventRock(trait) ? 1 : GAME_CONFIG.asteroids.specialHpMultiplier);
+      (trait === "fast"
+        ? GAME_CONFIG.asteroids.traits.fast.hpMultiplier
+        : trait === "none" || isEventRock(trait)
+          ? 1
+          : GAME_CONFIG.asteroids.specialHpMultiplier);
     return {
       id: this.nextId++,
       x,
@@ -3728,7 +3799,7 @@ export class Game {
       const mkForField = bossMkForWave(this.wave);
       const fieldTrait = BOSS_SPECS[mkForField].trait;
       // one trait rock marks the field — boss battles stay lean, the dreadnought fills in
-      this.rocks.push(
+      this.addRocks(
         this.makeRock(
           this.w * 0.6 + Math.random() * this.w * 0.4,
           Math.random() * this.h,
@@ -3784,6 +3855,7 @@ export class Game {
           )
         : baseRockCount;
 
+      const normalQuota = isLateWave ? 1 + Math.floor(Math.random() * 2) : 0;
       for (let i = 0; i < count; i++) {
         let x = 0,
           y = 0,
@@ -3796,8 +3868,15 @@ export class Game {
           Math.hypot(x - this.p.x, y - this.p.y) < GAME_CONFIG.waves.shipSpawnRockClearance &&
           tries < 20
         );
-        this.rocks.push(
-          this.makeRock(x, y, Math.random() < 0.45 ? 3 : 2, undefined, undefined, this.rollTrait()),
+        this.addRocks(
+          this.makeRock(
+            x,
+            y,
+            Math.random() < 0.45 ? 3 : 2,
+            undefined,
+            undefined,
+            isLateWave && i < normalQuota ? "none" : this.rollTrait(isLateWave),
+          ),
         );
       }
       // Sentinels are capped concurrently and trickle in: the opening sector
@@ -4125,6 +4204,17 @@ export class Game {
     this.p.vx += (hx / hd) * strength * dt;
     this.p.vy += (hy / hd) * strength * dt;
 
+    const anomaly = GAME_CONFIG.bosses.anomaly;
+    if (hd < h.r * anomaly.damageRadiusFraction && h.t > 0) {
+      h.damageTimer = (h.damageTimer ?? 0) + dt;
+      if (h.damageTimer >= anomaly.damageInterval) {
+        h.damageTimer -= anomaly.damageInterval;
+        this.damagePlayer(anomaly.damage, "Anomaly core", 0.1);
+      }
+    } else {
+      h.damageTimer = 0;
+    }
+
     // Singularities at higher strengths look cooler: e.g. at MK6 dense golden particles fly rapidly into it
     const pFreq = h.mk === 6 ? 1 : h.mk === 5 ? 1 : 2;
     if (this.frame % pFreq === 0 && this.particles.length < 650) {
@@ -4241,6 +4331,7 @@ export class Game {
     this.bannerSub = `${b.name} ${b.suffix.split(" ")[0]} · NEW ATTACK SET`;
     this.bannerT = 1.9;
 
+    this.spawnBossAbilityRock(b);
     switch (b.mk) {
       case 1:
         b.rainN = 9 + phase * 3;
@@ -4251,11 +4342,11 @@ export class Game {
         const n = 6 + phase * 2;
         for (let i = 0; i < n; i++) {
           const a = (i / n) * TAU;
-          this.rocks.push(
+          this.addRocks(
             this.makeRock(
               clamp(b.x + Math.cos(a) * 250, 40, this.w - 40),
               clamp(b.y + Math.sin(a) * 250, 40, this.h - 40),
-              2,
+              this.rollRockSize(),
               Math.cos(a) * 40,
               Math.sin(a) * 40,
               "homing",
@@ -4276,12 +4367,12 @@ export class Game {
       }
       case 4: {
         // one strike locks near the player, the rest are random field points
-        const n = phase >= 2 ? 6 : 5;
+        const n = phase >= 2 ? 4 : 3;
         b.strikes = [];
-        // MK4: sudden ignition strikes — first hits in under a second, leaving very little time to react
+        // More frequent strikes leave enough warning to escape their smaller blast.
         for (let i = 0; i < n; i++) {
           const near = i === 0;
-          const countdown = 0.95 + i * 0.22;
+          const countdown = GAME_CONFIG.bosses.mk4.strikeWarning + i * 0.3;
           b.strikes.push({
             x: clamp(near ? this.p.x + rnd(-1, 1) * 140 : rnd(80, this.w - 80), 60, this.w - 60),
             y: clamp(near ? this.p.y + rnd(-1, 1) * 140 : rnd(80, this.h - 80), 60, this.h - 60),
@@ -4345,6 +4436,7 @@ export class Game {
     this.shake += 8;
     this.flashAlpha = 0.35;
 
+    this.spawnBossAbilityRock(b);
     switch (attack) {
       case "shower":
         slot.t = 6.2;
@@ -4386,18 +4478,20 @@ export class Game {
             y = rnd(50, this.h - 50);
             tries++;
           } while (Math.hypot(x - this.p.x, y - this.p.y) < 220 && tries < 12);
-          const size = (1 + Math.floor(Math.random() * 3)) as 1 | 2 | 3;
+          const size = this.rollRockSize();
+          const availableTraits =
+            this.boomRoom() === 0 ? traits.filter((trait) => trait !== "boom") : traits;
           const rock = this.makeRock(
             x,
             y,
             size,
             rnd(-120, 120),
             rnd(-120, 120),
-            traits[Math.floor(Math.random() * traits.length)],
+            availableTraits[Math.floor(Math.random() * availableTraits.length)],
           );
           rock.hp = rock.maxHp = rock.maxHp * 0.6; // transient, meant to be cleared
           m.fieldIds.push(rock.id);
-          this.rocks.push(rock);
+          this.addRocks(rock);
         }
         audio.play("explodeSmall");
         break;
@@ -4437,11 +4531,18 @@ export class Game {
           slot.spawnT = 0.34;
           // straight down the sector, top to bottom
           const x = rnd(50, this.w - 50);
-          const rock = this.makeRock(x, -50, 1, rnd(-40, 40), rnd(520, 660), "meteor");
+          const rock = this.makeRock(
+            x,
+            -50,
+            this.rollRockSize(),
+            rnd(-40, 40),
+            rnd(520, 660),
+            "meteor",
+          );
           rock.r *= 1.35;
           rock.hp = rock.maxHp = 120 + scaledWave(this.wave) * 4;
           rock.rotSpeed = rnd(4, 8);
-          this.rocks.push(rock);
+          this.addRocks(rock);
         }
         break;
       case "beam": {
@@ -4667,11 +4768,11 @@ export class Game {
       const startY = b.y + (i - 1) * 28 + rnd(-10, 10);
       const vx = Math.cos(spread) * speed * inward;
       const vy = Math.sin(spread) * speed;
-      const rock = this.makeRock(startX, startY, 1, vx, vy, "meteor");
+      const rock = this.makeRock(startX, startY, this.rollRockSize(), vx, vy, "meteor");
       rock.r *= 1.25;
       rock.hp = rock.maxHp = 120 + scaledWave(this.wave) * 4;
       rock.rotSpeed = rnd(5, 9) * inward;
-      this.rocks.push(rock);
+      this.addRocks(rock);
     }
     this.rings.push({
       x: b.x + inward * b.r * 0.5,
@@ -4686,11 +4787,12 @@ export class Game {
   }
 
   triggerMk4ProximityStrikes(b: Boss) {
-    const n = b.hp / b.maxHp < 0.5 ? 4 : 3;
+    this.spawnBossAbilityRock(b);
+    const n = b.hp / b.maxHp < 0.5 ? 3 : 2;
     for (let i = 0; i < n; i++) {
       const a = Math.random() * TAU;
       const radius = rnd(b.r * 1.5, b.r * 2.7);
-      const countdown = 1.0 + i * 0.22;
+      const countdown = GAME_CONFIG.bosses.mk4.strikeWarning + i * 0.3;
       b.strikes.push({
         x: clamp(b.x + Math.cos(a) * radius, 60, this.w - 60),
         y: clamp(b.y + Math.sin(a) * radius, 60, this.h - 60),
@@ -5036,11 +5138,11 @@ export class Game {
       if (b.rainT <= 0) {
         if (this.rocks.filter((r) => !isEventRock(r.trait)).length < BOSS_ROCK_CAP) {
           const x = rnd(50, this.w - 50);
-          this.rocks.push(
+          this.addRocks(
             this.makeRock(
               x,
               -30,
-              2,
+              this.rollRockSize(),
               rnd(-30, 30),
               rnd(130, 200),
               Math.random() < 0.5 && b.spawnTrait !== "none" ? b.spawnTrait : "none",
@@ -5108,14 +5210,14 @@ export class Game {
           const cascadeRock = this.makeRock(
             x,
             y,
-            2,
+            this.rollRockSize(),
             Math.cos(a) * speed,
             Math.sin(a) * speed,
             "bounce",
           );
           cascadeRock.life = BOSS_ROCK_LIFESPAN;
           cascadeRock.keep = true;
-          this.rocks.push(cascadeRock);
+          this.addRocks(cascadeRock);
           this.rings.push({ x, y, r: 6, max: 40, life: 0.28, color: ICE, w: 2 });
           audio.play("ricochet");
           b.cascadeN--;
@@ -5148,14 +5250,14 @@ export class Game {
         const ringRock = this.makeRock(
           clamp(ox, 24, this.w - 24),
           clamp(oy, 24, this.h - 24),
-          2,
+          this.rollRockSize(),
           Math.cos(aimA) * speed,
           Math.sin(aimA) * speed,
           "bounce",
         );
         ringRock.life = BOSS_ROCK_LIFESPAN;
         ringRock.keep = true;
-        this.rocks.push(ringRock);
+        this.addRocks(ringRock);
         this.rings.push({ x: ox, y: oy, r: 5, max: 36, life: 0.26, color: ICE, w: 2 });
         audio.play("ricochet");
         b.ricochetRing--;
@@ -5171,13 +5273,13 @@ export class Game {
         const rock = this.makeRock(
           fromLeft ? -30 : this.w + 30,
           y,
-          2,
+          this.rollRockSize(),
           (fromLeft ? 1 : -1) * rnd(240, 320),
           rnd(-40, 40),
           "fast",
         );
         rock.life = 20;
-        this.rocks.push(rock);
+        this.addRocks(rock);
         b.wallN--;
       }
     }
@@ -5187,6 +5289,7 @@ export class Game {
       d.t -= dt;
       if (d.t > 0) continue;
       b.boomDrops.splice(i, 1);
+      if (this.boomRoom() <= 0) continue;
       // never materialise on top of the ship
       let x = d.x,
         y = d.y;
@@ -5200,7 +5303,7 @@ export class Game {
       const rock = this.makeRock(x, y, size, Math.cos(a) * 60, Math.sin(a) * 60, "boom");
       rock.life = BOSS_ROCK_LIFESPAN;
       rock.keep = true;
-      this.rocks.push(rock);
+      this.addRocks(rock);
       this.rings.push({ x, y, r: 6, max: 70, life: 0.35, color: ORANGE, w: 2.5 });
       this.burst(x, y, 10, ORANGE);
     }
@@ -5210,9 +5313,16 @@ export class Game {
       s.t -= dt;
       if (s.t <= 0) {
         b.strikes.splice(i, 1);
-        this.explode(s.x, s.y, 175, 62, `MK${b.mk} ignition strike`);
-        if (Math.hypot(this.p.x - s.x, this.p.y - s.y) < 150)
-          this.damagePlayer(24, `MK${b.mk} ignition strike`);
+        this.explode(
+          s.x,
+          s.y,
+          GAME_CONFIG.bosses.mk4.strikeRadius,
+          62,
+          `MK${b.mk} ignition strike`,
+          0,
+        );
+        if (Math.hypot(this.p.x - s.x, this.p.y - s.y) < GAME_CONFIG.bosses.mk4.strikeRadius)
+          this.damagePlayer(GAME_CONFIG.bosses.mk4.strikeDamage, `MK${b.mk} ignition strike`);
       }
     }
 
@@ -5221,16 +5331,12 @@ export class Game {
     // each MK keeps its own tempo
     b.attackTimer = ((b.final ? 1.9 : 2.6) - phase * 0.55) * b.timerMul;
 
-    const pool: ("ring" | "fan" | "shock" | "hole" | "spawn" | "ricochet" | "boom")[] = [
-      "ring",
-      "fan",
-      "shock",
-    ];
+    const pool: ("ring" | "fan" | "shock" | "hole" | "spawn" | "ricochet" | "boom" | "ignition")[] =
+      ["ring", "fan", "shock"];
     if (b.mk >= 3) pool.push("hole");
     // MK4's new signature: it sheds slow boom asteroids toward the player
     if (b.mk === 4) {
-      pool.push("boom");
-      pool.push("boom");
+      pool.push("boom", "ignition", "ignition", "ignition");
     }
     // MK3's second signature: the ricochet ring. Weighted so it shows up often
     // but never dominates the rotation.
@@ -5241,6 +5347,12 @@ export class Game {
     if (phase >= 2) for (let i = 0; i < b.spawnWeight * 2; i++) pool.push("spawn");
     if (b.final) pool.push("spawn");
     const pick = pool[Math.floor(Math.random() * pool.length)];
+
+    if (pick === "ignition") {
+      this.triggerMk4ProximityStrikes(b);
+      return;
+    }
+    this.spawnBossAbilityRock(b);
 
     if (pick === "ring") {
       // MK4/MK5 pack every pattern with extra projectiles
@@ -5286,10 +5398,8 @@ export class Game {
     } else if (pick === "boom") {
       // MK4 · BOOM LAUNCH: marked drop points are scattered across the whole map.
       // After a short warning each one becomes a slow boom rock with a 30 s lifespan.
-      // Launch 3 boom asteroids normally. Once the map already has 15+
-      // asteroids, only add 1 so the arena does not become overwhelmed.
-      const live = this.rocks.length;
-      const n = live >= 15 ? 1 : 3;
+      // Reserve pending drops as well as live rocks against the hard cap.
+      const n = Math.min(3, Math.max(0, this.boomRoom() - b.boomDrops.length));
       const chosen: { x: number; y: number }[] = [];
       for (let i = 0; i < n; i++) {
         // best-of-N sampling keeps the drops spread out instead of clumped
@@ -5345,11 +5455,11 @@ export class Game {
       const n = Math.min(b.rocksPer, room);
       for (let i = 0; i < n; i++) {
         const a = Math.random() * TAU;
-        this.rocks.push(
+        this.addRocks(
           this.makeRock(
             b.x + Math.cos(a) * b.r,
             b.y + Math.sin(a) * b.r,
-            2,
+            this.rollRockSize(),
             Math.cos(a) * 120 + b.vx,
             Math.sin(a) * 120 + b.vy,
             i === 0 ? "none" : b.spawnTrait,
@@ -5396,28 +5506,45 @@ export class Game {
     audio.play("explodeBig");
   }
 
-  /** dev console: spawn a rock of a given trait near the player */
-  devSpawnRock(size: 1 | 2 | 3, trait: RockTrait) {
-    let x = 0,
-      y = 0,
-      tries = 0;
-    do {
-      x = Math.random() * this.w;
-      y = Math.random() * this.h;
-      tries++;
-    } while (Math.hypot(x - this.p.x, y - this.p.y) < 240 && tries < 15);
-    this.rocks.push(this.makeRock(x, y, size, undefined, undefined, trait));
+  /** Bounded batch sizes keep accidental console input from freezing the arena. */
+  devSpawnCount(count: number) {
+    return Number.isFinite(count) ? clamp(Math.floor(count), 1, 50) : 1;
   }
 
-  /** dev console: spawn a sentinel or warden close to the player's slice of space */
-  devSpawnMob(kind: "sentinel" | "warden") {
-    const a = Math.random() * TAU;
-    const x = this.p.x + Math.cos(a) * 520;
-    const y = this.p.y + Math.sin(a) * 520;
+  /** Dev console: spawn a batch of asteroids, respecting the global boom cap. */
+  devSpawnRock(size: 1 | 2 | 3, trait: RockTrait, count = 1) {
+    for (let i = 0; i < this.devSpawnCount(count); i++) {
+      if (trait === "boom" && this.boomRoom() === 0) break;
+      let x = 0,
+        y = 0,
+        tries = 0;
+      do {
+        x = Math.random() * this.w;
+        y = Math.random() * this.h;
+        tries++;
+      } while (Math.hypot(x - this.p.x, y - this.p.y) < 240 && tries < 15);
+      this.addRocks(this.makeRock(x, y, size, undefined, undefined, trait));
+    }
+  }
+
+  /** Medium enemies retain their normal size and health. */
+  devSpawnMob(kind: "sentinel" | "warden", count = 1, size: 1 | 2 | 3 = 2) {
     const tuningWave = scaledWave(this.wave);
-    this.drones.push(
-      this.spawnDrone(x, y, kind === "warden" ? 210 + tuningWave * 28 : 55 + tuningWave * 11, kind),
-    );
+    const hpScale = size === 1 ? 0.65 : size === 3 ? 1.6 : 1;
+    const radiusScale = size === 1 ? 0.75 : size === 3 ? 1.35 : 1;
+    for (let i = 0; i < this.devSpawnCount(count); i++) {
+      const a = Math.random() * TAU;
+      const x = clamp(this.p.x + Math.cos(a) * 520, 50, this.w - 50);
+      const y = clamp(this.p.y + Math.sin(a) * 520, 50, this.h - 50);
+      const mob = this.spawnDrone(
+        x,
+        y,
+        (kind === "warden" ? 210 + tuningWave * 28 : 55 + tuningWave * 11) * hpScale,
+        kind,
+      );
+      mob.r *= radiusScale;
+      this.drones.push(mob);
+    }
   }
 
   /**
@@ -5930,7 +6057,7 @@ export class Game {
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    const shakeAmt = this.shake * (this.reduced ? 0.15 : this.settings.shake ? 1 : 0.05);
+    const shakeAmt = this.screenShakeAmount();
     ctx.save();
     ctx.translate((Math.random() - 0.5) * shakeAmt * 2, (Math.random() - 0.5) * shakeAmt * 2);
 
@@ -6774,7 +6901,7 @@ export class Game {
       // ignition-strike telegraphs — shrinking crosshairs before detonation
       for (const s of b.strikes) {
         const prog = 1 - clamp(s.t / s.t0, 0, 1);
-        const rr = 20 + (1 - prog) * 150;
+        const rr = 20 + (1 - prog) * (GAME_CONFIG.bosses.mk4.strikeRadius - 20);
         ctx.beginPath();
         ctx.arc(s.x, s.y, rr, 0, TAU);
         ctx.strokeStyle = ORANGE;

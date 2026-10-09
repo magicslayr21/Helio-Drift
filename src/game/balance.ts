@@ -374,11 +374,10 @@ export const RUN_PACING = {
   lateWardenFromWave: 21,
   lateWardenToWave: 24,
   traitWaves: {
-    /** no homing rocks at all until the MK1 boss fight is cleared */
-    homing: 6,
-    bounce: 11,
-    boom: 16,
-    fast: 21,
+    homing: GAME_CONFIG.asteroids.traits.homing.unlockWave,
+    bounce: GAME_CONFIG.asteroids.traits.bounce.unlockWave,
+    boom: GAME_CONFIG.asteroids.traits.boom.unlockWave,
+    fast: GAME_CONFIG.asteroids.traits.fast.unlockWave,
   },
   /** wave-completion credit payout: 80 + wave * this */
   creditsPerWaveBase: GAME_CONFIG.waves.waveCreditsBase,

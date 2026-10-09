@@ -197,6 +197,8 @@ export default function GameShell({
   const [devUnlocked, setDevUnlocked] = useState(false);
   const [devOpen, setDevOpen] = useState(false);
   const [devPage, setDevPage] = useState<1 | 2>(1);
+  const [devSpawnCount, setDevSpawnCount] = useState(1);
+  const [devSpawnSize, setDevSpawnSize] = useState<1 | 2 | 3>(2);
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
 
   useEffect(() => {
@@ -1635,34 +1637,75 @@ export default function GameShell({
                       />
                     ))}
                   </DevRow>
+                  <DevRow label="Spawn count">
+                    <input
+                      aria-label="Spawn count"
+                      type="number"
+                      min={1}
+                      max={50}
+                      step={1}
+                      value={devSpawnCount}
+                      onChange={(event) =>
+                        setDevSpawnCount(
+                          Math.max(1, Math.min(50, Math.floor(Number(event.target.value) || 1))),
+                        )
+                      }
+                      className="w-16 border border-steel bg-void px-2 py-1 text-amber"
+                    />
+                    <span className="text-[10px] text-muted">1–50 · boom cap: 6</span>
+                  </DevRow>
+                  <DevRow label="Spawn size">
+                    {([1, 2, 3] as const).map((size) => (
+                      <DevBtn
+                        key={size}
+                        label={size === 1 ? "Small" : size === 2 ? "Medium" : "Large"}
+                        active={devSpawnSize === size}
+                        onClick={() => setDevSpawnSize(size)}
+                      />
+                    ))}
+                  </DevRow>
                   <DevRow label="Mob">
                     <DevBtn
                       label="Norm"
-                      onClick={() => devPlaying((x) => x.devSpawnRock(2, "none"))}
+                      onClick={() =>
+                        devPlaying((x) => x.devSpawnRock(devSpawnSize, "none", devSpawnCount))
+                      }
                     />
                     <DevBtn
                       label="Homer"
-                      onClick={() => devPlaying((x) => x.devSpawnRock(2, "homing"))}
+                      onClick={() =>
+                        devPlaying((x) => x.devSpawnRock(devSpawnSize, "homing", devSpawnCount))
+                      }
                     />
                     <DevBtn
                       label="Bounce"
-                      onClick={() => devPlaying((x) => x.devSpawnRock(2, "bounce"))}
+                      onClick={() =>
+                        devPlaying((x) => x.devSpawnRock(devSpawnSize, "bounce", devSpawnCount))
+                      }
                     />
                     <DevBtn
                       label="Boom"
-                      onClick={() => devPlaying((x) => x.devSpawnRock(2, "boom"))}
+                      onClick={() =>
+                        devPlaying((x) => x.devSpawnRock(devSpawnSize, "boom", devSpawnCount))
+                      }
                     />
                     <DevBtn
                       label="Fast"
-                      onClick={() => devPlaying((x) => x.devSpawnRock(2, "fast"))}
+                      onClick={() =>
+                        devPlaying((x) => x.devSpawnRock(devSpawnSize, "fast", devSpawnCount))
+                      }
                     />
                     <DevBtn
                       label="Sentinel"
-                      onClick={() => devPlaying((x) => x.devSpawnMob("sentinel"))}
+                      onClick={() =>
+                        devPlaying((x) => x.devSpawnMob("sentinel", devSpawnCount, devSpawnSize))
+                      }
                     />
                     <DevBtn
                       label="Warden"
-                      onClick={() => devPlaying((x) => x.devSpawnMob("warden"))}
+                      onClick={() =>
+                        devPlaying((x) => x.devSpawnMob("warden", devSpawnCount, devSpawnSize))
+                      }
                     />
                   </DevRow>
                   <DevRow label="Shower">
