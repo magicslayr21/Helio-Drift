@@ -248,7 +248,7 @@ an optional bonus boss.
 | MK3 · Richtzell              |    15 | Bounce             | `(1800 + 30×140) × 1.89`  |    11,340 |    104 |         1.89× |                   1.05× |                 1.05× |         0.90 |              +10 |               2 |
 | MK4 · Brandzell              |    20 | Boom               | `(1800 + 40×140) × 2.4`     |    17,760 |    104 |          2.4× |                   0.70× |                 1.10× |         0.70 |               −4 |               2 |
 | MK5 · Sturmzell / The Core   |    25 | Fast               | `14,000 × 1`              |    14,000 |    135 |          1.0× |                   1.15× |                 1.35× |         0.55 |                0 |               2 |
-| MK6 · Omegazell / The Meteor | Bonus | Meteorite          | Fixed                     |    30,000 |    151 |          1.0× |                    1.0× |                  1.0× |            0 |                0 |               0 |
+| MK6 · Omegazell / The Meteor | Bonus | Meteorite          | Fixed                     |    30,000 |    151 |          1.0× |                    1.0× |                  1.0× |            0 |                0 |               4 |
 
 Boss contact with the player deals 24. The MK6 hull cannot fall below 50% until
 its phase-shift raid is complete. Its Regenesis attack can add a shield of 10%
