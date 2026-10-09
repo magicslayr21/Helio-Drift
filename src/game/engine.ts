@@ -326,16 +326,26 @@ export class Game {
     this.saveRun();
   }
 
-  restoreRun() {
-    if (!this.runSave.restore(this)) return;
+  restoreRun(toMenu = false): boolean {
+    if (!this.runSave.restore(this)) return false;
     this.theme = THEMES[this.themeIdx];
-    this.setMode(
-      this.bonusAvailable || this.bonusDefeated
-        ? "victory"
-        : this.choices.length
-          ? "levelup"
-          : "paused",
-    );
+    this.setMode(toMenu ? "menu" : this.continueMode());
+    this.onHud(this.snapshot());
+    return true;
+  }
+
+  private continueMode(): Mode {
+    return this.bonusAvailable || this.bonusDefeated
+      ? "victory"
+      : this.choices.length
+        ? "levelup"
+        : "paused";
+  }
+
+  continueRun() {
+    if (this.wave < 1 || this.p.hull <= 0) return;
+    const next = this.continueMode();
+    this.setMode(next === "paused" ? "playing" : next);
     this.onHud(this.snapshot());
   }
 
@@ -449,10 +459,11 @@ export class Game {
   /* ------------------------------------------------------------ input */
 
   onKeyDown = (e: KeyboardEvent) => {
-    if (this.inputSuspended) return;
+    if (this.inputSuspended || this.mode === "menu") return;
     const t = e.target as HTMLElement | null;
-    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+    if (t && (["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName) || t.isContentEditable)) return;
     const k = e.key.toLowerCase();
+    if (t && ["BUTTON", "A"].includes(t.tagName) && ["enter", " ", "tab"].includes(k)) return;
     if ([" ", "arrowup", "arrowdown", "arrowleft", "arrowright", "tab"].includes(k))
       e.preventDefault();
     this.keys[k] = true;
@@ -465,10 +476,7 @@ export class Game {
       (this.mode === "gameover" || this.mode === "paused" || this.mode === "victory")
     )
       this.startGame();
-    if (
-      (k === "enter" || k === " ") &&
-      (this.mode === "menu" || this.mode === "gameover" || this.mode === "victory")
-    )
+    if ((k === "enter" || k === " ") && (this.mode === "gameover" || this.mode === "victory"))
       this.startGame();
     if (k === "tab") this.cycleWeapon(1);
     if (k === "q") this.cycleWeapon(-1);
@@ -2317,12 +2325,18 @@ export class Game {
     // ---- Sentinel fire (quick bolts with lead) -----------------------------
     if (!warden) {
       d.fire -= dt;
-      if (d.fire <= 0 && this.mode === "playing" && dist < 720) {
-        const bs = 250;
-        const tt = dist / bs;
-        const lx = p.x + p.vx * tt * 0.8,
-          ly = p.y + p.vy * tt * 0.8;
+      const tuning = GAME_CONFIG.enemies.sentinels;
+      // Movement/wrapping has already happened: solve from the actual muzzle
+      // position, with a short bounded lead instead of projecting seconds away.
+      const range = Math.hypot(p.x - d.x, p.y - d.y);
+      if (d.fire <= 0 && this.mode === "playing" && range < tuning.boltRange) {
+        const bs = tuning.boltSpeed;
+        const speed = Math.hypot(p.vx, p.vy);
+        const lead = Math.min((range / bs) * 0.8, 0.3, (range * 0.25) / Math.max(1, speed));
+        const lx = clamp(p.x + p.vx * lead, 0, this.w),
+          ly = clamp(p.y + p.vy * lead, 0, this.h);
         const la = Math.atan2(ly - d.y, lx - d.x);
+        d.angle = la;
         this.bullets.push({
           x: d.x + Math.cos(la) * 18,
           y: d.y + Math.sin(la) * 18,

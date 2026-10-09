@@ -1,4 +1,5 @@
 import path from "path";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
@@ -12,6 +13,11 @@ const __dirname = path.dirname(__filename);
 export default defineConfig({
   // GitHub Pages serves this project from /Helio-Drift/, not the domain root.
   base: "/Helio-Drift/",
+  define: {
+    __APP_VERSION__: JSON.stringify(
+      JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version,
+    ),
+  },
   server: { proxy: { "/api": "http://127.0.0.1:8787" } },
   plugins: [react(), tailwindcss(), viteSingleFile()],
   resolve: {

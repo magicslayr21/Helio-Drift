@@ -27,11 +27,10 @@ import {
   isLeaderboardConfigured,
   queueRun,
 } from "../leaderboard/client";
-import { HeliosMark } from "./Masthead";
+import { MainMenu } from "./MainMenu";
 import { audio } from "../game/audio";
 import { GAME_CONFIG } from "../game/game-config";
 import nebulaImg from "../assets/nebula.jpg";
-import marqueeImg from "../assets/marquee.jpg";
 
 const EMPTY_HUD: Hud = {
   mode: "menu",
@@ -71,8 +70,7 @@ const EMPTY_HUD: Hud = {
   bonusDefeated: false,
 };
 
-const APP_VERSION = (import.meta as ImportMeta & { env: { VITE_APP_VERSION?: string } }).env
-  .VITE_APP_VERSION;
+const APP_VERSION = __APP_VERSION__;
 
 const SECTORS = [
   { numeral: "I", name: "Deep Void" },
@@ -116,31 +114,6 @@ const DRONE_UPGRADE_IDS = [
   "scan",
   "speed",
 ] as const satisfies readonly SalvageUpgradeId[];
-
-function Meter({
-  value,
-  max,
-  color,
-  glow,
-}: {
-  value: number;
-  max: number;
-  color: string;
-  glow: string;
-}) {
-  return (
-    <div className="h-[6px] w-full bg-steel/35">
-      <div
-        className="h-full transition-[width] duration-200 ease-out"
-        style={{
-          width: `${Math.max(0, Math.min(100, (value / max) * 100))}%`,
-          background: color,
-          boxShadow: `0 0 12px ${glow}`,
-        }}
-      />
-    </div>
-  );
-}
 
 function LevelPips({ level, max, color }: { level: number; max: number; color: string }) {
   return (
@@ -200,6 +173,8 @@ export default function GameShell({
   const [devSpawnCount, setDevSpawnCount] = useState(1);
   const [devSpawnSize, setDevSpawnSize] = useState<1 | 2 | 3>(2);
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
+  const [canContinue, setCanContinue] = useState(false);
+  const continuingSavedRun = useRef(false);
 
   useEffect(() => {
     onDeveloperChange(devUnlocked);
@@ -244,14 +219,14 @@ export default function GameShell({
             date: new Date().toLocaleDateString(undefined, { month: "short", day: "numeric" }),
           };
           setRun(entry);
-          if (!restoring) setScores(saveScore(entry));
+          if (!restoring && !continuingSavedRun.current) setScores(saveScore(entry));
         }
         if (m !== "paused" && m !== "menu") setPanel("none");
       },
     });
     gameRef.current = g;
     restoring = true;
-    g.restoreRun();
+    setCanContinue(g.restoreRun(true));
     restoring = false;
     // Low-frequency reporting is outside the canvas loop. Network failures never stop a run.
     const reportRun = () => {
@@ -262,12 +237,20 @@ export default function GameShell({
     const onVisibility = () => {
       if (document.hidden) reportRun();
     };
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      g.saveRun();
+      setCanContinue(g.wave > 0 && g.p.hull > 0);
+      g.setMode("menu");
+    };
+    window.addEventListener("pageshow", onPageShow);
     window.addEventListener("online", reportRun);
     window.addEventListener("pagehide", reportRun);
     document.addEventListener("visibilitychange", onVisibility);
     void flushPendingRuns();
     return () => {
       window.clearInterval(reportTimer);
+      window.removeEventListener("pageshow", onPageShow);
       window.removeEventListener("online", reportRun);
       window.removeEventListener("pagehide", reportRun);
       document.removeEventListener("visibilitychange", onVisibility);
@@ -315,7 +298,7 @@ export default function GameShell({
       game.touchFire = false;
       game.mouseDown = false;
       if (game.mode === "playing") game.setMode("paused");
-      queueRun(game.leaderboardReport());
+      if (game.mode !== "menu") queueRun(game.leaderboardReport());
     }
     setLeaderboardOpen(true);
     audio.play("ui");
@@ -330,12 +313,31 @@ export default function GameShell({
     audio.unlock();
     setRun(null);
     setPanel("none");
+    setCanContinue(false);
     gameRef.current?.startGame();
+  }, []);
+  const continueRun = useCallback(() => {
+    audio.unlock();
+    setPanel("none");
+    continuingSavedRun.current = true;
+    try {
+      gameRef.current?.continueRun();
+    } finally {
+      continuingSavedRun.current = false;
+    }
   }, []);
   const resume = useCallback(() => {
     audio.unlock();
     setPanel("none");
     gameRef.current?.setMode("playing");
+  }, []);
+  const returnToMenu = useCallback(() => {
+    const game = gameRef.current;
+    if (!game) return;
+    game.saveRun();
+    setCanContinue(game.wave > 0 && game.p.hull > 0);
+    setPanel("none");
+    game.setMode("menu");
   }, []);
   const pause = useCallback(() => {
     const g = gameRef.current;
@@ -478,7 +480,6 @@ export default function GameShell({
   }, []);
 
   const best = scores[0]?.score ?? 0;
-  const curWeapon = WEAPON_DEFS[hud.primary];
   const shopInfo = gameRef.current?.weaponShopInfo(shopWeapon);
   const droneInfo = gameRef.current?.salvageShopInfo();
   const shopDef = WEAPON_DEFS[shopWeapon];
@@ -497,66 +498,87 @@ export default function GameShell({
       <div className="relative flex h-full w-full gap-0">
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           {/* top telemetry strip */}
-          <div className="flex shrink-0 items-end justify-between border-b border-steel/25 px-3 py-2 sm:px-5">
-            <div>
-              <p className="legend">Score</p>
-              <p className="font-display text-[clamp(1.6rem,4.2vw,2.6rem)] leading-none text-amber-hot">
-                {String(hud.score).padStart(6, "0")}
-              </p>
-            </div>
-            <div className="hidden text-center sm:block">
-              <p className="legend">Sector Wave</p>
-              <p className="font-display text-[clamp(1.2rem,3vw,1.9rem)] leading-none text-amber">
-                {String(hud.wave).padStart(2, "0")}
-              </p>
-            </div>
-            <div className="flex items-end gap-5 sm:gap-8">
-              <div className="text-right">
-                <p className="legend">Multiplier</p>
-                <p className="font-display text-[clamp(1.1rem,3vw,1.7rem)] leading-none text-magenta">
-                  ×{hud.multiplier.toFixed(1)}
+          {mode !== "menu" && (
+            <div className="flex shrink-0 flex-wrap items-end justify-between gap-2 border-b border-steel/25 px-3 py-2 sm:px-5">
+              <div>
+                <p className="legend">Score</p>
+                <p className="font-display text-[clamp(1.6rem,4.2vw,2.6rem)] leading-none text-amber-hot">
+                  {String(hud.score).padStart(6, "0")}
                 </p>
               </div>
-              <div className="text-right">
-                <p className="legend">Credits</p>
-                <p className="font-display text-[clamp(1.1rem,3vw,1.7rem)] leading-none text-amber">
-                  {hud.credits}
-                </p>
+              <div className="flex items-center gap-3">
+                <div className="text-center">
+                  <p className="legend">Wave</p>
+                  <p className="font-display text-2xl leading-none text-amber">
+                    {String(hud.wave).padStart(2, "0")}
+                  </p>
+                </div>
+                <div className="w-24 sm:w-36" aria-label="Sector progress">
+                  <p className="text-[10px] text-ice">
+                    {SECTORS[hud.sector].numeral} · {SECTORS[hud.sector].name}
+                  </p>
+                  <div className="mt-1 flex h-1.5 gap-1">
+                    {SECTORS.map((sector, i) => (
+                      <span
+                        key={sector.numeral}
+                        className="flex-1"
+                        style={{
+                          background: i <= hud.sector ? "#6fe7ff" : "#3a3f55",
+                          opacity: i === hud.sector ? 1 : 0.45,
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
               </div>
-              <button
-                onClick={openShop}
-                disabled={mode === "menu" || mode === "gameover" || mode === "victory"}
-                className="border border-ice/50 px-3 py-2 text-[10px] uppercase tracking-[0.22em] text-ice transition-colors hover:border-ice hover:bg-ice/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-ice disabled:cursor-not-allowed disabled:opacity-25"
-              >
-                Shop
-              </button>
-              <button
-                onClick={toggleMute}
-                aria-pressed={muted}
-                aria-label={muted ? "Unmute audio" : "Mute audio"}
-                className="border border-steel/50 px-3 py-2 text-[10px] uppercase tracking-[0.22em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
-              >
-                {muted ? "♪ Off" : "♪ On"}
-              </button>
-              <button
-                onClick={openDetails}
-                className="hidden border border-steel/50 px-3 py-2 text-[10px] uppercase tracking-[0.22em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber sm:block"
-              >
-                Details
-              </button>
-              <button
-                onClick={pause}
-                className="border border-steel/50 px-3 py-2 text-[10px] uppercase tracking-[0.22em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
-              >
-                {mode === "paused" ? "Resume" : "Pause"}
-              </button>
+              <div className="flex items-end gap-2 sm:gap-5">
+                <div className="text-right">
+                  <p className="legend">Multiplier</p>
+                  <p className="font-display text-[clamp(1.1rem,3vw,1.7rem)] leading-none text-magenta">
+                    ×{hud.multiplier.toFixed(1)}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="legend">Credits</p>
+                  <p className="font-display text-[clamp(1.1rem,3vw,1.7rem)] leading-none text-amber">
+                    {hud.credits}
+                  </p>
+                </div>
+                <button
+                  onClick={openShop}
+                  disabled={mode === "gameover" || mode === "victory"}
+                  className="border border-ice/50 px-3 py-2 text-[10px] uppercase tracking-[0.22em] text-ice transition-colors hover:border-ice hover:bg-ice/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-ice disabled:cursor-not-allowed disabled:opacity-25"
+                >
+                  Shop
+                </button>
+                <button
+                  onClick={toggleMute}
+                  aria-pressed={muted}
+                  aria-label={muted ? "Unmute audio" : "Mute audio"}
+                  className="border border-steel/50 px-3 py-2 text-[10px] uppercase tracking-[0.22em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
+                >
+                  {muted ? "♪ Off" : "♪ On"}
+                </button>
+                <button
+                  onClick={openDetails}
+                  className="hidden border border-steel/50 px-3 py-2 text-[10px] uppercase tracking-[0.22em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber sm:block"
+                >
+                  Details
+                </button>
+                <button
+                  onClick={pause}
+                  className="border border-steel/50 px-3 py-2 text-[10px] uppercase tracking-[0.22em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
+                >
+                  {mode === "paused" ? "Resume" : "Pause"}
+                </button>
+              </div>
             </div>
-          </div>
-
+          )}
           {/* playfield */}
           <div className="scanlines vignette relative min-h-[320px] w-full flex-1 overflow-hidden border-x border-steel/20 bg-void">
             <span
-              aria-label={`Game version ${APP_VERSION || "local"}`}
+              hidden={mode === "menu"}
+              aria-label={`Game version ${APP_VERSION}`}
               className="pointer-events-none absolute bottom-2 left-2 z-10 border border-steel/30 bg-void/70 px-1.5 py-0.5 font-mono text-[9px] tracking-wider text-amber/45"
             >
               v{APP_VERSION || "local"}
@@ -608,88 +630,20 @@ export default function GameShell({
                   transition={{ duration: 0.22 }}
                   className="absolute inset-0"
                 >
-                  <div
-                    className="absolute inset-0"
-                    style={{
-                      backgroundImage: `url(${marqueeImg})`,
-                      backgroundSize: "cover",
-                      backgroundPosition: "center right",
+                  <MainMenu
+                    hud={hud}
+                    canContinue={canContinue}
+                    version={APP_VERSION}
+                    onContinue={continueRun}
+                    onStart={start}
+                    onLeaderboard={openLeaderboard}
+                    leaderboardOpen={leaderboardOpen}
+                    onSettings={() => {
+                      audio.play("ui");
+                      setPanel("settings");
                     }}
+                    onDetails={openDetails}
                   />
-                  <div className="absolute inset-0 bg-gradient-to-r from-void via-void/92 to-void/35" />
-                  <div className="thin-scroll relative flex h-full flex-col justify-center overflow-y-auto px-5 py-8 sm:px-12">
-                    <HeliosMark size={40} className="mb-3 text-amber/80" />
-                    <p className="legend text-amber/70">Vector Arcade System · HD-79</p>
-                    <h1 className="mt-2 font-display text-[clamp(2.6rem,9vw,6.2rem)] leading-[0.86] tracking-[-0.03em] text-amber-hot">
-                      HELIOS
-                      <br />
-                      DRIFT
-                    </h1>
-                    <p className="mt-4 max-w-sm text-[12px] leading-relaxed text-amber/70 sm:text-[13px]">
-                      Inertia is a weapon. Break the belt, bank the salvage, and buy your arsenal
-                      from the credit armory — eight weapon tracks, twenty-five waves, five
-                      dreadnoughts.
-                    </p>
-                    <div className="mt-6 flex flex-wrap items-center gap-3">
-                      <button
-                        onClick={start}
-                        className="border-2 border-amber bg-amber px-7 py-3 text-[11px] font-semibold uppercase tracking-[0.28em] text-void transition-transform hover:-translate-y-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-hot"
-                      >
-                        Start Run
-                      </button>
-                      <button
-                        onClick={() => {
-                          audio.play("ui");
-                          setPanel("settings");
-                        }}
-                        className="border border-steel/60 px-5 py-3 text-[11px] uppercase tracking-[0.28em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
-                      >
-                        Settings
-                      </button>
-                      <button
-                        onClick={openLeaderboard}
-                        className="border border-ice/60 px-5 py-3 text-[11px] uppercase tracking-[0.22em] text-ice transition-colors hover:bg-ice/10 focus-visible:outline focus-visible:outline-ice"
-                      >
-                        Global Leaderboard
-                      </button>
-                      <button
-                        onClick={openDetails}
-                        className="border border-steel/60 px-5 py-3 text-[11px] uppercase tracking-[0.28em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
-                      >
-                        Game Details
-                      </button>
-                      <div className="text-[10px] uppercase leading-relaxed tracking-[0.18em] text-amber/55">
-                        <span className="hidden sm:inline">
-                          MOUSE AIMS · WASD THRUSTS · CLICK FIRES · TAB WEAPON · E MISSILE · P PAUSE
-                        </span>
-                        <span className="sm:hidden">LEFT THUMB STEERS · RIGHT THUMB FIRES</span>
-                      </div>
-                    </div>
-                    <div className="mt-7 max-w-xs">
-                      <p className="legend mb-2">Local Top Scores</p>
-                      <ol className="space-y-1">
-                        {(scores.length
-                          ? scores.slice(0, 4)
-                          : [{ score: 0, wave: 0, level: 0, date: "—" }]
-                        ).map((s, i) => (
-                          <li
-                            key={i}
-                            className="flex items-baseline justify-between border-b border-steel/25 pb-1 text-[11px] text-amber/70"
-                          >
-                            <span className="legend text-amber/50">
-                              {String(i + 1).padStart(2, "0")}
-                            </span>
-                            <span className="flex-1 px-3 text-amber/45">
-                              wave {String(s.wave).padStart(2, "0")} · lvl {s.level}
-                            </span>
-                            <span className="text-amber-hot">
-                              {String(s.score).padStart(6, "0")}
-                            </span>
-                          </li>
-                        ))}
-                      </ol>
-                    </div>
-                  </div>
                 </motion.div>
               )}
 
@@ -824,6 +778,12 @@ export default function GameShell({
                         }`}
                       >
                         {devUnlocked ? (devOpen ? "Hide Console" : "Dev Console") : "Service Code"}
+                      </button>
+                      <button
+                        onClick={returnToMenu}
+                        className="w-full border border-ice/50 py-3 text-[10px] uppercase tracking-[0.2em] text-ice hover:bg-ice/10"
+                      >
+                        Save & return to menu
                       </button>
                       <button
                         onClick={start}
@@ -1938,160 +1898,12 @@ export default function GameShell({
                 </div>
               </DevWindow>
             )}
-
-            {/* In-play hotbar: every installed weapon and its actual level. */}
-            {mode === "playing" && (
-              <div className="absolute inset-x-0 bottom-2 z-30 flex justify-center px-2">
-                <div className="thin-scroll flex max-w-full gap-1 overflow-x-auto border border-steel/45 bg-void/82 p-1 backdrop-blur-sm">
-                  {hud.owned.map((o) => {
-                    const idx = WEAPON_ORDER.indexOf(o.id) + 1;
-                    const active = o.id === hud.primary;
-                    return (
-                      <button
-                        key={o.id}
-                        onClick={() => gameRef.current?.selectWeapon(o.id)}
-                        className={`min-w-[76px] border px-2 py-1.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber ${
-                          active
-                            ? "border-amber bg-amber/15"
-                            : "border-steel/35 hover:border-amber/50 hover:bg-amber/5"
-                        }`}
-                      >
-                        <span className="flex items-center justify-between gap-2">
-                          <span className="legend text-amber/40">{idx}</span>
-                          <span
-                            className={`text-[9px] uppercase tracking-[0.12em] ${active ? "text-amber-hot" : "text-amber/65"}`}
-                          >
-                            LV {o.level}
-                          </span>
-                        </span>
-                        <span className="mt-0.5 block truncate text-[9px] font-semibold uppercase tracking-[0.1em] text-amber-hot">
-                          {WEAPON_DEFS[o.id].short}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* bottom status deck */}
-          <div className="grid shrink-0 grid-cols-2 gap-x-6 gap-y-3 border-t border-steel/25 px-3 py-3 sm:grid-cols-3 sm:px-5">
-            <div>
-              <div className="mb-1 flex items-baseline justify-between">
-                <p className="legend">Sector</p>
-                <p className="text-[11px] text-amber-hot">
-                  {SECTORS[hud.sector].numeral} · {SECTORS[hud.sector].name}
-                </p>
-              </div>
-              <div className="flex h-[6px] w-full items-center gap-1">
-                {SECTORS.slice(0, 5).map((s, i) => (
-                  <div
-                    key={s.numeral}
-                    className="h-full flex-1 transition-colors duration-500"
-                    style={{
-                      background:
-                        i < hud.sector
-                          ? "rgba(111,231,255,0.35)"
-                          : i === hud.sector
-                            ? "#6fe7ff"
-                            : "rgba(58,63,85,0.35)",
-                      boxShadow: i === hud.sector ? "0 0 10px rgba(111,231,255,.6)" : "none",
-                    }}
-                  />
-                ))}
-              </div>
-            </div>
-            <div>
-              <div className="mb-1 flex items-baseline justify-between">
-                <p className="legend">Missiles</p>
-                <p className="text-[11px] text-magenta">
-                  {hud.missiles}/{hud.maxMissiles}
-                </p>
-              </div>
-              <div className="flex h-[6px] w-full items-center gap-1">
-                {Array.from({ length: Math.max(1, hud.maxMissiles) }).map((_, i) => {
-                  const loaded = i < hud.missiles,
-                    reloading = i === hud.missiles;
-                  return (
-                    <div key={i} className="h-full flex-1 bg-steel/35">
-                      <div
-                        className="h-full transition-[width] duration-150"
-                        style={{
-                          width: loaded ? "100%" : reloading ? `${hud.missileCharge * 100}%` : "0%",
-                          background: loaded ? "#ff3d6e" : "rgba(255,61,110,0.55)",
-                          boxShadow: loaded ? "0 0 10px rgba(255,61,110,.55)" : "none",
-                        }}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-            <div>
-              <div className="mb-1 flex items-baseline justify-between">
-                <p className="legend">Weapon</p>
-                <button
-                  onClick={cycleWeapon}
-                  className="text-[11px] text-amber-hot transition-colors hover:text-amber focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
-                  aria-label="Cycle weapon"
-                >
-                  {curWeapon.short} · LV {hud.weaponLevel}{" "}
-                  {hud.owned.length > 1 && <span className="text-amber/45">⇄</span>}
-                </button>
-              </div>
-              {hud.primary === "laser" ? (
-                <Meter
-                  value={hud.heat * 100}
-                  max={100}
-                  color={
-                    hud.heat > 0.85
-                      ? "linear-gradient(90deg,#a8233f,#ff3d6e)"
-                      : "linear-gradient(90deg,#2f8fa8,#6fe7ff)"
-                  }
-                  glow={hud.heat > 0.85 ? "rgba(255,61,110,.6)" : "rgba(111,231,255,.5)"}
-                />
-              ) : (
-                <div className="flex h-[6px] w-full items-center gap-1">
-                  {Array.from({ length: MAX_WEAPON_LEVEL }).map((_, i) => (
-                    <div
-                      key={i}
-                      className="h-full flex-1"
-                      style={{
-                        background: i < hud.weaponLevel ? "#ffb03a" : "rgba(58,63,85,0.35)",
-                        boxShadow: i < hud.weaponLevel ? "0 0 8px rgba(255,176,58,.5)" : "none",
-                      }}
-                    />
-                  ))}
-                </div>
-              )}
-              <p className="mt-1.5 truncate text-[10px] uppercase tracking-[0.18em] text-amber/50">
-                {hud.owned.map((o) => `${WEAPON_DEFS[o.id].short} ${o.level}`).join(" · ")}
-              </p>
-            </div>
-          </div>
-
-          <div className="h-[3px] w-full shrink-0 bg-steel/25">
-            <div
-              className="h-full bg-amber transition-[width] duration-300"
-              style={{
-                width: `${Math.min(100, (hud.xp / hud.xpNext) * 100)}%`,
-                boxShadow: "0 0 14px rgba(255,176,58,.8)",
-              }}
-            />
-          </div>
-          <div className="flex shrink-0 items-center justify-between px-3 py-2 sm:px-5">
-            <p className="legend">
-              Level {String(hud.level).padStart(2, "0")} · {Math.floor((hud.xp / hud.xpNext) * 100)}
-              % to next upgrade
-            </p>
-            <p className="legend hidden sm:block">
-              Sector {String(hud.wave).padStart(2, "0")} · Salvage {hud.credits} CR
-            </p>
           </div>
 
           {/* touch controls */}
-          <div className="flex shrink-0 items-center justify-between gap-3 px-3 pb-4 sm:hidden">
+          <div
+            className={`${mode === "menu" ? "hidden" : "flex"} shrink-0 items-center justify-between gap-3 px-3 pb-4 sm:hidden`}
+          >
             <button
               onClick={cycleWeapon}
               className="flex-1 border border-amber/50 py-4 text-[10px] uppercase tracking-[0.22em] text-amber active:bg-amber/20"

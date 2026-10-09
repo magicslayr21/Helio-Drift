@@ -396,10 +396,11 @@ test("Spiker volleys fire four or eight simultaneous, equally spaced shots", () 
     d.fire = 0;
     g.updateDrone(d, 0);
     assert.equal(g.bullets.length, count);
+    assert.equal(d.fire, (count === 8 ? 3.2 : 4) / 1.2);
     g.bullets.forEach((bullet, i) => {
       const expected = d.angle + (i * Math.PI * 2) / count;
-      assert.ok(Math.abs(bullet.vx - Math.cos(expected) * 225) < 1e-9);
-      assert.ok(Math.abs(bullet.vy - Math.sin(expected) * 225) < 1e-9);
+      assert.ok(Math.abs(bullet.vx - Math.cos(expected) * 337.5) < 1e-9);
+      assert.ok(Math.abs(bullet.vy - Math.sin(expected) * 337.5) < 1e-9);
       assert.equal(bullet.kind, "enemy");
       assert.equal(bullet.damageCause, "Spiker radial volley");
       assert.equal(bullet.dmg, 7);
@@ -582,4 +583,89 @@ test("killing a Spiker awards heavy rewards without removing Warden nests", () =
   assert.equal(g.score, 700);
   assert.equal(g.pickups.length, 4);
   assert.equal(g.bullets.length, 1);
+});
+
+test("Sentinels aim near moving players and re-evaluate range after wrapping", () => {
+  for (const [px, py, vx, vy] of [
+    [800, 450, 0, 540],
+    [800, 5, 0, -540],
+    [400, 450, -540, 0],
+    [600, 450, 0, 0],
+  ]) {
+    const g = game();
+    Object.assign(g.p, { x: px, y: py, vx, vy });
+    const d = g.spawnDrone(500, 450, 100);
+    d.fire = 0;
+    g.updateDrone(d, 0);
+    assert.equal(g.bullets.length, 1);
+    const b = g.bullets[0];
+    const angle = Math.atan2(b.vy, b.vx);
+    const direct = Math.atan2(py - d.y, px - d.x);
+    const delta = Math.atan2(Math.sin(angle - direct), Math.cos(angle - direct));
+    assert.ok(Math.abs(delta) <= Math.asin(0.25) + 1e-9, "bounded lead stays near the player");
+    assert.equal(d.angle, angle, "hull faces the fired shot");
+    assert.ok(Math.abs(Math.hypot(b.vx, b.vy) - 250) < 1e-8);
+  }
+  const g = game();
+  Object.assign(g.p, { x: 100, y: 450, vx: 0, vy: 0 });
+  const d = g.spawnDrone(-100, 450, 100);
+  d.fire = 0;
+  g.updateDrone(d, 0);
+  assert.equal(
+    g.bullets.length,
+    0,
+    "a sentinel that wrapped out of range must not fire using stale distance",
+  );
+  g.mode = "paused";
+  d.x = 300;
+  g.updateDrone(d, 0);
+  assert.equal(g.bullets.length, 0, "paused sentinels cannot shoot");
+});
+
+test("saved runs open at the menu and Continue preserves gameplay, upgrades and victory", async (t) => {
+  const { RunSave } = await import("../src/game/run-save.ts");
+  let data = null;
+  t.mock.method(localStorage, "getItem", () => data);
+  t.mock.method(localStorage, "setItem", (_key, value) => {
+    data = value;
+  });
+  for (const pending of ["playing", "levelup", "victory"]) {
+    const original = game();
+    original.score = 9876;
+    original.wave = 15;
+    if (pending === "levelup") original.choices = [{ id: "armor", kind: "stat", name: "Armor" }];
+    if (pending === "victory") original.bonusAvailable = true;
+    new RunSave().begin(original);
+    const before = data;
+    const restored = game();
+    assert.equal(restored.restoreRun(true), true);
+    assert.equal(restored.mode, "menu");
+    assert.equal(restored.score, 9876);
+    assert.equal(restored.wave, 15);
+    restored.onKeyDown({ key: "Enter", target: null, preventDefault: noop });
+    assert.equal(restored.mode, "menu", "Enter cannot bypass the saved-run choice");
+    assert.equal(data, before, "visiting the menu does not overwrite the save");
+    restored.continueRun();
+    assert.equal(restored.mode, pending);
+    assert.equal(restored.score, 9876);
+  }
+  data = "invalid json";
+  assert.equal(game().restoreRun(true), false);
+});
+
+test("focused controls retain keyboard activation without blocking flight keys", () => {
+  const g = game();
+  const target = { tagName: "BUTTON", isContentEditable: false };
+  let prevented = false;
+  g.onKeyDown({
+    key: " ",
+    target,
+    preventDefault: () => {
+      prevented = true;
+    },
+  });
+  assert.equal(prevented, false);
+  assert.equal(g.keys[" "], undefined);
+  g.onKeyDown({ key: "w", target, preventDefault: noop });
+  assert.equal(g.keys.w, true);
 });

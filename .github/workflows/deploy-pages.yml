@@ -42,7 +42,6 @@ jobs:
         run: npm run build
         env:
           VITE_LEADERBOARD_URL: ${{ vars.VITE_LEADERBOARD_URL }}
-          VITE_APP_VERSION: ${{ github.run_number }}
 
       - name: Upload the Pages artifact
         uses: actions/upload-pages-artifact@v3
