@@ -30,10 +30,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Check game types
+        run: npm run typecheck
+
+      - name: Test gameplay and release notes
+        run: npm run game:test
+
+      - name: Test leaderboard API
+        run: npm run leaderboard:test
+
+      - name: Test Cloudflare leaderboard
+        run: npm run cf:test
+        env:
+          WRANGLER_SEND_METRICS: false
+
       - name: Build the game
         run: npm run build
         env:
-          VITE_APP_VERSION: ${{ github.run_number }}
+          VITE_LEADERBOARD_URL: ${{ vars.VITE_LEADERBOARD_URL }}
 
       - name: Upload the Pages artifact
         uses: actions/upload-pages-artifact@v3

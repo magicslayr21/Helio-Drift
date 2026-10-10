@@ -5,6 +5,7 @@
 
 import type {
   BossSpec,
+  Player,
   Rarity,
   RockTrait,
   SalvageDrone,
@@ -44,6 +45,11 @@ export const WEAPON_ORDER: WeaponId[] = [
 ];
 export const MAX_WEAPON_LEVEL = GAME_CONFIG.weaponProgression.maxLevel;
 
+export function weaponMaxLevel(id: WeaponId): number {
+  const rarity = GAME_CONFIG.weaponProgression.weapons[id].rarity;
+  return rarity === "common" ? 3 : rarity === "rare" ? 4 : MAX_WEAPON_LEVEL;
+}
+
 export const WEAPON_DEFS: Record<
   WeaponId,
   { name: string; short: string; desc: string; perLevel: string; rarity: Rarity; weight: number }
@@ -52,7 +58,7 @@ export const WEAPON_DEFS: Record<
     name: "Pulse Cannon",
     short: "PULSE",
     desc: "Reliable twin-fed plasma. The baseline everything is measured against.",
-    perLevel: "+15% damage · +7% rate · +1 shot every 2 levels",
+    perLevel: "+12% damage · +7% rate · +1 shot every 2 levels",
     rarity: GAME_CONFIG.weaponProgression.weapons.pulse.rarity,
     weight: GAME_CONFIG.weaponProgression.weapons.pulse.weight,
   },
@@ -92,7 +98,7 @@ export const WEAPON_DEFS: Record<
     name: "Arc Coil",
     short: "ARC",
     desc: "Short-range lightning that chains between nearby targets.",
-    perLevel: "+18% damage · +range · +1 chain every 2 levels",
+    perLevel: "+21% damage · +range · +1 chain every 2 levels",
     rarity: GAME_CONFIG.weaponProgression.weapons.arc.rarity,
     weight: GAME_CONFIG.weaponProgression.weapons.arc.weight,
   },
@@ -100,7 +106,7 @@ export const WEAPON_DEFS: Record<
     name: "Beam Emitter",
     short: "BEAM",
     desc: "A continuous cutting beam with an overheat gauge.",
-    perLevel: "+20% dps · −6% heat build-up",
+    perLevel: "+28% dps · −6% heat build-up",
     rarity: GAME_CONFIG.weaponProgression.weapons.laser.rarity,
     weight: GAME_CONFIG.weaponProgression.weapons.laser.weight,
   },
@@ -161,12 +167,12 @@ export const STAT_UPGRADES: StatUpgrade[] = [
   },
   {
     id: "hull",
-    name: "Reinforced Hull",
+    name: "Reinforced Health",
     tag: "Survival",
     rarity: GAME_CONFIG.statUpgrades.hull.rarity,
     weight: GAME_CONFIG.statUpgrades.hull.weight,
     max: GAME_CONFIG.statUpgrades.hull.max,
-    desc: "Max hull +18 and immediately repair 18 hull.",
+    desc: "Max health +18 and immediately restore 18 health.",
     apply: (g) => {
       const hull = GAME_CONFIG.statUpgrades.hull.hullPerStack;
       g.p.maxHull += hull;
@@ -219,9 +225,13 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     rarity: GAME_CONFIG.statUpgrades.crit.rarity,
     weight: GAME_CONFIG.statUpgrades.crit.weight,
     max: GAME_CONFIG.statUpgrades.crit.max,
-    desc: "Critical chance +7% (crits deal 2.2×).",
+    desc: "+20 percentage points critical chance and +0.1× critical damage per level; max 2.5× damage.",
     apply: (g) => {
       g.p.crit += GAME_CONFIG.statUpgrades.crit.critPerStack;
+      g.p.critMult = Math.min(
+        2.5,
+        g.p.critMult + GAME_CONFIG.statUpgrades.crit.critMultiplierPerStack,
+      );
     },
   },
 ];
@@ -241,9 +251,9 @@ export const SALVAGE_UPGRADES: Record<
   }
 > = {
   twinCannons: {
-    name: "Twin Cannons",
+    name: "Adaptive Arsenal",
     path: "offense",
-    desc: "Adds weak support cannons. The final level converts the mounts into a visible minigun.",
+    desc: "Each level adds a projectile to any cannon, one Arc chain, or +20% Beam damage. Works with every mount.",
     ...GAME_CONFIG.salvageUpgradePrices.twinCannons,
   },
   overcharge: {
@@ -253,9 +263,9 @@ export const SALVAGE_UPGRADES: Record<
     ...GAME_CONFIG.salvageUpgradePrices.overcharge,
   },
   piercing: {
-    name: "Piercing Rounds",
+    name: "Synchronized Feeders",
     path: "offense",
-    desc: "Drone shots pierce additional targets and gain a little range.",
+    desc: "Each level adds +5% pilot attack speed and +10% drone attack speed; beams gain equivalent DPS. Replaces bonus piercing.",
     ...GAME_CONFIG.salvageUpgradePrices.piercing,
   },
   armor: {
@@ -267,20 +277,27 @@ export const SALVAGE_UPGRADES: Record<
   repairPulse: {
     name: "Repair Pulse",
     path: "support",
-    desc: "A slow support pulse repairs the player's hull when the drone is nearby.",
+    desc: "After five quiet seconds nearby, heals 1 HP each second; max level heals 2 HP every half-second.",
     ...GAME_CONFIG.salvageUpgradePrices.repairPulse,
+  },
+
+  shield: {
+    name: "Guardian Link",
+    path: "support",
+    desc: "Nearby drone absorbs 20% / 35% / 50% of incoming hull damage, paid from its own HP. Stops when the drone is destroyed.",
+    ...GAME_CONFIG.salvageUpgradePrices.shield,
   },
 
   magnet: {
     name: "Magnet Coil",
     path: "utility",
-    desc: "A visible ring expands the drone's credit collection field.",
+    desc: "+90 collection range per level, stronger attraction, and collects repair kits for the pilot as well as credits.",
     ...GAME_CONFIG.salvageUpgradePrices.magnet,
   },
   scan: {
     name: "Wide Scan",
     path: "utility",
-    desc: "Longer scan range lets the drone find salvage and targets earlier.",
+    desc: "+150 targeting range, +60 collection range, and +50 repair / shield-link range per level; improves every weapon mount.",
     ...GAME_CONFIG.salvageUpgradePrices.scan,
   },
   speed: {
@@ -297,6 +314,7 @@ export const SALVAGE_UPGRADE_ORDER: SalvageUpgradeId[] = [
   "piercing",
   "armor",
   "repairPulse",
+  "shield",
   "magnet",
   "scan",
   "speed",
@@ -333,7 +351,7 @@ export const BOSS_ROCK_CAP = GAME_CONFIG.asteroids.bossFieldCap;
 /** how long boom-launch and MK3 rocks live (seconds) before they quietly burn out */
 export const BOSS_ROCK_LIFESPAN = GAME_CONFIG.asteroids.bossRockLifetime;
 
-/** MK1–MK3 health may never reach the MK5 / MK6 figures, whatever wave they are summoned on */
+/** MK1–MK2 retain their original ceiling; later bosses have explicit campaign HP. */
 export const EARLY_BOSS_HP_CEILING = GAME_CONFIG.bosses.earlyHpCeiling;
 
 /**
@@ -374,11 +392,10 @@ export const RUN_PACING = {
   lateWardenFromWave: 21,
   lateWardenToWave: 24,
   traitWaves: {
-    /** no homing rocks at all until the MK1 boss fight is cleared */
-    homing: 6,
-    bounce: 11,
-    boom: 16,
-    fast: 21,
+    homing: GAME_CONFIG.asteroids.traits.homing.unlockWave,
+    bounce: GAME_CONFIG.asteroids.traits.bounce.unlockWave,
+    boom: GAME_CONFIG.asteroids.traits.boom.unlockWave,
+    fast: GAME_CONFIG.asteroids.traits.fast.unlockWave,
   },
   /** wave-completion credit payout: 80 + wave * this */
   creditsPerWaveBase: GAME_CONFIG.waves.waveCreditsBase,
@@ -504,7 +521,7 @@ export const BOSS_SPECS: Record<number, BossSpec> = {
 /* ------------------------------------------------------------ factories */
 
 /** base ship stats — also the reset target when dev edits rebuild upgrades */
-export function freshPlayer() {
+export function freshPlayer(): Player {
   const weapons = {} as Record<WeaponId, number>;
   for (const w of WEAPON_ORDER) weapons[w] = 0;
   weapons.pulse = 1;
@@ -523,7 +540,7 @@ export function freshPlayer() {
     fireRateMul: GAME_CONFIG.player.fireRateMul,
     damageMul: GAME_CONFIG.player.damageMul,
     bulletSpeed: GAME_CONFIG.player.bulletSpeed,
-    primary: "pulse" as WeaponId,
+    primary: "pulse",
     weapons,
     extraShots: 0,
     pierce: 0,

@@ -6,7 +6,7 @@ import {
   saveScore,
   WEAPON_DEFS,
   WEAPON_ORDER,
-  MAX_WEAPON_LEVEL,
+  weaponMaxLevel,
   STAT_UPGRADES,
   type Hud,
   type Mode,
@@ -17,11 +17,21 @@ import {
   type SalvageShopInfo,
   type SalvageUpgradeId,
 } from "../game/engine";
-import { HeliosMark } from "./Masthead";
+import { PlayerStatus } from "./PlayerStatus";
+import { DevWindow } from "./DevWindow";
+import { Leaderboard } from "./Leaderboard";
+import {
+  authenticateDeveloper,
+  clearDeveloperSession,
+  flushPendingRuns,
+  isLeaderboardConfigured,
+  queueRun,
+} from "../leaderboard/client";
+import { MainMenu } from "./MainMenu";
+import { UpdateLog } from "./UpdateLog";
 import { audio } from "../game/audio";
 import { GAME_CONFIG } from "../game/game-config";
 import nebulaImg from "../assets/nebula.jpg";
-import marqueeImg from "../assets/marquee.jpg";
 
 const EMPTY_HUD: Hud = {
   mode: "menu",
@@ -61,8 +71,7 @@ const EMPTY_HUD: Hud = {
   bonusDefeated: false,
 };
 
-const APP_VERSION = (import.meta as ImportMeta & { env: { VITE_APP_VERSION?: string } }).env
-  .VITE_APP_VERSION;
+const APP_VERSION = __APP_VERSION__;
 
 const SECTORS = [
   { numeral: "I", name: "Deep Void" },
@@ -91,6 +100,7 @@ const EMPTY_SETTINGS = {
   autoFire: false,
   mouseControl: false,
   hybridAim: true,
+  trackpad: false,
   legacyMovement: false,
   shake: true,
 };
@@ -101,35 +111,11 @@ const DRONE_UPGRADE_IDS = [
   "piercing",
   "armor",
   "repairPulse",
+  "shield",
   "magnet",
   "scan",
   "speed",
 ] as const satisfies readonly SalvageUpgradeId[];
-
-function Meter({
-  value,
-  max,
-  color,
-  glow,
-}: {
-  value: number;
-  max: number;
-  color: string;
-  glow: string;
-}) {
-  return (
-    <div className="h-[6px] w-full bg-steel/35">
-      <div
-        className="h-full transition-[width] duration-200 ease-out"
-        style={{
-          width: `${Math.max(0, Math.min(100, (value / max) * 100))}%`,
-          background: color,
-          boxShadow: `0 0 12px ${glow}`,
-        }}
-      />
-    </div>
-  );
-}
 
 function LevelPips({ level, max, color }: { level: number; max: number; color: string }) {
   return (
@@ -165,6 +151,7 @@ export default function GameShell({
   const [scores, setScores] = useState<ScoreEntry[]>([]);
   const [run, setRun] = useState<ScoreEntry | null>(null);
   const [muted, setMuted] = useState(audio.muted);
+  const [musicEnabled, setMusicEnabled] = useState(audio.musicEnabled);
 
   const [settings, setSettings] = useState(() => {
     try {
@@ -186,6 +173,12 @@ export default function GameShell({
   const [devUnlocked, setDevUnlocked] = useState(false);
   const [devOpen, setDevOpen] = useState(false);
   const [devPage, setDevPage] = useState<1 | 2>(1);
+  const [devSpawnCount, setDevSpawnCount] = useState(1);
+  const [devSpawnSize, setDevSpawnSize] = useState<1 | 2 | 3>(2);
+  const [leaderboardOpen, setLeaderboardOpen] = useState(false);
+  const [updateLogOpen, setUpdateLogOpen] = useState(false);
+  const [canContinue, setCanContinue] = useState(false);
+  const continuingSavedRun = useRef(false);
 
   useEffect(() => {
     onDeveloperChange(devUnlocked);
@@ -200,6 +193,7 @@ export default function GameShell({
       /* unavailable */
     }
     const revoke = () => {
+      clearDeveloperSession();
       setDevUnlocked(false);
       setDevOpen(false);
       onDeveloperChange(false);
@@ -216,6 +210,7 @@ export default function GameShell({
     let restoring = false;
     const g = new Game(canvas, {
       onHud: setHud,
+      onRunReport: queueRun,
       onMode: (m) => {
         setMode(m);
         if (m === "levelup") setChoices([...g.choices]);
@@ -228,16 +223,42 @@ export default function GameShell({
             date: new Date().toLocaleDateString(undefined, { month: "short", day: "numeric" }),
           };
           setRun(entry);
-          if (!restoring) setScores(saveScore(entry));
+          if (!restoring && !continuingSavedRun.current) setScores(saveScore(entry));
         }
         if (m !== "paused" && m !== "menu") setPanel("none");
       },
     });
     gameRef.current = g;
     restoring = true;
-    g.restoreRun();
+    setCanContinue(g.restoreRun(true));
     restoring = false;
+    // Low-frequency reporting is outside the canvas loop. Network failures never stop a run.
+    const reportRun = () => {
+      if (g.mode !== "menu") queueRun(g.leaderboardReport());
+      void flushPendingRuns();
+    };
+    const reportTimer = window.setInterval(reportRun, 15000);
+    const onVisibility = () => {
+      if (document.hidden) reportRun();
+    };
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      g.saveRun();
+      setCanContinue(g.wave > 0 && g.p.hull > 0);
+      g.setMode("menu");
+    };
+    window.addEventListener("pageshow", onPageShow);
+    window.addEventListener("online", reportRun);
+    window.addEventListener("pagehide", reportRun);
+    document.addEventListener("visibilitychange", onVisibility);
+    void flushPendingRuns();
     return () => {
+      window.clearInterval(reportTimer);
+      window.removeEventListener("pageshow", onPageShow);
+      window.removeEventListener("online", reportRun);
+      window.removeEventListener("pagehide", reportRun);
+      document.removeEventListener("visibilitychange", onVisibility);
+      reportRun();
       g.destroy();
       gameRef.current = null;
     };
@@ -249,6 +270,7 @@ export default function GameShell({
       g.settings.autoFire = settings.autoFire;
       g.settings.mouseControl = settings.mouseControl;
       g.settings.hybridAim = settings.hybridAim;
+      g.settings.trackpad = settings.trackpad;
       g.settings.legacyMovement = settings.legacyMovement;
       g.settings.shake = settings.shake;
     }
@@ -272,16 +294,54 @@ export default function GameShell({
     onOpenDetails?.();
   }, [onOpenDetails]);
 
+  const openLeaderboard = useCallback(() => {
+    const game = gameRef.current;
+    if (game) {
+      game.inputSuspended = true;
+      game.keys = {};
+      game.touchFire = false;
+      game.mouseDown = false;
+      if (game.mode === "playing") game.setMode("paused");
+      if (game.mode !== "menu") queueRun(game.leaderboardReport());
+    }
+    setLeaderboardOpen(true);
+    audio.play("ui");
+  }, []);
+  const closeLeaderboard = useCallback(() => {
+    setLeaderboardOpen(false);
+    if (gameRef.current) gameRef.current.inputSuspended = false;
+  }, []);
+  const unlockLeaderboardDeveloper = useCallback(() => setDevUnlocked(true), []);
+
   const start = useCallback(() => {
     audio.unlock();
     setRun(null);
     setPanel("none");
+    setCanContinue(false);
     gameRef.current?.startGame();
+  }, []);
+  const continueRun = useCallback(() => {
+    audio.unlock();
+    setPanel("none");
+    continuingSavedRun.current = true;
+    try {
+      gameRef.current?.continueRun();
+    } finally {
+      continuingSavedRun.current = false;
+    }
   }, []);
   const resume = useCallback(() => {
     audio.unlock();
     setPanel("none");
     gameRef.current?.setMode("playing");
+  }, []);
+  const returnToMenu = useCallback(() => {
+    const game = gameRef.current;
+    if (!game) return;
+    game.saveRun();
+    setCanContinue(game.wave > 0 && game.p.hull > 0);
+    setPanel("none");
+    game.setMode("menu");
   }, []);
   const pause = useCallback(() => {
     const g = gameRef.current;
@@ -304,21 +364,25 @@ export default function GameShell({
     setSettings((s) => ({ ...s, [key]: !s[key] }));
   }, []);
 
-  // The three flight schemes are mutually exclusive. Switching one on clears the
+  // The flight schemes are mutually exclusive. Switching one on clears the
   // others; switching the active one off falls back to Legacy Movement, since
   // that is plain keyboard steering with no mouse assist.
-  const toggleMovement = useCallback((key: "mouseControl" | "hybridAim" | "legacyMovement") => {
-    audio.play("ui");
-    setSettings((s) => {
-      const on = !s[key];
-      return {
-        ...s,
-        mouseControl: on && key === "mouseControl",
-        hybridAim: on && key === "hybridAim",
-        legacyMovement: on ? key === "legacyMovement" : true,
-      };
-    });
-  }, []);
+  const toggleMovement = useCallback(
+    (key: "mouseControl" | "hybridAim" | "legacyMovement" | "trackpad") => {
+      audio.play("ui");
+      setSettings((s) => {
+        const on = !s[key];
+        return {
+          ...s,
+          mouseControl: on && key === "mouseControl",
+          hybridAim: on && key === "hybridAim",
+          trackpad: on && key === "trackpad",
+          legacyMovement: on ? key === "legacyMovement" : true,
+        };
+      });
+    },
+    [],
+  );
   const cycleWeapon = useCallback(() => gameRef.current?.cycleWeapon(1), []);
 
   const openShop = useCallback(() => {
@@ -343,20 +407,31 @@ export default function GameShell({
     setCodeInput("");
     setCodeError(false);
   }, []);
-  const submitCode = useCallback(() => {
-    if (codeInput.trim().toLowerCase() === GAME_CONFIG.developer.accessCode.trim().toLowerCase()) {
+  const submitCode = useCallback(async () => {
+    const code = codeInput.trim();
+    const localCode = code.toLowerCase() === GAME_CONFIG.developer.accessCode.trim().toLowerCase();
+    if (localCode) {
       setDevUnlocked(true);
       setDevOpen(true);
       closePanel();
       audio.play("levelup");
-    } else {
+      if (isLeaderboardConfigured()) void authenticateDeveloper(code).catch(() => {});
+      return;
+    }
+    try {
+      await authenticateDeveloper(code);
+      setDevUnlocked(true);
+      setDevOpen(true);
+      closePanel();
+      audio.play("levelup");
+    } catch {
       setCodeError(true);
       audio.play("overheat");
     }
   }, [codeInput, closePanel]);
 
   useEffect(() => {
-    if (panel === "none" && !shopOpen) return;
+    if (leaderboardOpen || updateLogOpen || (panel === "none" && !shopOpen)) return;
     const close = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.stopPropagation();
@@ -365,11 +440,11 @@ export default function GameShell({
     };
     window.addEventListener("keydown", close, true);
     return () => window.removeEventListener("keydown", close, true);
-  }, [panel, shopOpen, closePanel, closeShop]);
+  }, [panel, shopOpen, closePanel, closeShop, leaderboardOpen, updateLogOpen]);
 
   // backquote toggles the dev console — only once the service code has been entered
   useEffect(() => {
-    if (!devUnlocked) return;
+    if (!devUnlocked || leaderboardOpen || updateLogOpen) return;
     const h = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
@@ -381,17 +456,33 @@ export default function GameShell({
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [devUnlocked]);
+  }, [devUnlocked, leaderboardOpen, updateLogOpen]);
+
+  useEffect(() => {
+    if (!updateLogOpen) return;
+    const game = gameRef.current;
+    if (!game) return;
+    const suspended = game.inputSuspended;
+    game.inputSuspended = true;
+    game.keys = {};
+    game.mouseDown = game.touchFire = false;
+    if (game.mode === "playing") game.setMode("paused");
+    return () => {
+      game.inputSuspended = suspended;
+    };
+  }, [updateLogOpen]);
 
   const dev = useCallback((fn: (x: Game) => void) => {
     const x = gameRef.current;
     if (!x) return;
+    x.markLeaderboardAssisted();
     fn(x);
     audio.play("ui");
   }, []);
   const devPlaying = useCallback((fn: (x: Game) => void) => {
     const x = gameRef.current;
     if (!x || x.mode !== "playing") return;
+    x.markLeaderboardAssisted();
     fn(x);
     audio.play("ui");
   }, []);
@@ -399,6 +490,7 @@ export default function GameShell({
   const devStat = useCallback((fn: (x: Game) => void) => {
     const x = gameRef.current;
     if (!x) return;
+    x.markLeaderboardAssisted();
     fn(x);
     setHud(x.snapshot());
     forceTick((v) => v + 1);
@@ -406,7 +498,6 @@ export default function GameShell({
   }, []);
 
   const best = scores[0]?.score ?? 0;
-  const curWeapon = WEAPON_DEFS[hud.primary];
   const shopInfo = gameRef.current?.weaponShopInfo(shopWeapon);
   const droneInfo = gameRef.current?.salvageShopInfo();
   const shopDef = WEAPON_DEFS[shopWeapon];
@@ -415,69 +506,97 @@ export default function GameShell({
 
   return (
     <section className="relative h-dvh w-full overflow-y-auto overflow-x-hidden">
+      {leaderboardOpen && (
+        <Leaderboard
+          onClose={closeLeaderboard}
+          devUnlocked={devUnlocked}
+          onDeveloperUnlock={unlockLeaderboardDeveloper}
+        />
+      )}
       <div className="relative flex h-full w-full gap-0">
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           {/* top telemetry strip */}
-          <div className="flex shrink-0 items-end justify-between border-b border-steel/25 px-3 py-2 sm:px-5">
-            <div>
-              <p className="legend">Score</p>
-              <p className="font-display text-[clamp(1.6rem,4.2vw,2.6rem)] leading-none text-amber-hot">
-                {String(hud.score).padStart(6, "0")}
-              </p>
-            </div>
-            <div className="hidden text-center sm:block">
-              <p className="legend">Sector Wave</p>
-              <p className="font-display text-[clamp(1.2rem,3vw,1.9rem)] leading-none text-amber">
-                {String(hud.wave).padStart(2, "0")}
-              </p>
-            </div>
-            <div className="flex items-end gap-5 sm:gap-8">
-              <div className="text-right">
-                <p className="legend">Multiplier</p>
-                <p className="font-display text-[clamp(1.1rem,3vw,1.7rem)] leading-none text-magenta">
-                  ×{hud.multiplier.toFixed(1)}
+          {mode !== "menu" && (
+            <div className="flex shrink-0 flex-wrap items-end justify-between gap-2 border-b border-steel/25 px-3 py-2 sm:px-5">
+              <div>
+                <p className="legend">Score</p>
+                <p className="font-display text-[clamp(1.6rem,4.2vw,2.6rem)] leading-none text-amber-hot">
+                  {String(hud.score).padStart(6, "0")}
                 </p>
               </div>
-              <div className="text-right">
-                <p className="legend">Credits</p>
-                <p className="font-display text-[clamp(1.1rem,3vw,1.7rem)] leading-none text-amber">
-                  {hud.credits}
-                </p>
+              <div className="flex items-center gap-3">
+                <div className="text-center">
+                  <p className="legend">Wave</p>
+                  <p className="font-display text-2xl leading-none text-amber">
+                    {String(hud.wave).padStart(2, "0")}
+                  </p>
+                </div>
+                <div className="w-24 sm:w-36" aria-label="Sector progress">
+                  <p className="text-[10px] text-ice">
+                    {SECTORS[hud.sector].numeral} · {SECTORS[hud.sector].name}
+                  </p>
+                  <div className="mt-1 flex h-1.5 gap-1">
+                    {SECTORS.map((sector, i) => (
+                      <span
+                        key={sector.numeral}
+                        className="flex-1"
+                        style={{
+                          background: i <= hud.sector ? "#6fe7ff" : "#3a3f55",
+                          opacity: i === hud.sector ? 1 : 0.45,
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
               </div>
-              <button
-                onClick={openShop}
-                disabled={mode === "menu" || mode === "gameover" || mode === "victory"}
-                className="border border-ice/50 px-3 py-2 text-[10px] uppercase tracking-[0.22em] text-ice transition-colors hover:border-ice hover:bg-ice/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-ice disabled:cursor-not-allowed disabled:opacity-25"
-              >
-                Shop
-              </button>
-              <button
-                onClick={toggleMute}
-                aria-pressed={muted}
-                aria-label={muted ? "Unmute audio" : "Mute audio"}
-                className="border border-steel/50 px-3 py-2 text-[10px] uppercase tracking-[0.22em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
-              >
-                {muted ? "♪ Off" : "♪ On"}
-              </button>
-              <button
-                onClick={openDetails}
-                className="hidden border border-steel/50 px-3 py-2 text-[10px] uppercase tracking-[0.22em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber sm:block"
-              >
-                Details
-              </button>
-              <button
-                onClick={pause}
-                className="border border-steel/50 px-3 py-2 text-[10px] uppercase tracking-[0.22em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
-              >
-                {mode === "paused" ? "Resume" : "Pause"}
-              </button>
+              <div className="flex items-end gap-2 sm:gap-5">
+                <div className="text-right">
+                  <p className="legend">Multiplier</p>
+                  <p className="font-display text-[clamp(1.1rem,3vw,1.7rem)] leading-none text-magenta">
+                    ×{hud.multiplier.toFixed(1)}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="legend">Credits</p>
+                  <p className="font-display text-[clamp(1.1rem,3vw,1.7rem)] leading-none text-amber">
+                    {hud.credits}
+                  </p>
+                </div>
+                <button
+                  onClick={openShop}
+                  disabled={mode === "gameover" || mode === "victory"}
+                  className="border border-ice/50 px-3 py-2 text-[10px] uppercase tracking-[0.22em] text-ice transition-colors hover:border-ice hover:bg-ice/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-ice disabled:cursor-not-allowed disabled:opacity-25"
+                >
+                  Shop
+                </button>
+                <button
+                  onClick={toggleMute}
+                  aria-pressed={muted}
+                  aria-label={muted ? "Unmute audio" : "Mute audio"}
+                  className="border border-steel/50 px-3 py-2 text-[10px] uppercase tracking-[0.22em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
+                >
+                  {muted ? "♪ Off" : "♪ On"}
+                </button>
+                <button
+                  onClick={openDetails}
+                  className="hidden border border-steel/50 px-3 py-2 text-[10px] uppercase tracking-[0.22em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber sm:block"
+                >
+                  Details
+                </button>
+                <button
+                  onClick={pause}
+                  className="border border-steel/50 px-3 py-2 text-[10px] uppercase tracking-[0.22em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
+                >
+                  {mode === "paused" ? "Resume" : "Pause"}
+                </button>
+              </div>
             </div>
-          </div>
-
+          )}
           {/* playfield */}
           <div className="scanlines vignette relative min-h-[320px] w-full flex-1 overflow-hidden border-x border-steel/20 bg-void">
             <span
-              aria-label={`Game version ${APP_VERSION || "local"}`}
+              hidden={mode === "menu"}
+              aria-label={`Game version ${APP_VERSION}`}
               className="pointer-events-none absolute bottom-2 left-2 z-10 border border-steel/30 bg-void/70 px-1.5 py-0.5 font-mono text-[9px] tracking-wider text-amber/45"
             >
               v{APP_VERSION || "local"}
@@ -494,9 +613,11 @@ export default function GameShell({
             />
             <canvas
               ref={canvasRef}
-              className={`absolute inset-0 block h-full w-full touch-none select-none ${!settings.legacyMovement && (settings.mouseControl || settings.hybridAim) ? "cursor-crosshair" : ""}`}
+              className={`absolute inset-0 block h-full w-full touch-none select-none ${!settings.legacyMovement && (settings.mouseControl || settings.hybridAim || settings.trackpad) ? "cursor-crosshair" : ""}`}
               aria-label="Helios Drift playfield"
             />
+
+            {mode !== "menu" && <PlayerStatus hud={hud} />}
 
             <AnimatePresence>
               {hud.banner && mode === "playing" && (
@@ -506,7 +627,7 @@ export default function GameShell({
                   animate={{ opacity: 1, y: 0, letterSpacing: "0.22em" }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.5 }}
-                  className="pointer-events-none absolute inset-x-0 top-[16%] text-center"
+                  className="pointer-events-none absolute inset-x-0 top-[45%] text-center sm:top-[16%]"
                 >
                   <p className="font-display text-[clamp(1.8rem,6vw,3.4rem)] text-amber-hot drop-shadow-[0_0_28px_rgba(255,176,58,0.55)]">
                     {hud.banner}
@@ -527,82 +648,21 @@ export default function GameShell({
                   transition={{ duration: 0.22 }}
                   className="absolute inset-0"
                 >
-                  <div
-                    className="absolute inset-0"
-                    style={{
-                      backgroundImage: `url(${marqueeImg})`,
-                      backgroundSize: "cover",
-                      backgroundPosition: "center right",
+                  <MainMenu
+                    hud={hud}
+                    canContinue={canContinue}
+                    version={APP_VERSION}
+                    onContinue={continueRun}
+                    onStart={start}
+                    onLeaderboard={openLeaderboard}
+                    leaderboardOpen={leaderboardOpen}
+                    onSettings={() => {
+                      audio.play("ui");
+                      setPanel("settings");
                     }}
+                    onDetails={openDetails}
+                    onUpdateLog={() => setUpdateLogOpen(true)}
                   />
-                  <div className="absolute inset-0 bg-gradient-to-r from-void via-void/92 to-void/35" />
-                  <div className="thin-scroll relative flex h-full flex-col justify-center overflow-y-auto px-5 py-8 sm:px-12">
-                    <HeliosMark size={40} className="mb-3 text-amber/80" />
-                    <p className="legend text-amber/70">Vector Arcade System · HD-79</p>
-                    <h1 className="mt-2 font-display text-[clamp(2.6rem,9vw,6.2rem)] leading-[0.86] tracking-[-0.03em] text-amber-hot">
-                      HELIOS
-                      <br />
-                      DRIFT
-                    </h1>
-                    <p className="mt-4 max-w-sm text-[12px] leading-relaxed text-amber/70 sm:text-[13px]">
-                      Inertia is a weapon. Break the belt, bank the salvage, and buy your arsenal
-                      from the credit armory — eight weapon tracks, twenty-five waves, five
-                      dreadnoughts.
-                    </p>
-                    <div className="mt-6 flex flex-wrap items-center gap-3">
-                      <button
-                        onClick={start}
-                        className="border-2 border-amber bg-amber px-7 py-3 text-[11px] font-semibold uppercase tracking-[0.28em] text-void transition-transform hover:-translate-y-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-hot"
-                      >
-                        Start Run
-                      </button>
-                      <button
-                        onClick={() => {
-                          audio.play("ui");
-                          setPanel("settings");
-                        }}
-                        className="border border-steel/60 px-5 py-3 text-[11px] uppercase tracking-[0.28em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
-                      >
-                        Settings
-                      </button>
-                      <button
-                        onClick={openDetails}
-                        className="border border-steel/60 px-5 py-3 text-[11px] uppercase tracking-[0.28em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
-                      >
-                        Game Details
-                      </button>
-                      <div className="text-[10px] uppercase leading-relaxed tracking-[0.18em] text-amber/55">
-                        <span className="hidden sm:inline">
-                          MOUSE AIMS · WASD THRUSTS · CLICK FIRES · TAB WEAPON · E MISSILE · P PAUSE
-                        </span>
-                        <span className="sm:hidden">LEFT THUMB STEERS · RIGHT THUMB FIRES</span>
-                      </div>
-                    </div>
-                    <div className="mt-7 max-w-xs">
-                      <p className="legend mb-2">Local Top Scores</p>
-                      <ol className="space-y-1">
-                        {(scores.length
-                          ? scores.slice(0, 4)
-                          : [{ score: 0, wave: 0, level: 0, date: "—" }]
-                        ).map((s, i) => (
-                          <li
-                            key={i}
-                            className="flex items-baseline justify-between border-b border-steel/25 pb-1 text-[11px] text-amber/70"
-                          >
-                            <span className="legend text-amber/50">
-                              {String(i + 1).padStart(2, "0")}
-                            </span>
-                            <span className="flex-1 px-3 text-amber/45">
-                              wave {String(s.wave).padStart(2, "0")} · lvl {s.level}
-                            </span>
-                            <span className="text-amber-hot">
-                              {String(s.score).padStart(6, "0")}
-                            </span>
-                          </li>
-                        ))}
-                      </ol>
-                    </div>
-                  </div>
                 </motion.div>
               )}
 
@@ -646,7 +706,7 @@ export default function GameShell({
                             <span className="text-[10px] uppercase tracking-[0.16em] text-amber-hot">
                               {WEAPON_DEFS[o.id].short}
                             </span>
-                            <LevelPips level={o.level} max={MAX_WEAPON_LEVEL} color="#ffb03a" />
+                            <LevelPips level={o.level} max={weaponMaxLevel(o.id)} color="#ffb03a" />
                           </button>
                         ))}
                       </div>
@@ -739,14 +799,20 @@ export default function GameShell({
                         {devUnlocked ? (devOpen ? "Hide Console" : "Dev Console") : "Service Code"}
                       </button>
                       <button
-                        onClick={start}
-                        className="col-span-2 border border-steel/60 px-6 py-3 text-[11px] uppercase tracking-[0.28em] text-amber/60 transition-colors hover:border-magenta hover:text-magenta focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
+                        onClick={returnToMenu}
+                        className="w-full border border-ice/50 py-3 text-[10px] uppercase tracking-[0.2em] text-ice hover:bg-ice/10"
                       >
-                        Restart Run
+                        Save & return to menu
+                      </button>
+                      <button
+                        onClick={openLeaderboard}
+                        className="w-full border border-ice/50 py-3 text-[10px] uppercase tracking-[0.2em] text-ice hover:bg-ice/10"
+                      >
+                        Global Leaderboard
                       </button>
                     </div>
                     <p className="legend mt-4 text-center text-amber/40">
-                      P or Esc to resume · R restarts
+                      P or Esc to resume · Save & return keeps your run
                     </p>
                   </div>
                 </motion.div>
@@ -763,7 +829,7 @@ export default function GameShell({
                 >
                   <div className="mb-4 flex items-end justify-between">
                     <div>
-                      <p className="legend text-amber">Upgrade Available</p>
+                      <p className="legend text-amber">Upgrade Available · Game Paused</p>
                       <h2 className="font-display text-[clamp(1.5rem,4.6vw,2.6rem)] leading-none text-amber-hot">
                         LEVEL {String(hud.level).padStart(2, "0")}
                       </h2>
@@ -873,7 +939,7 @@ export default function GameShell({
                   className="absolute inset-0 flex items-center justify-center overflow-y-auto bg-void/90 py-6"
                 >
                   <div className="w-[min(520px,92%)] border border-magenta/40 plate p-6 sm:p-8">
-                    <p className="legend text-magenta">Hull Breach · Signal Lost</p>
+                    <p className="legend text-magenta">Health Depleted · Signal Lost</p>
                     <h2 className="mt-1 font-display text-[clamp(2rem,7vw,3.4rem)] leading-none text-amber-hot">
                       RUN ENDED
                     </h2>
@@ -943,8 +1009,8 @@ export default function GameShell({
                         <p className="mt-2 text-[11px] leading-relaxed text-amber/60">
                           A primordial meteor titan is warping the edge of known space.
                           Golden-orange molten rings, devastating meteor showers, eight scorching
-                          beams, crushing singularities, and explosive strikes await. Your hull and
-                          missiles are fully restored if you accept the challenge.
+                          beams, crushing singularities, and explosive strikes await. Your health
+                          and missiles are fully restored if you accept the challenge.
                         </p>
                         <button
                           onClick={() => {
@@ -1002,7 +1068,7 @@ export default function GameShell({
                   transition={{ duration: 0.16 }}
                   className="absolute inset-0 z-40 flex items-center justify-center overflow-y-auto bg-void/88 py-6 backdrop-blur-[2px]"
                 >
-                  <div className="w-[min(430px,90%)] border border-steel/50 plate p-6">
+                  <div className="thin-scroll max-h-full w-[min(430px,90%)] overflow-y-auto border border-steel/50 plate p-6">
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="legend">Cabinet Diagnostics</p>
@@ -1018,6 +1084,16 @@ export default function GameShell({
                         X
                       </button>
                     </div>
+                    <button
+                      onClick={() => {
+                        setPanel("code");
+                        setCodeInput("");
+                        setCodeError(false);
+                      }}
+                      className="mt-2 w-full border border-steel/50 px-4 py-2 text-[10px] uppercase tracking-[0.18em] text-amber/70 hover:border-amber"
+                    >
+                      Developer Access
+                    </button>
                     <div className="mt-5">
                       <SettingRow
                         label="Auto-Fire"
@@ -1026,8 +1102,14 @@ export default function GameShell({
                         onToggle={() => toggleSetting("autoFire")}
                       />
                       <SettingRow
+                        label="Trackpad Mode"
+                        hint="WASD / arrows move; glide on the trackpad to aim. Fires automatically — no click-hold needed. E launches missiles; Q / Tab switches weapons; P pauses."
+                        on={settings.trackpad}
+                        onToggle={() => toggleMovement("trackpad")}
+                      />
+                      <SettingRow
                         label="Hybrid Aim"
-                        hint="Default scheme. Twin-stick style: the hull always tracks the cursor while WASD / arrows push the ship in world space. Click to fire."
+                        hint="Default scheme. Twin-stick style: the ship always tracks the cursor while WASD / arrows push the ship in world space. Click to fire."
                         on={settings.hybridAim}
                         onToggle={() => toggleMovement("hybridAim")}
                       />
@@ -1039,7 +1121,7 @@ export default function GameShell({
                       />
                       <SettingRow
                         label="Legacy Movement"
-                        hint="Classic cabinet handling: A/D or Left/Right rotate the hull, W thrusts. No mouse aiming at all."
+                        hint="Classic cabinet handling: A/D or Left/Right rotate the ship, W thrusts. No mouse aiming at all."
                         on={settings.legacyMovement}
                         onToggle={() => toggleMovement("legacyMovement")}
                       />
@@ -1055,7 +1137,22 @@ export default function GameShell({
                         on={!muted}
                         onToggle={toggleMute}
                       />
+                      <SettingRow
+                        label="Music"
+                        hint="Quiet original flight, dreadnought, and Omega scores. Turn music off without muting sound effects."
+                        on={musicEnabled}
+                        onToggle={() => {
+                          audio.setMusicEnabled(!audio.musicEnabled);
+                          setMusicEnabled(audio.musicEnabled);
+                        }}
+                      />
                     </div>
+                    <button
+                      onClick={() => setUpdateLogOpen(true)}
+                      className="mt-5 w-full border border-ice/50 px-4 py-2.5 text-xs uppercase tracking-widest text-ice hover:bg-ice/10"
+                    >
+                      Update log · v{__APP_VERSION__}
+                    </button>
                     <button
                       onClick={openDetails}
                       className="mt-5 w-full border border-steel/60 px-4 py-2.5 text-[10px] uppercase tracking-[0.24em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
@@ -1071,6 +1168,8 @@ export default function GameShell({
                   </div>
                 </motion.div>
               )}
+
+              {updateLogOpen && <UpdateLog onClose={() => setUpdateLogOpen(false)} />}
 
               {panel === "code" && (
                 <motion.div
@@ -1261,7 +1360,7 @@ export default function GameShell({
                               <div className="mt-1">
                                 <LevelPips
                                   level={shopInfo.level}
-                                  max={MAX_WEAPON_LEVEL}
+                                  max={shopInfo.maxLevel}
                                   color={shopAccent}
                                 />
                               </div>
@@ -1287,14 +1386,14 @@ export default function GameShell({
                             />
                             <ShopStats
                               title={
-                                shopInfo.level >= MAX_WEAPON_LEVEL
+                                shopInfo.level >= shopInfo.maxLevel
                                   ? "Maximum specification"
                                   : shopInfo.owned
                                     ? `After upgrade · LV ${shopInfo.level + 1}`
                                     : "After purchase · LV 1"
                               }
                               rows={
-                                shopInfo.level >= MAX_WEAPON_LEVEL
+                                shopInfo.level >= shopInfo.maxLevel
                                   ? shopInfo.current
                                   : shopInfo.next
                               }
@@ -1359,12 +1458,7 @@ export default function GameShell({
             </AnimatePresence>
 
             {devOpen && devUnlocked && (
-              <motion.div
-                initial={{ opacity: 0, x: 18 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ type: "spring", stiffness: 300, damping: 28 }}
-                className="thin-scroll absolute right-2 top-2 z-50 max-h-[calc(100%-1rem)] w-[276px] overflow-y-auto border border-magenta/60 bg-black/88 p-3 backdrop-blur-sm"
-              >
+              <DevWindow>
                 <div className="flex items-center justify-between border-b border-steel/30 pb-2">
                   <p className="legend text-magenta">
                     Dev Console · P{devPage} · Press ` to Toggle
@@ -1442,7 +1536,7 @@ export default function GameShell({
                       }
                     />
                   </DevRow>
-                  <DevRow label="Hull">
+                  <DevRow label="Health">
                     <DevBtn
                       label="-25"
                       onClick={() =>
@@ -1533,34 +1627,81 @@ export default function GameShell({
                       />
                     ))}
                   </DevRow>
+                  <DevRow label="Spawn count">
+                    <input
+                      aria-label="Spawn count"
+                      type="number"
+                      min={1}
+                      max={50}
+                      step={1}
+                      value={devSpawnCount}
+                      onChange={(event) =>
+                        setDevSpawnCount(
+                          Math.max(1, Math.min(50, Math.floor(Number(event.target.value) || 1))),
+                        )
+                      }
+                      className="w-16 border border-steel bg-void px-2 py-1 text-amber"
+                    />
+                    <span className="text-[10px] text-muted">1–50 · boom cap: 6</span>
+                  </DevRow>
+                  <DevRow label="Spawn size">
+                    {([1, 2, 3] as const).map((size) => (
+                      <DevBtn
+                        key={size}
+                        label={size === 1 ? "Small" : size === 2 ? "Medium" : "Large"}
+                        active={devSpawnSize === size}
+                        onClick={() => setDevSpawnSize(size)}
+                      />
+                    ))}
+                  </DevRow>
                   <DevRow label="Mob">
                     <DevBtn
                       label="Norm"
-                      onClick={() => devPlaying((x) => x.devSpawnRock(2, "none"))}
+                      onClick={() =>
+                        devPlaying((x) => x.devSpawnRock(devSpawnSize, "none", devSpawnCount))
+                      }
                     />
                     <DevBtn
                       label="Homer"
-                      onClick={() => devPlaying((x) => x.devSpawnRock(2, "homing"))}
+                      onClick={() =>
+                        devPlaying((x) => x.devSpawnRock(devSpawnSize, "homing", devSpawnCount))
+                      }
                     />
                     <DevBtn
                       label="Bounce"
-                      onClick={() => devPlaying((x) => x.devSpawnRock(2, "bounce"))}
+                      onClick={() =>
+                        devPlaying((x) => x.devSpawnRock(devSpawnSize, "bounce", devSpawnCount))
+                      }
                     />
                     <DevBtn
                       label="Boom"
-                      onClick={() => devPlaying((x) => x.devSpawnRock(2, "boom"))}
+                      onClick={() =>
+                        devPlaying((x) => x.devSpawnRock(devSpawnSize, "boom", devSpawnCount))
+                      }
                     />
                     <DevBtn
                       label="Fast"
-                      onClick={() => devPlaying((x) => x.devSpawnRock(2, "fast"))}
+                      onClick={() =>
+                        devPlaying((x) => x.devSpawnRock(devSpawnSize, "fast", devSpawnCount))
+                      }
                     />
                     <DevBtn
                       label="Sentinel"
-                      onClick={() => devPlaying((x) => x.devSpawnMob("sentinel"))}
+                      onClick={() =>
+                        devPlaying((x) => x.devSpawnMob("sentinel", devSpawnCount, devSpawnSize))
+                      }
                     />
                     <DevBtn
                       label="Warden"
-                      onClick={() => devPlaying((x) => x.devSpawnMob("warden"))}
+                      onClick={() =>
+                        devPlaying((x) => x.devSpawnMob("warden", devSpawnCount, devSpawnSize))
+                      }
+                    />
+                    <DevBtn
+                      label="Spiker"
+                      onClick={() =>
+                        devPlaying((x) => x.devSpawnMob("spiker", devSpawnCount, devSpawnSize))
+                      }
                     />
                   </DevRow>
                   <DevRow label="Shower">
@@ -1612,7 +1753,7 @@ export default function GameShell({
                       onClick={() =>
                         dev((x) => {
                           // full unlock: arsenal, drone, survivability and economy
-                          for (const w of WEAPON_ORDER) x.p.weapons[w] = MAX_WEAPON_LEVEL;
+                          for (const w of WEAPON_ORDER) x.p.weapons[w] = weaponMaxLevel(w);
                           x.devSetAllStacks(999);
                           for (const id of DRONE_UPGRADE_IDS) x.devSetSalvageUpgrade(id, 9);
                           x.buySalvageDrone();
@@ -1672,7 +1813,7 @@ export default function GameShell({
                       onClick={() =>
                         dev((x) => {
                           const w = x.p.primary;
-                          x.p.weapons[w] = Math.min(MAX_WEAPON_LEVEL, x.p.weapons[w] + 1);
+                          x.p.weapons[w] = Math.min(weaponMaxLevel(w), x.p.weapons[w] + 1);
                         })
                       }
                     />
@@ -1680,7 +1821,7 @@ export default function GameShell({
                       label="Max"
                       onClick={() =>
                         dev((x) => {
-                          x.p.weapons[x.p.primary] = MAX_WEAPON_LEVEL;
+                          x.p.weapons[x.p.primary] = weaponMaxLevel(x.p.primary);
                         })
                       }
                     />
@@ -1785,176 +1926,14 @@ export default function GameShell({
                     <DevBtn label="Restart" onClick={start} />
                   </DevRow>
                 </div>
-              </motion.div>
+              </DevWindow>
             )}
-
-            {/* In-play hotbar: every installed weapon and its actual level. */}
-            {mode === "playing" && (
-              <div className="absolute inset-x-0 bottom-2 z-30 flex justify-center px-2">
-                <div className="thin-scroll flex max-w-full gap-1 overflow-x-auto border border-steel/45 bg-void/82 p-1 backdrop-blur-sm">
-                  {hud.owned.map((o) => {
-                    const idx = WEAPON_ORDER.indexOf(o.id) + 1;
-                    const active = o.id === hud.primary;
-                    return (
-                      <button
-                        key={o.id}
-                        onClick={() => gameRef.current?.selectWeapon(o.id)}
-                        className={`min-w-[76px] border px-2 py-1.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber ${
-                          active
-                            ? "border-amber bg-amber/15"
-                            : "border-steel/35 hover:border-amber/50 hover:bg-amber/5"
-                        }`}
-                      >
-                        <span className="flex items-center justify-between gap-2">
-                          <span className="legend text-amber/40">{idx}</span>
-                          <span
-                            className={`text-[9px] uppercase tracking-[0.12em] ${active ? "text-amber-hot" : "text-amber/65"}`}
-                          >
-                            LV {o.level}
-                          </span>
-                        </span>
-                        <span className="mt-0.5 block truncate text-[9px] font-semibold uppercase tracking-[0.1em] text-amber-hot">
-                          {WEAPON_DEFS[o.id].short}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* bottom status deck */}
-          <div className="grid shrink-0 grid-cols-2 gap-x-6 gap-y-3 border-t border-steel/25 px-3 py-3 sm:grid-cols-4 sm:px-5">
-            <div>
-              <div className="mb-1 flex items-baseline justify-between">
-                <p className="legend">Hull</p>
-                <p className="text-[11px] text-amber-hot">
-                  {hud.hull}/{hud.maxHull}
-                </p>
-              </div>
-              <Meter
-                value={hud.hull}
-                max={hud.maxHull}
-                color="linear-gradient(90deg,#ff8a3a,#ffe0a3)"
-                glow="rgba(255,176,58,.5)"
-              />
-            </div>
-            <div>
-              <div className="mb-1 flex items-baseline justify-between">
-                <p className="legend">Sector</p>
-                <p className="text-[11px] text-amber-hot">
-                  {SECTORS[hud.sector].numeral} · {SECTORS[hud.sector].name}
-                </p>
-              </div>
-              <div className="flex h-[6px] w-full items-center gap-1">
-                {SECTORS.slice(0, 5).map((s, i) => (
-                  <div
-                    key={s.numeral}
-                    className="h-full flex-1 transition-colors duration-500"
-                    style={{
-                      background:
-                        i < hud.sector
-                          ? "rgba(111,231,255,0.35)"
-                          : i === hud.sector
-                            ? "#6fe7ff"
-                            : "rgba(58,63,85,0.35)",
-                      boxShadow: i === hud.sector ? "0 0 10px rgba(111,231,255,.6)" : "none",
-                    }}
-                  />
-                ))}
-              </div>
-            </div>
-            <div>
-              <div className="mb-1 flex items-baseline justify-between">
-                <p className="legend">Missiles</p>
-                <p className="text-[11px] text-magenta">
-                  {hud.missiles}/{hud.maxMissiles}
-                </p>
-              </div>
-              <div className="flex h-[6px] w-full items-center gap-1">
-                {Array.from({ length: Math.max(1, hud.maxMissiles) }).map((_, i) => {
-                  const loaded = i < hud.missiles,
-                    reloading = i === hud.missiles;
-                  return (
-                    <div key={i} className="h-full flex-1 bg-steel/35">
-                      <div
-                        className="h-full transition-[width] duration-150"
-                        style={{
-                          width: loaded ? "100%" : reloading ? `${hud.missileCharge * 100}%` : "0%",
-                          background: loaded ? "#ff3d6e" : "rgba(255,61,110,0.55)",
-                          boxShadow: loaded ? "0 0 10px rgba(255,61,110,.55)" : "none",
-                        }}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-            <div>
-              <div className="mb-1 flex items-baseline justify-between">
-                <p className="legend">Weapon</p>
-                <button
-                  onClick={cycleWeapon}
-                  className="text-[11px] text-amber-hot transition-colors hover:text-amber focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
-                  aria-label="Cycle weapon"
-                >
-                  {curWeapon.short} · LV {hud.weaponLevel}{" "}
-                  {hud.owned.length > 1 && <span className="text-amber/45">⇄</span>}
-                </button>
-              </div>
-              {hud.primary === "laser" ? (
-                <Meter
-                  value={hud.heat * 100}
-                  max={100}
-                  color={
-                    hud.heat > 0.85
-                      ? "linear-gradient(90deg,#a8233f,#ff3d6e)"
-                      : "linear-gradient(90deg,#2f8fa8,#6fe7ff)"
-                  }
-                  glow={hud.heat > 0.85 ? "rgba(255,61,110,.6)" : "rgba(111,231,255,.5)"}
-                />
-              ) : (
-                <div className="flex h-[6px] w-full items-center gap-1">
-                  {Array.from({ length: MAX_WEAPON_LEVEL }).map((_, i) => (
-                    <div
-                      key={i}
-                      className="h-full flex-1"
-                      style={{
-                        background: i < hud.weaponLevel ? "#ffb03a" : "rgba(58,63,85,0.35)",
-                        boxShadow: i < hud.weaponLevel ? "0 0 8px rgba(255,176,58,.5)" : "none",
-                      }}
-                    />
-                  ))}
-                </div>
-              )}
-              <p className="mt-1.5 truncate text-[10px] uppercase tracking-[0.18em] text-amber/50">
-                {hud.owned.map((o) => `${WEAPON_DEFS[o.id].short} ${o.level}`).join(" · ")}
-              </p>
-            </div>
-          </div>
-
-          <div className="h-[3px] w-full shrink-0 bg-steel/25">
-            <div
-              className="h-full bg-amber transition-[width] duration-300"
-              style={{
-                width: `${Math.min(100, (hud.xp / hud.xpNext) * 100)}%`,
-                boxShadow: "0 0 14px rgba(255,176,58,.8)",
-              }}
-            />
-          </div>
-          <div className="flex shrink-0 items-center justify-between px-3 py-2 sm:px-5">
-            <p className="legend">
-              Level {String(hud.level).padStart(2, "0")} · {Math.floor((hud.xp / hud.xpNext) * 100)}
-              % to next upgrade
-            </p>
-            <p className="legend hidden sm:block">
-              Sector {String(hud.wave).padStart(2, "0")} · Salvage {hud.credits} CR
-            </p>
           </div>
 
           {/* touch controls */}
-          <div className="flex shrink-0 items-center justify-between gap-3 px-3 pb-4 sm:hidden">
+          <div
+            className={`${mode === "menu" ? "hidden" : "flex"} shrink-0 items-center justify-between gap-3 px-3 pb-4 sm:hidden`}
+          >
             <button
               onClick={cycleWeapon}
               className="flex-1 border border-amber/50 py-4 text-[10px] uppercase tracking-[0.22em] text-amber active:bg-amber/20"
@@ -2029,7 +2008,9 @@ function SettingRow({
       </div>
       <button
         onClick={onToggle}
-        aria-pressed={on}
+        role="switch"
+        aria-label={label}
+        aria-checked={on}
         className={`w-16 shrink-0 border px-2 py-1.5 text-[10px] uppercase tracking-[0.22em] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber ${on ? "border-amber bg-amber/15 text-amber" : "border-steel/50 text-amber/40 hover:border-amber/60"}`}
       >
         {on ? "On" : "Off"}
@@ -2103,7 +2084,7 @@ function SalvageShopPanel({
           </p>
           {info.purchased && (
             <p className="mt-1 text-[10px] text-amber/55">
-              Hull {info.hp}/{info.maxHp}
+              Health {info.hp}/{info.maxHp}
             </p>
           )}
         </div>
@@ -2113,7 +2094,7 @@ function SalvageShopPanel({
         <div className="mt-5 border border-ice/30 bg-ice/[0.04] p-4">
           <p className="legend text-ice">Base chassis · one-time purchase</p>
           <p className="mt-2 text-[11px] leading-relaxed text-amber/55">
-            The base frame has no weapons and a small hull. Buy it once, then shape it across the
+            The base frame has no weapons and low health. Buy it once, then shape it across the
             three paths below. If it is destroyed, it rebuilds for free at the next wave.
           </p>
           <button

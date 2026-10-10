@@ -2,6 +2,8 @@
    Everything is synthesised with WebAudio oscillators and noise buffers,
    so there are no asset downloads and no decode hitches mid-run.        */
 
+import { MusicScore, type MusicTheme } from "./music";
+
 export type Sfx =
   | "pulse"
   | "rail"
@@ -34,6 +36,7 @@ export type Sfx =
   | "bossDeath";
 
 const MASTER_KEY = "helios-drift-muted-v1";
+const MUSIC_KEY = "helios-drift-music-v1";
 
 class AudioEngine {
   ctx: AudioContext | null = null;
@@ -49,10 +52,13 @@ class AudioEngine {
   } | null = null;
   private voices = 0;
   private lastAt: Record<string, number> = {};
+  musicEnabled = true;
+  private music: MusicScore | null = null;
 
   constructor() {
     try {
       this.muted = localStorage.getItem(MASTER_KEY) === "1";
+      this.musicEnabled = localStorage.getItem(MUSIC_KEY) !== "0";
     } catch {
       /* ignore */
     }
@@ -101,7 +107,29 @@ class AudioEngine {
       this.master.gain.cancelScheduledValues(this.ctx.currentTime);
       this.master.gain.setTargetAtTime(m ? 0 : 0.42, this.ctx.currentTime, 0.02);
     }
-    if (m) this.stopBeam();
+    if (m) this.silence();
+  }
+
+  setMusicEnabled(enabled: boolean) {
+    this.musicEnabled = enabled;
+    try {
+      localStorage.setItem(MUSIC_KEY, enabled ? "1" : "0");
+    } catch {
+      /* private storage */
+    }
+    if (!enabled) this.stopMusic();
+  }
+
+  setMusic(mode: MusicTheme) {
+    if (!this.musicEnabled || !this.ready()) return;
+    if (this.music?.theme === mode) return;
+    this.stopMusic();
+    this.music = new MusicScore(this.ctx!, this.comp!, mode);
+  }
+
+  stopMusic() {
+    this.music?.stop();
+    this.music = null;
   }
 
   private ready(): this is { ctx: AudioContext; comp: DynamicsCompressorNode; noise: AudioBuffer } {
@@ -371,6 +399,7 @@ class AudioEngine {
   /** hard stop for pause / game over */
   silence() {
     this.stopBeam();
+    this.stopMusic();
   }
 }
 

@@ -1,14 +1,24 @@
 {
   "name": "react-vite-tailwind",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.3.0-alpha.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "typecheck": "tsc --noEmit",
     "preview": "vite preview",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"*.{ts,json,html}\"",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"*.{ts,json,html}\""
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"*.{ts,json,html}\"",
+    "leaderboard:dev": "node --watch server/index.mjs",
+    "leaderboard:start": "node server/index.mjs",
+    "leaderboard:test": "node --test server/test/*.test.mjs",
+    "game:test": "node --test test/game-balance.test.mjs",
+    "cf:dev": "wrangler dev --port 8787",
+    "cf:migrate:local": "wrangler d1 migrations apply DB --local",
+    "cf:check": "wrangler deploy --dry-run --outdir worker-dist",
+    "cf:test": "npm run cf:check && node --test worker/test/*.test.mjs",
+    "cf:deploy": "node scripts/cloudflare-deploy.mjs"
   },
   "dependencies": {
     "clsx": "2.1.1",
@@ -24,10 +34,13 @@
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "5.1.1",
+    "jsonc-parser": "3.3.1",
+    "miniflare": "5.20261006.1-alpha",
     "prettier": "3.6.2",
     "tailwindcss": "4.1.17",
     "typescript": "5.9.3",
     "vite": "7.3.2",
-    "vite-plugin-singlefile": "2.3.0"
+    "vite-plugin-singlefile": "2.3.0",
+    "wrangler": "4.149.0"
   }
 }

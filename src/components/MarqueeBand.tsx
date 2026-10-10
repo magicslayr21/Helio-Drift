@@ -1,12 +1,12 @@
 import { HeliosMark } from "./Masthead";
-import { STAT_UPGRADES, WEAPON_ORDER, MAX_WEAPON_LEVEL, RUN_PACING } from "../game/balance";
+import { STAT_UPGRADES, WEAPON_ORDER, RUN_PACING } from "../game/balance";
 import marqueeImg from "../assets/marquee.jpg";
 
 const STATS = [
   {
     k: "Arsenal",
     v: String(WEAPON_ORDER.length).padStart(2, "0"),
-    n: `${MAX_WEAPON_LEVEL} levels per weapon`,
+    n: "Common 3 · Rare 4 · Epic 6 levels",
   },
   {
     k: "Ship Upgrades",
