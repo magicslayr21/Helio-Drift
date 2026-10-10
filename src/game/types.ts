@@ -21,6 +21,7 @@ export type SalvageUpgradeId =
   | "overcharge"
   | "piercing"
   | "armor"
+  | "shield"
   | "repairPulse"
   | "magnet"
   | "scan"

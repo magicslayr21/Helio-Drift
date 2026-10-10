@@ -11,11 +11,19 @@ and [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/).
 You do not need to upgrade to a paid plan to follow this guide. If free quotas are
 exhausted, leaderboard requests can fail until the quota resets; the game still runs.
 
-The code is prepared, but your Cloudflare account must create the live database,
-deploy the Worker, and set its private moderation code. The all-zero database ID
-in `wrangler.jsonc` is a placeholder, not an existing database.
+For a first deployment, your Cloudflare account must own the database, deploy the
+Worker, and set its private moderation code. An all-zero database ID in
+`wrangler.jsonc` is only a placeholder. If your checkout already has your working
+database binding, keep it and follow the redeployment note below.
 
 ## 1. Create your account and get the code
+
+**Already deployed?** For alpha `0.3.0-alpha.1`, redeploy the Worker after
+updating your local checkout so it accepts the new Guardian Link (`shield`)
+upgrade in run reports. Do not create another D1 database or replace its binding.
+On Windows PowerShell use `npm.cmd ci`, then `npm.cmd run cf:deploy` (the `.cmd`
+suffix avoids PowerShell's `npm.ps1` execution-policy error). Existing scores and
+the moderation secret are retained. Deploy the backend before the new game build.
 
 1. Create a free account at [dash.cloudflare.com](https://dash.cloudflare.com/sign-up)
    and verify your email. Open **Workers & Pages** if Cloudflare asks what you want

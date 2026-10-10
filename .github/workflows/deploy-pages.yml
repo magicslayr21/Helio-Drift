@@ -30,6 +30,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Check game types
+        run: npm run typecheck
+
+      - name: Test gameplay and release notes
+        run: npm run game:test
+
       - name: Test leaderboard API
         run: npm run leaderboard:test
 

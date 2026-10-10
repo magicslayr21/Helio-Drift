@@ -1,5 +1,5 @@
 import { Heart, Rocket } from "lucide-react";
-import { MAX_WEAPON_LEVEL, WEAPON_DEFS } from "../game/balance";
+import { weaponMaxLevel, WEAPON_DEFS } from "../game/balance";
 import type { Hud, WeaponId } from "../game/types";
 
 // Silhouettes follow each weapon's firing pattern so colour is not the only cue.
@@ -111,10 +111,10 @@ export function PlayerStatus({ hud }: { hud: Hud }) {
             role="meter"
             aria-label="Weapon level"
             aria-valuemin={0}
-            aria-valuemax={MAX_WEAPON_LEVEL}
+            aria-valuemax={weaponMaxLevel(hud.primary)}
             aria-valuenow={hud.weaponLevel}
           >
-            {Array.from({ length: MAX_WEAPON_LEVEL }, (_, i) => (
+            {Array.from({ length: weaponMaxLevel(hud.primary) }, (_, i) => (
               <span
                 key={i}
                 className="flex-1 ring-1 ring-white/15"

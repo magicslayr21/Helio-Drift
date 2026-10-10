@@ -1,5 +1,12 @@
 import type { Game } from "./engine";
 import type { RunReport } from "../leaderboard/types";
+import {
+  weaponMaxLevel,
+  WEAPON_ORDER,
+  SALVAGE_UPGRADES,
+  SALVAGE_UPGRADE_ORDER,
+  STAT_UPGRADES,
+} from "./balance";
 
 export interface SavedLeaderboardRun {
   runId: string;
@@ -48,6 +55,7 @@ const FIELDS = [
 type RunState = Pick<Game, (typeof FIELDS)[number]>;
 type SavedRun = {
   version: 1;
+  balanceVersion?: number;
   id: string;
   state: RunState | null;
   leaderboard?: SavedLeaderboardRun;
@@ -109,7 +117,8 @@ function validLeaderboard(value: unknown, id: string, game: Game): value is Save
       typeof report.drone.purchased === "boolean" &&
       (report.drone.weapon === null ||
         Object.prototype.hasOwnProperty.call(game.p.weapons, report.drone.weapon)) &&
-      matches(report.drone.upgrades, game.salvageDrone.upgrades))
+      !!report.drone.upgrades &&
+      matches({ shield: 0, ...report.drone.upgrades }, game.salvageDrone.upgrades))
   );
 }
 
@@ -144,6 +153,9 @@ export class RunSave {
     try {
       const saved = read();
       const state = saved?.state;
+      // New modules default to unpurchased in saves from earlier alpha releases.
+      if (state?.salvageDrone?.upgrades && state.salvageDrone.upgrades.shield === undefined)
+        state.salvageDrone.upgrades.shield = 0;
       if (
         !saved ||
         !state ||
@@ -186,6 +198,39 @@ export class RunSave {
       for (const key of FIELDS) {
         Object.assign(game, { [key]: state[key] });
       }
+      for (const id of WEAPON_ORDER)
+        game.p.weapons[id] = Math.max(
+          0,
+          Math.min(weaponMaxLevel(id), Math.floor(game.p.weapons[id])),
+        );
+      for (const id of SALVAGE_UPGRADE_ORDER)
+        game.salvageDrone.upgrades[id] = Math.max(
+          0,
+          Math.min(SALVAGE_UPGRADES[id].max, Math.floor(game.salvageDrone.upgrades[id])),
+        );
+      if (!saved.balanceVersion) {
+        game.rebuildStatUpgrades();
+        for (const rock of game.rocks) {
+          if (rock.trait === "fast") {
+            rock.hp *= 1.2;
+            rock.maxHp *= 1.2;
+          }
+        }
+        if (game.boss && game.boss.mk >= 3) {
+          const max = game.makeBoss(game.boss.final, game.boss.mk).maxHp;
+          game.boss.hp = max * (game.boss.hp / game.boss.maxHp);
+          game.boss.maxHp = max;
+        }
+        // Refresh offered descriptions and discard offers now at their cap.
+        game.choices = game.choices.flatMap((choice) => {
+          const def = STAT_UPGRADES.find((item) => item.id === choice.id);
+          return def && (game.stacks[def.id] ?? 0) < def.max
+            ? [{ ...choice, name: def.name, desc: def.desc, rarity: def.rarity }]
+            : [];
+        });
+      }
+      game.quietTime = 0;
+      game.salvageDrone.pulseTimer = game.repairInterval();
       // Apply current spawn caps to fights saved before the balance update.
       const savedRocks = game.rocks;
       game.rocks = [];
@@ -233,7 +278,13 @@ export class RunSave {
       const state = Object.fromEntries(FIELDS.map((key) => [key, game[key]]));
       localStorage.setItem(
         KEY,
-        JSON.stringify({ version: 1, id: this.id, state, leaderboard: game.leaderboardRun }),
+        JSON.stringify({
+          version: 1,
+          balanceVersion: 1,
+          id: this.id,
+          state,
+          leaderboard: game.leaderboardRun,
+        }),
       );
     } catch {
       // Play remains available when the browser blocks or fills storage.

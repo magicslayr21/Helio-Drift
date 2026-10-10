@@ -6,7 +6,7 @@ import {
   saveScore,
   WEAPON_DEFS,
   WEAPON_ORDER,
-  MAX_WEAPON_LEVEL,
+  weaponMaxLevel,
   STAT_UPGRADES,
   type Hud,
   type Mode,
@@ -28,6 +28,7 @@ import {
   queueRun,
 } from "../leaderboard/client";
 import { MainMenu } from "./MainMenu";
+import { UpdateLog } from "./UpdateLog";
 import { audio } from "../game/audio";
 import { GAME_CONFIG } from "../game/game-config";
 import nebulaImg from "../assets/nebula.jpg";
@@ -110,6 +111,7 @@ const DRONE_UPGRADE_IDS = [
   "piercing",
   "armor",
   "repairPulse",
+  "shield",
   "magnet",
   "scan",
   "speed",
@@ -149,6 +151,7 @@ export default function GameShell({
   const [scores, setScores] = useState<ScoreEntry[]>([]);
   const [run, setRun] = useState<ScoreEntry | null>(null);
   const [muted, setMuted] = useState(audio.muted);
+  const [musicEnabled, setMusicEnabled] = useState(audio.musicEnabled);
 
   const [settings, setSettings] = useState(() => {
     try {
@@ -173,6 +176,7 @@ export default function GameShell({
   const [devSpawnCount, setDevSpawnCount] = useState(1);
   const [devSpawnSize, setDevSpawnSize] = useState<1 | 2 | 3>(2);
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
+  const [updateLogOpen, setUpdateLogOpen] = useState(false);
   const [canContinue, setCanContinue] = useState(false);
   const continuingSavedRun = useRef(false);
 
@@ -427,7 +431,7 @@ export default function GameShell({
   }, [codeInput, closePanel]);
 
   useEffect(() => {
-    if (leaderboardOpen || (panel === "none" && !shopOpen)) return;
+    if (leaderboardOpen || updateLogOpen || (panel === "none" && !shopOpen)) return;
     const close = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.stopPropagation();
@@ -436,11 +440,11 @@ export default function GameShell({
     };
     window.addEventListener("keydown", close, true);
     return () => window.removeEventListener("keydown", close, true);
-  }, [panel, shopOpen, closePanel, closeShop, leaderboardOpen]);
+  }, [panel, shopOpen, closePanel, closeShop, leaderboardOpen, updateLogOpen]);
 
   // backquote toggles the dev console — only once the service code has been entered
   useEffect(() => {
-    if (!devUnlocked || leaderboardOpen) return;
+    if (!devUnlocked || leaderboardOpen || updateLogOpen) return;
     const h = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
@@ -452,7 +456,21 @@ export default function GameShell({
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [devUnlocked, leaderboardOpen]);
+  }, [devUnlocked, leaderboardOpen, updateLogOpen]);
+
+  useEffect(() => {
+    if (!updateLogOpen) return;
+    const game = gameRef.current;
+    if (!game) return;
+    const suspended = game.inputSuspended;
+    game.inputSuspended = true;
+    game.keys = {};
+    game.mouseDown = game.touchFire = false;
+    if (game.mode === "playing") game.setMode("paused");
+    return () => {
+      game.inputSuspended = suspended;
+    };
+  }, [updateLogOpen]);
 
   const dev = useCallback((fn: (x: Game) => void) => {
     const x = gameRef.current;
@@ -643,6 +661,7 @@ export default function GameShell({
                       setPanel("settings");
                     }}
                     onDetails={openDetails}
+                    onUpdateLog={() => setUpdateLogOpen(true)}
                   />
                 </motion.div>
               )}
@@ -687,7 +706,7 @@ export default function GameShell({
                             <span className="text-[10px] uppercase tracking-[0.16em] text-amber-hot">
                               {WEAPON_DEFS[o.id].short}
                             </span>
-                            <LevelPips level={o.level} max={MAX_WEAPON_LEVEL} color="#ffb03a" />
+                            <LevelPips level={o.level} max={weaponMaxLevel(o.id)} color="#ffb03a" />
                           </button>
                         ))}
                       </div>
@@ -786,14 +805,14 @@ export default function GameShell({
                         Save & return to menu
                       </button>
                       <button
-                        onClick={start}
-                        className="col-span-2 border border-steel/60 px-6 py-3 text-[11px] uppercase tracking-[0.28em] text-amber/60 transition-colors hover:border-magenta hover:text-magenta focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
+                        onClick={openLeaderboard}
+                        className="w-full border border-ice/50 py-3 text-[10px] uppercase tracking-[0.2em] text-ice hover:bg-ice/10"
                       >
-                        Restart Run
+                        Global Leaderboard
                       </button>
                     </div>
                     <p className="legend mt-4 text-center text-amber/40">
-                      P or Esc to resume · R restarts
+                      P or Esc to resume · Save & return keeps your run
                     </p>
                   </div>
                 </motion.div>
@@ -1049,7 +1068,7 @@ export default function GameShell({
                   transition={{ duration: 0.16 }}
                   className="absolute inset-0 z-40 flex items-center justify-center overflow-y-auto bg-void/88 py-6 backdrop-blur-[2px]"
                 >
-                  <div className="w-[min(430px,90%)] border border-steel/50 plate p-6">
+                  <div className="thin-scroll max-h-full w-[min(430px,90%)] overflow-y-auto border border-steel/50 plate p-6">
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="legend">Cabinet Diagnostics</p>
@@ -1065,12 +1084,6 @@ export default function GameShell({
                         X
                       </button>
                     </div>
-                    <button
-                      onClick={openLeaderboard}
-                      className="mt-5 w-full border border-ice/60 px-4 py-3 text-[11px] uppercase tracking-[0.2em] text-ice hover:bg-ice/10 focus-visible:outline focus-visible:outline-ice"
-                    >
-                      Global Leaderboard
-                    </button>
                     <button
                       onClick={() => {
                         setPanel("code");
@@ -1124,7 +1137,22 @@ export default function GameShell({
                         on={!muted}
                         onToggle={toggleMute}
                       />
+                      <SettingRow
+                        label="Music"
+                        hint="Quiet original flight, dreadnought, and Omega scores. Turn music off without muting sound effects."
+                        on={musicEnabled}
+                        onToggle={() => {
+                          audio.setMusicEnabled(!audio.musicEnabled);
+                          setMusicEnabled(audio.musicEnabled);
+                        }}
+                      />
                     </div>
+                    <button
+                      onClick={() => setUpdateLogOpen(true)}
+                      className="mt-5 w-full border border-ice/50 px-4 py-2.5 text-xs uppercase tracking-widest text-ice hover:bg-ice/10"
+                    >
+                      Update log · v{__APP_VERSION__}
+                    </button>
                     <button
                       onClick={openDetails}
                       className="mt-5 w-full border border-steel/60 px-4 py-2.5 text-[10px] uppercase tracking-[0.24em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
@@ -1140,6 +1168,8 @@ export default function GameShell({
                   </div>
                 </motion.div>
               )}
+
+              {updateLogOpen && <UpdateLog onClose={() => setUpdateLogOpen(false)} />}
 
               {panel === "code" && (
                 <motion.div
@@ -1330,7 +1360,7 @@ export default function GameShell({
                               <div className="mt-1">
                                 <LevelPips
                                   level={shopInfo.level}
-                                  max={MAX_WEAPON_LEVEL}
+                                  max={shopInfo.maxLevel}
                                   color={shopAccent}
                                 />
                               </div>
@@ -1356,14 +1386,14 @@ export default function GameShell({
                             />
                             <ShopStats
                               title={
-                                shopInfo.level >= MAX_WEAPON_LEVEL
+                                shopInfo.level >= shopInfo.maxLevel
                                   ? "Maximum specification"
                                   : shopInfo.owned
                                     ? `After upgrade · LV ${shopInfo.level + 1}`
                                     : "After purchase · LV 1"
                               }
                               rows={
-                                shopInfo.level >= MAX_WEAPON_LEVEL
+                                shopInfo.level >= shopInfo.maxLevel
                                   ? shopInfo.current
                                   : shopInfo.next
                               }
@@ -1723,7 +1753,7 @@ export default function GameShell({
                       onClick={() =>
                         dev((x) => {
                           // full unlock: arsenal, drone, survivability and economy
-                          for (const w of WEAPON_ORDER) x.p.weapons[w] = MAX_WEAPON_LEVEL;
+                          for (const w of WEAPON_ORDER) x.p.weapons[w] = weaponMaxLevel(w);
                           x.devSetAllStacks(999);
                           for (const id of DRONE_UPGRADE_IDS) x.devSetSalvageUpgrade(id, 9);
                           x.buySalvageDrone();
@@ -1783,7 +1813,7 @@ export default function GameShell({
                       onClick={() =>
                         dev((x) => {
                           const w = x.p.primary;
-                          x.p.weapons[w] = Math.min(MAX_WEAPON_LEVEL, x.p.weapons[w] + 1);
+                          x.p.weapons[w] = Math.min(weaponMaxLevel(w), x.p.weapons[w] + 1);
                         })
                       }
                     />
@@ -1791,7 +1821,7 @@ export default function GameShell({
                       label="Max"
                       onClick={() =>
                         dev((x) => {
-                          x.p.weapons[x.p.primary] = MAX_WEAPON_LEVEL;
+                          x.p.weapons[x.p.primary] = weaponMaxLevel(x.p.primary);
                         })
                       }
                     />
@@ -1978,7 +2008,9 @@ function SettingRow({
       </div>
       <button
         onClick={onToggle}
-        aria-pressed={on}
+        role="switch"
+        aria-label={label}
+        aria-checked={on}
         className={`w-16 shrink-0 border px-2 py-1.5 text-[10px] uppercase tracking-[0.22em] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber ${on ? "border-amber bg-amber/15 text-amber" : "border-steel/50 text-amber/40 hover:border-amber/60"}`}
       >
         {on ? "On" : "Off"}

@@ -75,14 +75,14 @@ test("beam follows ship heading and does not bend toward an off-axis target", ()
   assert.equal(target.hp, hp - 1);
 });
 
-test("fast rocks have 1.5x normal HP and increased speed at every size and wave", () => {
+test("fast rocks have 1.8x normal HP and increased speed at every size and wave", () => {
   const g = game();
   for (const wave of [1, 21, 24]) {
     g.wave = wave;
     for (const size of [1, 2, 3]) {
       const normal = g.makeRock(0, 0, size);
       const fast = g.makeRock(0, 0, size, 1, 0, "fast");
-      assert.equal(fast.hp, normal.hp * 1.5);
+      assert.equal(fast.hp, normal.hp * 1.8);
       assert.ok(Math.hypot(fast.vx, fast.vy) > [0, 235, 265, 290][size]);
     }
   }
@@ -239,13 +239,12 @@ test("all six bosses can shed every asteroid size, within field limits", (t) => 
   }
 });
 
-test("MK4 has lower HP, faster attacks, fewer bullets and weighted ignition", (t) => {
+test("MK4 has 22k HP while retaining faster attacks and weighted ignition", (t) => {
   seeded(t);
   const g = game();
   g.wave = 20;
   const b = g.makeBoss(false, 4);
-  const baseHp = 1800 + 40 * 140;
-  assert.equal(b.hp, baseHp * 2.4);
+  assert.equal(b.hp, 22000);
   assert.equal(b.timerMul, 0.7);
   assert.equal(b.bulletMul, 1.1);
   g.boss = b;
@@ -668,4 +667,453 @@ test("focused controls retain keyboard activation without blocking flight keys",
   assert.equal(g.keys[" "], undefined);
   g.onKeyDown({ key: "w", target, preventDefault: noop });
   assert.equal(g.keys.w, true);
+});
+
+test("weapon purchases, shop previews, and stats obey rarity caps", async () => {
+  const { weaponMaxLevel, WEAPON_ORDER } = await import("../src/game/balance.ts");
+  const g = game();
+  g.credits = 1000000;
+  for (const id of WEAPON_ORDER) {
+    const max = weaponMaxLevel(id);
+    assert.equal(max, id === "pulse" ? 3 : ["arc", "laser", "rail"].includes(id) ? 6 : 4);
+    for (let i = 0; i < 8; i++) g.buyWeapon(id);
+    assert.equal(g.p.weapons[id], max);
+    assert.equal(g.weaponPrice(id), null);
+    assert.deepEqual(g.weaponShopInfo(id).next, []);
+    assert.equal(g.weaponShopInfo(id).maxLevel, max);
+    assert.equal(g.buyWeapon(id), false);
+  }
+  assert.deepEqual(g.weaponStats("pulse", 6), g.weaponStats("pulse", 3));
+});
+
+test("Pulse growth is gently nerfed and every rare/epic damage source is buffed", () => {
+  const g = game();
+  assert.equal(g.weaponStats("pulse", 1).dmg, 16);
+  assert.equal(g.weaponStats("pulse", 3).dmg, 16 * 1.24);
+  for (const [id, previous] of [
+    ["spread", 11.5],
+    ["seeker", 6.5],
+    ["ricochet", 19],
+    ["flak", 9.2],
+    ["rail", 16 * 2.6],
+  ])
+    assert.ok(g.weaponStats(id, 1).dmg > previous, id);
+  assert.ok(g.weaponStats("flak", 1).extraDmg > 8.4);
+  assert.ok(g.arcStats(1).dmg > 9);
+  assert.ok(g.laserStats(1).dps > 125);
+});
+
+test("critical optics caps at three rare upgrades and rebuilds without stacking damage", async () => {
+  const { STAT_UPGRADES } = await import("../src/game/balance.ts");
+  const g = game();
+  const crit = STAT_UPGRADES.find((u) => u.id === "crit");
+  assert.equal(crit.rarity, "rare");
+  assert.equal(crit.max, 3);
+  g.p.missiles = 1;
+  g.devSetStack("crit", 9);
+  assert.ok(Math.abs(g.p.crit - 0.66) < 1e-9);
+  assert.equal(g.p.critMult, 2.5);
+  g.rebuildStatUpgrades();
+  assert.equal(g.p.critMult, 2.5);
+  assert.equal(g.p.missiles, 1);
+  g.devSetStack("crit", 0);
+  assert.equal(g.p.critMult, 2.2);
+  for (const u of STAT_UPGRADES.filter((u) => u.rarity === "common")) assert.equal(u.max, 3);
+});
+
+function companion(g) {
+  const d = g.salvageDrone;
+  d.purchased = d.active = true;
+  d.x = g.p.x;
+  d.y = g.p.y;
+  return d;
+}
+
+test("Guardian Link absorbs exact post-armor damage and cannot hide damage behind drone armor or i-frames", () => {
+  for (const [level, share] of [
+    [1, 0.2],
+    [2, 0.35],
+    [3, 0.5],
+  ]) {
+    const g = game();
+    const d = companion(g);
+    d.upgrades.shield = level;
+    d.upgrades.armor = 3;
+    d.hitTimer = 1;
+    g.p.armor = 0.25;
+    g.damagePlayer(20);
+    assert.equal(g.p.hull, 100 - 15 * (1 - share));
+    assert.equal(d.hp, 24 - 15 * share);
+    assert.equal(g.quietTime, 0);
+  }
+});
+
+test("shield overflow reaches the player and protection stops on death or leaving range", () => {
+  const g = game();
+  const d = companion(g);
+  d.upgrades.shield = 3;
+  d.hp = 3;
+  g.damagePlayer(20);
+  assert.equal(g.p.hull, 83);
+  assert.equal(d.hp, 0);
+  assert.equal(d.active, false);
+  g.damagePlayer(10);
+  assert.equal(g.p.hull, 73);
+  d.active = true;
+  d.hp = 24;
+  d.x = g.p.x + 151;
+  g.damagePlayer(10);
+  assert.equal(g.p.hull, 63);
+  assert.equal(d.hp, 24);
+  d.upgrades.scan = 1;
+  g.damagePlayer(10);
+  assert.equal(g.p.hull, 58);
+  assert.equal(d.hp, 19);
+});
+
+test("Repair Pulse requires five quiet seconds then heals at exact level cadence", () => {
+  for (const [level, interval, heal] of [
+    [1, 1, 1],
+    [2, 0.75, 1],
+    [3, 0.5, 2],
+  ]) {
+    const g = game();
+    const d = companion(g);
+    d.upgrades.repairPulse = level;
+    g.p.hull = 50;
+    const tick = (seconds) => {
+      for (let i = 0; i < Math.round(seconds * 100); i++) {
+        g.quietTime += 0.01;
+        g.repairSalvage(0.01);
+      }
+    };
+    tick(5);
+    assert.equal(g.p.hull, 50);
+    tick(interval);
+    assert.equal(g.p.hull, 50 + heal);
+    tick(interval);
+    assert.equal(g.p.hull, 50 + heal * 2);
+    g.damageSalvageDrone(1);
+    assert.equal(g.quietTime, 0);
+    tick(5);
+    assert.equal(g.p.hull, 50 + heal * 2);
+    tick(interval);
+    assert.equal(g.p.hull, 50 + heal * 3);
+  }
+});
+
+test("Repair Pulse resets on player damage, distance, and destroyed drone", () => {
+  const g = game();
+  const d = companion(g);
+  d.upgrades.repairPulse = 3;
+  g.p.hull = 50;
+  g.quietTime = 10;
+  d.pulseTimer = 0.1;
+  d.x += 1000;
+  g.repairSalvage(1);
+  assert.equal(g.p.hull, 50);
+  assert.equal(d.pulseTimer, 0.5);
+  d.x = g.p.x;
+  g.repairSalvage(0.25);
+  assert.equal(g.p.hull, 50);
+  g.damagePlayer(1);
+  assert.equal(g.quietTime, 0);
+  assert.equal(d.pulseTimer, 0.5);
+  d.active = false;
+  g.quietTime = 10;
+  g.repairSalvage(1);
+  assert.equal(g.p.hull, 49);
+});
+
+test("Synchronized Feeders provides +5% pilot and +10% drone attack speed per stack", () => {
+  const g = game();
+  const d = companion(g);
+  g.nearestTarget = () => ({ x: d.x + 100, y: d.y, vx: 0, vy: 0 });
+  const rate = g.weaponStats("pulse", 1).rate;
+  const arc = g.arcStats(1).tick;
+  const beam = g.laserStats(1).dps;
+  g.salvageFire(d, 0);
+  const droneInterval = d.fireTimer;
+  d.upgrades.piercing = 2;
+  d.fireTimer = 0;
+  g.salvageFire(d, 0);
+  assert.equal(g.weaponStats("pulse", 1).rate, rate * 1.1);
+  assert.equal(g.arcStats(1).tick, arc / 1.1);
+  assert.equal(g.arcStats(1, true).tick, arc / 1.2);
+  assert.equal(g.laserStats(1).dps, beam * 1.1);
+  assert.equal(g.laserStats(1, true).dps, beam * 1.2);
+  assert.equal(d.fireTimer, droneInterval / 1.2);
+  assert.equal(g.bullets.at(-1).pierce, 0);
+});
+
+test("Adaptive Arsenal benefits every mount, including rail, seeker, flak, arc, and beam", () => {
+  const g = game();
+  const d = companion(g);
+  g.nearestTarget = () => ({ x: d.x + 100, y: d.y, vx: 0, vy: 0 });
+  for (const weapon of [null, "pulse", "spread", "seeker", "ricochet", "flak", "rail"]) {
+    d.weapon = weapon;
+    if (weapon) g.p.weapons[weapon] = 1;
+    d.upgrades.twinCannons = 0;
+    d.fireTimer = 0;
+    g.bullets = [];
+    g.salvageFire(d, 0);
+    const count = g.bullets.length;
+    d.upgrades.twinCannons = 3;
+    d.fireTimer = 0;
+    g.bullets = [];
+    g.salvageFire(d, 0);
+    assert.equal(g.bullets.length, count + 3, weapon);
+  }
+  d.weapon = "arc";
+  g.p.weapons.arc = 1;
+  let chains = 0;
+  g.arcFrom = (_x, _y, stats) => {
+    chains = stats.chains;
+    return true;
+  };
+  d.fireTimer = 0;
+  g.salvageFire(d, 0);
+  assert.equal(chains, Math.max(1, g.arcStats(1).chains - 1) + 3);
+  d.weapon = "laser";
+  g.p.weapons.laser = 1;
+  let damage = 0;
+  g.droneBeamDamage = (_x, _y, _a, _r, dmg) => {
+    damage = dmg;
+    return 100;
+  };
+  g.salvageFire(d, 1);
+  assert.equal(damage, g.laserStats(1, true).dps * 0.18 * 1.6);
+});
+
+test("Magnet Coil collects repair kits and credits, Wide Scan expands weapon and support ranges", () => {
+  const g = game();
+  const d = companion(g);
+  g.p.hull = 50;
+  g.pickups = [{ x: d.x, y: d.y, kind: "repair", value: 8 }];
+  g.salvageMagnet(d);
+  assert.equal(g.p.hull, 50);
+  d.upgrades.magnet = 1;
+  g.salvageMagnet(d);
+  assert.equal(g.p.hull, 58);
+  assert.equal(g.pickups.length, 0);
+  let range = 0;
+  g.nearestTarget = (_x, _y, value) => {
+    range = value;
+    return null;
+  };
+  g.salvageFire(d, 0);
+  const base = range;
+  d.upgrades.scan = 1;
+  g.salvageFire(d, 0);
+  assert.equal(range, base + 150);
+  assert.equal(g.salvageSupportRange(), 200);
+});
+
+test("fast asteroid speed scales with lost HP without compounding", () => {
+  const g = game();
+  for (const size of [1, 2, 3]) {
+    const r = g.makeRock(0, 0, size, 1, 0, "fast");
+    const base = Math.hypot(r.vx, r.vy);
+    for (const fraction of [1, 0.5, 0, 1]) {
+      r.hp = r.maxHp * fraction;
+      for (let i = 0; i < 100; i++) g.updateFastRockSpeed(r);
+      assert.ok(Math.abs(Math.hypot(r.vx, r.vy) - base * (1 + 0.5 * (1 - fraction))) < 1e-9);
+    }
+  }
+});
+
+test("only small homing asteroids gain movement speed", () => {
+  for (const [size, speed] of [
+    [1, 117],
+    [2, 88],
+    [3, 95],
+  ]) {
+    const g = game();
+    g.p.x = 700;
+    g.p.y = 500;
+    const r = g.makeRock(100, 100, size, 1, 0, "homing");
+    g.rocks = [r];
+    g.update(0.01);
+    assert.ok(Math.abs(Math.hypot(r.vx, r.vy) - speed) < 1e-9);
+  }
+});
+
+test("later boss HP scales to 14k / 22k / 28k / 37k", () => {
+  const g = game();
+  for (const [mk, hp] of [
+    [3, 14000],
+    [4, 22000],
+    [5, 28000],
+    [6, 37000],
+  ]) {
+    g.wave = Math.min(mk * 5, 25);
+    assert.equal(g.makeBoss(mk === 5, mk).hp, hp);
+  }
+});
+
+test("every boss death clears escorts, asteroids, showers, and hostile projectiles", () => {
+  for (let mk = 1; mk <= 6; mk++) {
+    const g = game();
+    g.boss = g.makeBoss(mk === 5, mk);
+    g.rocks = [g.makeRock(20, 20, 2)];
+    g.drones = [g.spawnDrone(30, 30, 100, "spiker")];
+    g.shower.active = true;
+    g.bullets = ["enemy", "wardenOrb", "wardenShard"].map((kind) => ({
+      kind,
+      life: 5,
+      dmg: 30,
+      blast: 80,
+      spawnT: 0,
+    }));
+    g.killBoss();
+    assert.equal(g.boss, null);
+    assert.equal(g.rocks.length, 0);
+    assert.equal(g.drones.length, 0);
+    assert.equal(g.shower.active, false);
+    assert.ok(g.bullets.every((b) => b.life === 0 && b.dmg === 0 && b.blast === 0));
+    g.updateBullets(0.01);
+    assert.equal(g.bullets.length, 0);
+  }
+});
+
+test("MK6 half-health raid spans the screen in medium-only 300-speed lanes", (t) => {
+  seeded(t);
+  const g = game();
+  const boss = g.makeBoss(false, 6);
+  for (const side of [-1, 1]) {
+    g.rocks = [];
+    g.spawnMk6RaidMeteors(boss, side);
+    assert.equal(g.rocks.length, 3);
+    for (const [i, rock] of g.rocks.entries()) {
+      assert.equal(rock.size, 2);
+      assert.equal(rock.trait, "meteor");
+      assert.equal(rock.vx, side * -300);
+      assert.equal(rock.vy, 0);
+      assert.ok(rock.y > (i * g.h) / 3 && rock.y < ((i + 1) * g.h) / 3);
+      assert.ok(side < 0 ? rock.x < 0 : rock.x > g.w);
+    }
+  }
+});
+
+test("pre-update saves migrate shield, caps, derived stats and health fractions only once", async (t) => {
+  const { RunSave } = await import("../src/game/run-save.ts");
+  let data;
+  t.mock.method(localStorage, "getItem", () => data ?? null);
+  t.mock.method(localStorage, "setItem", (_key, value) => {
+    data = value;
+  });
+  const g = game();
+  g.p.weapons.pulse = 6;
+  g.p.weapons.seeker = 6;
+  g.stacks = { crit: 5, hollow: 6 };
+  g.boss = g.makeBoss(false, 4);
+  g.boss.hp = 8880;
+  g.boss.maxHp = 17760;
+  g.rocks = [g.makeRock(20, 20, 1, 1, 0, "fast")];
+  g.rocks[0].maxHp = 100;
+  g.rocks[0].hp = 40;
+  const save = new RunSave();
+  save.begin(g);
+  const old = JSON.parse(data);
+  delete old.balanceVersion;
+  delete old.state.salvageDrone.upgrades.shield;
+  data = JSON.stringify(old);
+  const restored = game();
+  assert.equal(save.restore(restored), true);
+  assert.equal(restored.salvageDrone.upgrades.shield, 0);
+  assert.equal(restored.p.weapons.pulse, 3);
+  assert.equal(restored.p.weapons.seeker, 4);
+  assert.equal(restored.stacks.crit, 3);
+  assert.equal(restored.stacks.hollow, 3);
+  assert.equal(restored.p.critMult, 2.5);
+  assert.equal(restored.boss.hp, 11000);
+  assert.equal(restored.rocks[0].maxHp, 120);
+  assert.equal(restored.rocks[0].hp, 48);
+  save.write(restored);
+  const again = game();
+  assert.equal(save.restore(again), true);
+  assert.equal(again.rocks[0].maxHp, 120);
+  assert.equal(again.boss.hp, 11000);
+});
+
+test("paused R cannot destroy the saved run", () => {
+  const g = game();
+  g.mode = "paused";
+  g.startGame = () => {
+    throw Error("unexpected restart");
+  };
+  g.onKeyDown({ key: "r", target: null, preventDefault: noop });
+  assert.equal(g.mode, "paused");
+});
+
+test("release archive matches both package versions and has three distinct original scores", async () => {
+  const { UPDATE_LOG } = await import("../src/game/update-log.ts");
+  const { SCORES } = await import("../src/game/music.ts");
+  for (const path of ["../package.json", "../package-lock.json"])
+    assert.equal(
+      JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8")).version,
+      UPDATE_LOG[0].version,
+    );
+  assert.equal(Object.keys(SCORES).length, 3);
+  assert.equal(new Set(Object.values(SCORES).map((score) => score.title)).size, 3);
+  assert.equal(new Set(Object.values(SCORES).map((score) => score.melody.join(","))).size, 3);
+});
+
+test("music follows live boss state and silences on pause, menu, hidden tabs and destruction", async (t) => {
+  const { audio } = await import("../src/game/audio.ts");
+  const themes = [];
+  let stops = 0;
+  t.mock.method(audio, "setMusic", (theme) => themes.push(theme));
+  t.mock.method(audio, "stopMusic", () => {
+    stops++;
+  });
+  const g = game();
+  g.update = noop;
+  g.render = noop;
+  for (const mk of [0, 1, 2, 3, 4, 5, 6, 0]) {
+    g.boss = mk ? g.makeBoss(mk === 5, mk) : null;
+    g.loop(performance.now());
+  }
+  assert.deepEqual(themes, ["flight", "boss", "boss", "boss", "boss", "boss", "mk6", "flight"]);
+  for (const mode of ["paused", "menu", "levelup", "gameover", "victory"]) {
+    g.mode = mode;
+    g.loop(performance.now());
+  }
+  assert.equal(stops, 5);
+  document.hidden = true;
+  try {
+    g.loop(performance.now());
+  } finally {
+    document.hidden = false;
+  }
+  assert.equal(stops, 6);
+  g.destroy();
+  assert.equal(stops, 7);
+});
+
+test("mixed late-boss combat survives upgraded drone attacks and mid-frame boss cleanup", (t) => {
+  seeded(t);
+  for (const mk of [3, 4, 5, 6]) {
+    const g = game();
+    g.god = true;
+    g.settings.autoFire = true;
+    g.wave = Math.min(25, mk * 5);
+    g.p.x = 700;
+    g.p.y = 500;
+    g.boss = g.makeBoss(mk === 5, mk);
+    const d = companion(g);
+    for (const key of Object.keys(d.upgrades)) d.upgrades[key] = key === "piercing" ? 2 : 3;
+    for (const id of Object.keys(g.p.weapons)) g.p.weapons[id] = 3;
+    for (const trait of ["fast", "homing", "boom", "bounce"]) g.devSpawnRock(2, trait, 3);
+    for (let frame = 0; frame < 400; frame++) {
+      d.weapon = ["laser", "arc", "rail", "flak"][Math.floor(frame / 100)];
+      g.frame++;
+      if (frame === 200 && g.boss) g.boss.hp = 1;
+      g.update(1 / 60);
+      if (frame === 300 && g.boss) g.killBoss();
+      assert.ok(Number.isFinite(g.p.hull));
+      assert.ok(g.rocks.every((rock) => Number.isFinite(rock.x) && Number.isFinite(rock.hp)));
+    }
+    assert.equal(g.boss, null);
+  }
 });

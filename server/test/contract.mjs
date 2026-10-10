@@ -38,6 +38,20 @@ export function run(id, changes = {}) {
 }
 
 export function leaderboardContract(fixture) {
+  test("new Guardian Link reports round-trip while unknown drone upgrades stay rejected", async (t) => {
+    const api = await fixture(t);
+    const identity = await api.player("Guardian Pilot");
+    const report = run("guardian_link_001", { drone: { purchased: true, weapon: "arc", upgrades: { shield: 3, piercing: 2, twinCannons: 3 } } });
+    assert.equal((await api.submit(identity, report)).status, 200);
+    const session = await api.admin();
+    const detail = await api.request(`/admin/runs/${report.runId}`, { token: session.token });
+    assert.equal(detail.status, 200);
+    assert.equal(detail.data.report.drone.upgrades.shield, 3);
+    report.revision++;
+    report.drone.upgrades.madeUpModule = 1;
+    assert.equal((await api.submit(identity, report)).status, 400);
+  });
+
   test("identities and global runs survive a server restart without exposing credentials", async (t) => {
     const api = await fixture(t);
     assert.equal((await api.request("/health")).status, 200);

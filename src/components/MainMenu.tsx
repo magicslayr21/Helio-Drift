@@ -22,6 +22,7 @@ export function MainMenu({
   leaderboardOpen,
   onSettings,
   onDetails,
+  onUpdateLog,
 }: {
   hud: Hud;
   canContinue: boolean;
@@ -32,6 +33,7 @@ export function MainMenu({
   leaderboardOpen: boolean;
   onSettings: () => void;
   onDetails: () => void;
+  onUpdateLog: () => void;
 }) {
   const [confirmNew, setConfirmNew] = useState(false);
   const [callsign, setCallsign] = useState(getIdentity()?.username ?? "");
@@ -108,7 +110,9 @@ export function MainMenu({
         <span>
           <HeliosMark size={25} /> HELIOS FLIGHT SYSTEMS
         </span>
-        <span className="launch-version">v{version}</span>
+        <button className="launch-version" onClick={onUpdateLog} aria-label="Open update log">
+          v{version}
+        </button>
       </div>
       <div className="launch-layout">
         <section className="launch-briefing" aria-label="Flight menu">
@@ -172,6 +176,7 @@ export function MainMenu({
             <button onClick={onSettings}>Settings</button>
             <button onClick={onDetails}>Flight manual</button>
             <button onClick={onLeaderboard}>Leaderboard</button>
+            <button onClick={onUpdateLog}>Update log</button>
           </nav>
           <p className="launch-hint">
             WASD thrust · Mouse aim · Click fire · Tab weapon · E missile · P pause

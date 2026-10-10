@@ -7,7 +7,7 @@ export class HttpError extends Error {
 
 const weapons = new Set(["pulse", "spread", "seeker", "ricochet", "flak", "arc", "laser", "rail"]);
 const upgrades = new Set(["overclock", "hollow", "thruster", "hull", "armor", "twin", "pierce", "crit"]);
-const droneUpgrades = new Set(["twinCannons", "overcharge", "piercing", "armor", "repairPulse", "magnet", "scan", "speed"]);
+const droneUpgrades = new Set(["twinCannons", "overcharge", "piercing", "armor", "repairPulse", "shield", "magnet", "scan", "speed"]);
 export const stages = ["sectors", "mk6", "mk6-cleared"];
 const statuses = new Set(["active", "paused", "dead", "victory", "abandoned"]);
 
