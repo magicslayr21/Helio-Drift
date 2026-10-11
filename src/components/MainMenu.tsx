@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import { ArrowRight, ChevronRight, Radio, RefreshCw } from "lucide-react";
+import { useEffect, useState, type FormEvent } from "react";
+import { ArrowRight, Radio, RefreshCw } from "lucide-react";
 import { HeliosMark } from "./Masthead";
+import { DeployMenu } from "./DeployMenu";
 import {
   getIdentity,
   getLeaderboard,
@@ -35,7 +36,7 @@ export function MainMenu({
   onDetails: () => void;
   onUpdateLog: () => void;
 }) {
-  const [confirmNew, setConfirmNew] = useState(false);
+  const [deployOpen, setDeployOpen] = useState(false);
   const [callsign, setCallsign] = useState(getIdentity()?.username ?? "");
   const [saving, setSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState("");
@@ -43,7 +44,6 @@ export function MainMenu({
   const [loading, setLoading] = useState(true);
   const [boardError, setBoardError] = useState("");
   const [refresh, setRefresh] = useState(0);
-  const startButton = useRef<HTMLButtonElement>(null);
   const configured = isLeaderboardConfigured();
 
   useEffect(() => {
@@ -138,39 +138,30 @@ export function MainMenu({
             </p>
           </div>
           <div className="launch-actions">
-            <button className="launch-primary" disabled={!canContinue} onClick={onContinue}>
-              Continue run <ArrowRight size={18} />
-            </button>
             <button
-              ref={startButton}
-              className="launch-secondary"
-              aria-expanded={confirmNew}
-              onClick={() => (canContinue ? setConfirmNew(true) : onStart())}
+              className="launch-primary launch-deploy"
+              aria-haspopup="dialog"
+              onClick={() => setDeployOpen(true)}
             >
-              Start new run <ChevronRight size={18} />
+              Deploy <ArrowRight size={30} />
             </button>
           </div>
-          {!canContinue && <p className="launch-hint">No saved run on this browser yet.</p>}
-          {confirmNew && (
-            <section className="launch-warning" role="alert" aria-label="Replace saved run">
-              <strong>Replace your saved run?</strong>
-              <p>
-                Starting a new run permanently removes your previous saved progress. You cannot
-                continue that run afterwards. Submitted leaderboard records remain.
-              </p>
-              <div>
-                <button
-                  autoFocus
-                  onClick={() => {
-                    setConfirmNew(false);
-                    startButton.current?.focus();
-                  }}
-                >
-                  Keep previous run
-                </button>
-                <button onClick={onStart}>Replace & start</button>
-              </div>
-            </section>
+          <p className="launch-hint">Select your mode. Chart your course.</p>
+          {deployOpen && (
+            <DeployMenu
+              hud={hud}
+              canContinue={canContinue}
+              callsign={getIdentity()?.username ?? ""}
+              onClose={() => setDeployOpen(false)}
+              onContinue={() => {
+                setDeployOpen(false);
+                onContinue();
+              }}
+              onStart={() => {
+                setDeployOpen(false);
+                onStart();
+              }}
+            />
           )}
           <nav className="launch-links" aria-label="Menu options">
             <button onClick={onSettings}>Settings</button>

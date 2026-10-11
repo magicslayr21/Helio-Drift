@@ -1,5 +1,19 @@
 export const UPDATE_LOG = [
   {
+    version: "0.4.0-alpha.1",
+    date: "2026-10-11",
+    title: "Choose your frontier",
+    items: [
+      "One large Deploy button opens a full-screen mission selector. Campaign and Multiplayer occupy the two large tiles, with Extras and Unlimited stacked alongside them on desktop.",
+      "Original vector insignia, illuminated hover corners, and persistent selection highlights match the amber-and-cyan flight deck. The layout adapts to smaller screens.",
+      "Campaign opens Continue Run and Start New Run, with confirmation before replacing a saved run. Back and Escape work throughout mode selection and the confirmation screen.",
+      "Multiplayer, Extras, and Unlimited are unreleased placeholders. Clicking only highlights the tile; none starts a game or changes saved progress.",
+      "Exploration now uses Signal Beyond, an original adventurous yet solitary score with ascending motifs, drifting arpeggios, and distant echoes. All soundtracks have a moderately higher music level.",
+      "MK6 now uses Black Relay, an original digital hip-hop score with syncopated bass, synthesized drums, and ominous chords.",
+      "When MK6 enters its enraged second phase after the half-health raid, the same score becomes louder and distorted with denser percussion. The musical clock continues through the change. Music remains independently switchable in Settings.",
+    ],
+  },
+  {
     version: "0.3.0-alpha.1",
     date: "2026-10-10",
     title: "Guardian signal",

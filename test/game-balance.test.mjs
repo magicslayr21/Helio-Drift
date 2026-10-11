@@ -1075,6 +1075,14 @@ test("music follows live boss state and silences on pause, menu, hidden tabs and
     g.loop(performance.now());
   }
   assert.deepEqual(themes, ["flight", "boss", "boss", "boss", "boss", "boss", "mk6", "flight"]);
+  g.boss = g.makeBoss(false, 6);
+  g.boss.hp = g.boss.maxHp / 2;
+  g.loop(performance.now());
+  assert.equal(themes.at(-1), "mk6", "the half-health raid is still phase one");
+  g.boss.movement.mk6RaidDone = true;
+  g.updateMk6(g.boss, 0.01);
+  g.loop(performance.now());
+  assert.equal(themes.at(-1), "mk6Phase2", "the actual enraged phase changes the music");
   for (const mode of ["paused", "menu", "levelup", "gameover", "victory"]) {
     g.mode = mode;
     g.loop(performance.now());

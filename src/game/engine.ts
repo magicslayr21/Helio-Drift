@@ -971,7 +971,15 @@ export class Game {
     this.frame++;
     this.decayShake(dt);
     if (this.mode === "playing")
-      audio.setMusic(this.boss?.mk === 6 ? "mk6" : this.boss ? "boss" : "flight");
+      audio.setMusic(
+        this.boss?.mk === 6
+          ? this.boss.mk6?.enraged
+            ? "mk6Phase2"
+            : "mk6"
+          : this.boss
+            ? "boss"
+            : "flight",
+      );
     else audio.stopMusic();
 
     if (this.mode === "playing" || this.mode === "gameover" || this.mode === "victory") {

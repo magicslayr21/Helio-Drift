@@ -123,6 +123,7 @@ class AudioEngine {
   setMusic(mode: MusicTheme) {
     if (!this.musicEnabled || !this.ready()) return;
     if (this.music?.theme === mode) return;
+    if (this.music?.retune(mode)) return;
     this.stopMusic();
     this.music = new MusicScore(this.ctx!, this.comp!, mode);
   }
