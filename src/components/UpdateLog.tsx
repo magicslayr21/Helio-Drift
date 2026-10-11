@@ -32,12 +32,12 @@ export function UpdateLog({ onClose }: { onClose: () => void }) {
           dialog.current?.querySelector("button")?.focus();
         }
       }}
-      className="thin-scroll fixed inset-0 m-auto max-h-[85dvh] w-[min(680px,calc(100%-2rem))] overflow-y-auto border border-ice/45 bg-void p-6 text-amber shadow-[0_0_50px_rgba(111,231,255,.12)] backdrop:bg-black/85 backdrop:backdrop-blur-sm"
+      className="thin-scroll fixed inset-0 m-auto max-h-[85dvh] w-[min(680px,calc(100%-2rem))] overflow-y-auto rounded-sm border border-steel/45 bg-void p-0 text-amber shadow-2xl backdrop:bg-black/85 backdrop:backdrop-blur-sm"
     >
-      <header className="flex items-start justify-between gap-4 border-b border-steel/35 pb-4">
+      <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-steel/35 bg-void px-5 py-5 sm:px-7">
         <div>
-          <p className="legend text-ice">Transmission archive</p>
-          <h2 id="update-log-title" className="mt-1 font-display text-3xl text-amber-hot">
+          <p className="legend text-ice/70">Release notes</p>
+          <h2 id="update-log-title" className="mt-1 font-display text-2xl text-amber-hot">
             UPDATE LOG
           </h2>
         </div>
@@ -45,22 +45,42 @@ export function UpdateLog({ onClose }: { onClose: () => void }) {
           autoFocus
           onClick={onClose}
           aria-label="Close update log"
-          className="border border-steel/50 p-2 text-amber/70 hover:border-amber focus-visible:outline-ice"
+          className="rounded-sm border border-steel/40 p-2 text-amber/70 transition-colors hover:border-amber hover:text-amber-hot focus-visible:outline-ice"
         >
           <X size={18} />
         </button>
       </header>
-      <div className="mt-5 space-y-8">
-        {UPDATE_LOG.map((entry) => (
-          <article key={entry.version}>
+      <div className="divide-y divide-steel/25 px-5 sm:px-7">
+        {UPDATE_LOG.map((entry, index) => (
+          <article key={entry.version} className="py-6">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <h3 className="font-display text-xl text-ice">v{entry.version}</h3>
-              <span className="legend text-amber/55">{entry.date}</span>
+              <div className="flex flex-wrap items-center gap-3">
+                <h3 className="font-mono text-sm font-semibold text-ice">v{entry.version}</h3>
+                {index === 0 && (
+                  <span className="rounded-sm border border-ice/25 bg-ice/5 px-2 py-0.5 text-[10px] font-semibold tracking-widest text-ice">
+                    LATEST
+                  </span>
+                )}
+              </div>
+              <span className="text-xs text-amber/55">
+                {entry.date === "Previous release" ? (
+                  entry.date
+                ) : (
+                  <time dateTime={entry.date}>
+                    {new Date(`${entry.date}T00:00:00Z`).toLocaleDateString("en-AU", {
+                      day: "numeric",
+                      month: "short",
+                      year: "numeric",
+                      timeZone: "UTC",
+                    })}
+                  </time>
+                )}
+              </span>
             </div>
-            <p className="mt-1 text-sm uppercase tracking-widest text-amber-hot">{entry.title}</p>
-            <ul className="mt-3 space-y-3 text-sm leading-relaxed text-amber/80">
+            <p className="mt-2 text-base font-medium text-amber-hot">{entry.title}</p>
+            <ul className="mt-3 list-disc space-y-1.5 pl-4 text-sm leading-relaxed text-amber/80 marker:text-ice/60">
               {entry.items.map((item) => (
-                <li key={item} className="border-l border-amber/40 pl-3">
+                <li key={item} className="pl-1">
                   {item}
                 </li>
               ))}
