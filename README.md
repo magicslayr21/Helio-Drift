@@ -63,3 +63,11 @@ browse the furthest runs, or use authenticated developer moderation.
 Publishing requires a persistent Node.js 24 API host and the GitHub Actions variable
 `VITE_LEADERBOARD_URL`. See [leaderboard setup and operation](docs/leaderboard.md)
 for deployment, storage, moderation, and test instructions.
+
+## Online co-op
+
+The two-player campaign uses a separate Cloudflare Worker with MatchRoom and LobbyIndex Durable
+Objects. Local commands, release checks, migrations, security controls, cost planning, staged
+deployment, and rollback are documented in the
+[online co-op release runbook](docs/multiplayer-deployment.md). Production deployment requires a
+separate explicit approval.

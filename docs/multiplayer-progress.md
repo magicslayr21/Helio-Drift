@@ -1,7 +1,7 @@
 # Online co-op progress
 
 Branch: `feature/online-coop`  
-Current milestone: **7 — multiplayer UI and co-op leaderboard (awaiting approval)**
+Current milestone: **8 — integration, performance, and release readiness (awaiting approval)**
 Production deployment: **not started**
 
 This document is the implementation record for the two-player online survival expansion. Each
@@ -377,18 +377,42 @@ service and adds an isolated co-op results board. Neither Worker nor the fronten
 - GitHub Pages accepts a public `VITE_MULTIPLAYER_URL` build variable, while local Vite development
   proxies `/multiplayer-api` to the isolated Worker on port 8788.
 
+## Milestone 8 implementation
+
+The eighth milestone closes the implementation sequence with automated release gates and a staged
+operations plan. It does not deploy, migrate, or modify any production Cloudflare resource.
+
+- A real Chromium test drives two isolated browser contexts through private-room creation, code
+  join, ready-up, synchronized flight, page refresh/reconnect, and explicit leave. The harness uses
+  temporary local services and dynamically allocated ports.
+- A deterministic full-campaign check traverses waves 1–25, MK1–MK5, both bonus decisions, and MK6.
+  A separate reference-loadout run measures 33.89 simulated minutes against the 25–35 minute goal.
+- A ten-minute accelerated soak validates two active pilots, finite state, and every entity limit.
+  Maximum-pressure measurement holds wire snapshots below 192 KiB and times simulation plus JSON
+  serialization.
+- Hard room ceilings now bound rocks, enemies, friendly/hostile projectiles, hazards, tethers,
+  mines, and pickups. Normal campaign counts remain below these safety ceilings.
+- Hostile-message fuzzing covers non-object, unknown, unsafe numeric, invalid command, binary, and
+  player-ID spoof payloads. A concurrent load check launches eight Durable Objects and sixteen
+  WebSockets, then verifies acknowledged input in every room.
+- Stress testing found and fixed a same-tick boss-kill crash caused by battlefield cleanup replacing
+  the projectile array while it was being traversed.
+- The co-op release runbook documents local setup, bindings and migrations, variables and secrets,
+  measured performance/cost inputs, security, observability, custom domains, staged deployment, and
+  non-destructive rollback.
+
 ## Milestone status
 
-| Milestone                               | Status                      | Merge gate  |
-| --------------------------------------- | --------------------------- | ----------- |
-| 1. Audit and shared simulation refactor | Complete and approved       | Passed      |
-| 2. Two-player local simulation          | Complete and approved       | Passed      |
-| 3. Private room networking              | Complete and approved       | Passed      |
-| 4. Authoritative multiplayer combat     | Complete and approved       | Passed      |
-| 5. Complete co-op campaign              | Complete and approved       | Passed      |
-| 6. Public lobbies and matchmaking       | Complete and approved       | Passed      |
-| 7. Multiplayer UI and leaderboard       | Complete; awaiting approval | Passed      |
-| 8. Integration and release readiness    | Waiting                     | Not started |
+| Milestone                               | Status                      | Merge gate |
+| --------------------------------------- | --------------------------- | ---------- |
+| 1. Audit and shared simulation refactor | Complete and approved       | Passed     |
+| 2. Two-player local simulation          | Complete and approved       | Passed     |
+| 3. Private room networking              | Complete and approved       | Passed     |
+| 4. Authoritative multiplayer combat     | Complete and approved       | Passed     |
+| 5. Complete co-op campaign              | Complete and approved       | Passed     |
+| 6. Public lobbies and matchmaking       | Complete and approved       | Passed     |
+| 7. Multiplayer UI and leaderboard       | Complete and approved       | Passed     |
+| 8. Integration and release readiness    | Complete; awaiting approval | Passed     |
 
 ## Milestone 1 verification
 
@@ -603,3 +627,40 @@ Milestone 7 is safe to review without deployment. The new D1 migration and Worke
 additive declarations only; no production migration, Worker publish, or Pages release has occurred.
 Milestone 8 integration, soak/load measurement, release documentation, and deployment planning
 remain behind the next approval gate.
+
+## Milestone 8 verification
+
+Milestone 8 passed on 13 October 2026:
+
+- `npm run typecheck`
+- `npm run game:test`: 92/92 tests, including full campaign/MK6, 33.89-minute pacing, ten-minute
+  soak, entity-cap/snapshot pressure, timing, and simultaneous boss-kill regression checks
+- `npm run leaderboard:test`: 12/12 local single-player API contract tests
+- `XDG_CONFIG_HOME=/tmp/helio-coop-m8-cf npm run cf:test`: Worker dry-run plus 19/19 D1/API tests
+- `XDG_CONFIG_HOME=/tmp/helio-coop-m8-multi npm run multiplayer:test`: Worker dry-run plus 19/19
+  Durable Object, WebSocket, fuzzing, eight-room load, lobby, and result tests
+- `XDG_CONFIG_HOME=/tmp/helio-coop-m8-browser npm run multiplayer:browser-test`: two independent
+  Chromium contexts passed create/join, ready/start, live flight, refresh/reconnect, and leave
+- `npm run build`
+- `npm run format:check`, explicit scripts/tests/docs formatting, and `git diff --check`
+
+Measured on the local release runner: a 147,637-byte maximum-pressure snapshot; 442–1,091 ms for 300
+pressure ticks; 351–693 ms for a ten-minute normal soak; and 331–554 ms to launch eight rooms with
+sixteen sockets. Thresholds are deliberately looser in tests to avoid machine-specific failures
+while still catching large regressions.
+
+Changed areas:
+
+- `src/game/simulation/coop-config.ts` and `local-coop.ts` — pacing target, hard entity ceilings,
+  restoration/runtime enforcement, and safe same-tick boss cleanup
+- `test/coop-release-readiness.test.mjs` — full campaign, MK6, pacing, soak, cap, snapshot, and timing
+  coverage
+- `multiplayer/test/release-readiness.test.mjs` — hostile payload fuzzing and concurrent room load
+- `scripts/multiplayer-browser-smoke.mjs` — isolated real-browser multiplayer lifecycle test
+- `docs/multiplayer-deployment.md` and `README.md` — complete operations and release handoff
+- Package scripts and Pages workflow — repeatable browser release gate
+- `package.json`, `package-lock.json`, and `src/game/update-log.ts` — `0.4.2-alpha.7` release record
+
+Milestone 8 is safe to review and merge without deployment. No remote D1 migration, Durable Object
+namespace publication, Worker deployment, GitHub Actions variable change, custom-domain change, or
+Pages release was performed. Production rollout remains a separate explicit approval step.

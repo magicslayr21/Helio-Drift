@@ -138,6 +138,7 @@ export class LocalCoopSimulation {
       simulation.state.boss.attackTimer ??= GAME_CONFIG.bosses.baseAttackTimer;
       simulation.state.boss.abilityTimer ??= GAME_CONFIG.bosses.baseAttackTimer * 2;
     }
+    simulation.enforceEntityCaps();
     simulation.random.restore(snapshot.randomState);
     simulation.runner.restore({ tick: snapshot.tick, accumulator: snapshot.clockAccumulator });
     simulation.events = [];
@@ -310,6 +311,7 @@ export class LocalCoopSimulation {
     this.updatePickups(dt);
     this.updatePlayerCollisions();
     this.updateRevives(dt);
+    this.enforceEntityCaps();
     if (this.state.phase !== "running") return;
 
     if (!this.state.boss && this.state.rocks.length === 0 && this.state.enemies.length === 0)
@@ -635,6 +637,9 @@ export class LocalCoopSimulation {
   private updateProjectiles(dt: number) {
     for (let index = this.state.projectiles.length - 1; index >= 0; index--) {
       const projectile = this.state.projectiles[index];
+      // Boss death clears the projectile collection immediately. A second projectile from the
+      // same tick may therefore no longer exist even though this reverse loop began with it.
+      if (!projectile) continue;
       projectile.life -= dt;
       projectile.fuse -= dt;
       if (projectile.homing > 0) this.guideProjectile(projectile, dt);
@@ -2131,6 +2136,24 @@ export class LocalCoopSimulation {
         distance: Math.hypot(target.entity.x - x, target.entity.y - y),
       }))
       .sort((left, right) => left.distance - right.distance || left.entity.id - right.entity.id)[0];
+  }
+
+  private enforceEntityCaps() {
+    const caps = COOP_CONFIG.entityCaps;
+    // Persistent wave targets keep their oldest entries so a safety trim cannot skip the
+    // objective currently being fought. Short-lived effects keep the newest entries instead.
+    this.state.rocks.length = Math.min(this.state.rocks.length, caps.rocks);
+    this.state.enemies.length = Math.min(this.state.enemies.length, caps.enemies);
+    this.keepNewest(this.state.projectiles, caps.projectiles);
+    this.keepNewest(this.state.hostileProjectiles, caps.hostileProjectiles);
+    this.keepNewest(this.state.hazards, caps.hazards);
+    this.keepNewest(this.state.tethers, caps.tethers);
+    this.keepNewest(this.state.mines, caps.mines);
+    this.keepNewest(this.state.pickups, caps.pickups);
+  }
+
+  private keepNewest<T>(values: T[], maximum: number) {
+    if (values.length > maximum) values.splice(0, values.length - maximum);
   }
 
   private nextId() {

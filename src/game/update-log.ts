@@ -1,5 +1,15 @@
 export const UPDATE_LOG = [
   {
+    version: "0.4.2-alpha.7",
+    date: "2026-10-13",
+    title: "Co-op release readiness",
+    items: [
+      "Two-browser, full-campaign, reconnect, fuzz, soak, and load checks added.",
+      "Room entity limits and simultaneous boss-kill cleanup hardened.",
+      "Co-op deployment, monitoring, cost, security, and rollback runbook added.",
+    ],
+  },
+  {
     version: "0.4.2-alpha.6",
     date: "2026-10-12",
     title: "Online co-op flight deck",

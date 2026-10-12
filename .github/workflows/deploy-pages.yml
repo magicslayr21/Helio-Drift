@@ -44,8 +44,13 @@ jobs:
         env:
           WRANGLER_SEND_METRICS: false
 
-      - name: Test private multiplayer rooms
+      - name: Test multiplayer rooms
         run: npm run multiplayer:test
+        env:
+          WRANGLER_SEND_METRICS: false
+
+      - name: Test two-browser multiplayer flow
+        run: npm run multiplayer:browser-test
         env:
           WRANGLER_SEND_METRICS: false
 

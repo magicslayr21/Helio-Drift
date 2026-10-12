@@ -4,6 +4,21 @@ export const COOP_CONFIG = {
   maximumCatchUpSeconds: 0.25,
   maximumPlayers: 2,
   arena: { width: 1000, height: 700 },
+  /** Hard safety ceilings for one authoritative room and one wire snapshot. */
+  entityCaps: {
+    rocks: 96,
+    enemies: 32,
+    projectiles: 256,
+    hostileProjectiles: 256,
+    hazards: 48,
+    tethers: 8,
+    mines: 8,
+    pickups: 96,
+  },
+  pacing: {
+    targetMinutesMin: 25,
+    targetMinutesMax: 35,
+  },
   difficulty: {
     enemyPressure: 1.5,
     bossHealth: 1.2,
