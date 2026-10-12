@@ -123,6 +123,16 @@ function bearer(request) {
   return TOKEN_PATTERN.test(token) ? token : null;
 }
 
+async function requireDeveloperSession(request, env) {
+  const token = bearer(request);
+  if (!token) throw new RequestError(401, "Developer authorization is required to host a room.");
+  const session = await env.DB.prepare("SELECT expires_at FROM admin_sessions WHERE token_hash = ?")
+    .bind(await hash(token))
+    .first();
+  if (!session || session.expires_at <= Date.now())
+    throw new RequestError(401, "Developer session expired. Enter the code again.");
+}
+
 function rateLimit(key, maximum, windowMs) {
   const now = Date.now();
   let bucket = requestBuckets.get(key);
@@ -191,6 +201,7 @@ export async function handleRequest(request, env) {
     }
     if (request.method === "POST" && path === "/api/rooms/private") {
       rateLimit(`create:${address}`, 20, 60_000);
+      await requireDeveloperSession(request, env);
       const body = await readJson(request);
       const callsign = normalizeCallsign(body.callsign);
       if (!callsign) throw new RequestError(400, "Callsign must be 2–24 safe characters.");
@@ -221,6 +232,7 @@ export async function handleRequest(request, env) {
     }
     if (request.method === "POST" && path === "/api/rooms/public") {
       rateLimit(`public-create:${address}`, 20, 60_000);
+      await requireDeveloperSession(request, env);
       const body = await readJson(request);
       const callsign = normalizeCallsign(body.callsign);
       const name = normalizeRoomName(body.name);

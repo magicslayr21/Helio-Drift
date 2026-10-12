@@ -75,6 +75,58 @@
   font-size: 12px;
   line-height: 1.8;
 }
+.coop-host-gate {
+  margin-top: 24px;
+  border: 1px solid rgba(255, 176, 58, 0.32);
+  padding: 14px;
+  background: rgba(255, 176, 58, 0.04);
+}
+.coop-host-gate.is-unlocked {
+  border-color: rgba(100, 255, 155, 0.42);
+  background: rgba(100, 255, 155, 0.05);
+}
+.coop-host-gate label,
+.coop-host-gate strong {
+  display: block;
+  color: #ffe0a3;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+.coop-host-gate form > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-top: 9px;
+}
+.coop-host-gate input,
+.coop-host-gate button {
+  min-height: 40px;
+  border: 1px solid rgba(111, 231, 255, 0.32);
+  background: #070911;
+  color: #ffe0a3;
+  padding: 9px 11px;
+}
+.coop-host-gate button {
+  color: #6fe7ff;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-size: 9px;
+}
+.coop-host-gate span,
+.coop-host-gate small {
+  display: block;
+  margin-top: 8px;
+  color: #87939f;
+  font-size: 9px;
+  line-height: 1.6;
+}
+.coop-host-gate.is-unlocked span {
+  color: #64ff9b;
+}
+.coop-host-gate small {
+  color: #ffb03a;
+}
 .coop-recover {
   display: flex;
   align-items: center;
@@ -709,6 +761,9 @@
   }
 }
 @media (max-width: 520px) {
+  .coop-host-gate form > div {
+    grid-template-columns: 1fr;
+  }
   .coop-actions-grid {
     grid-template-columns: 1fr;
   }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createServer as createHttpServer } from "node:http";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -38,11 +39,20 @@ const [leaderboardPort, multiplayerPort, vitePort, cdpPort] = await Promise.all(
   availablePort(),
   availablePort(),
 ]);
+const smokeDeveloperCode = "smoke-developer-code";
+const smokeDeveloperToken = "S".repeat(43);
 
 const leaderboard = createHttpServer((request, response) => {
   response.setHeader("Content-Type", "application/json");
   response.setHeader("Cache-Control", "no-store");
-  if (request.url?.startsWith("/api/leaderboard")) {
+  if (request.method === "POST" && request.url === "/api/admin/session") {
+    response.end(
+      JSON.stringify({
+        token: smokeDeveloperToken,
+        expiresAt: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+      }),
+    );
+  } else if (request.url?.startsWith("/api/leaderboard")) {
     response.end(
       JSON.stringify({
         entries: [],
@@ -212,7 +222,7 @@ async function enterMultiplayer(client, page) {
   await waitFor(
     client,
     page,
-    "document.body?.textContent?.toUpperCase().includes('DEPLOY')",
+    "[...document.querySelectorAll('button')].some((button) => button.textContent.trim().includes('Deploy'))",
     "main menu",
   );
   assert.equal(await evaluate(client, page, clickText("Deploy")), true);
@@ -239,17 +249,26 @@ try {
   await listen(leaderboard, leaderboardPort);
   await multiplayer.ready;
   const db = await multiplayer.getD1Database("DB");
-  const migration = await readFile(
-    join(root, "worker/migrations/0002_coop_leaderboard.sql"),
-    "utf8",
+  const migrations = await Promise.all(
+    ["0001_leaderboard.sql", "0002_coop_leaderboard.sql"].map((name) =>
+      readFile(join(root, "worker/migrations", name), "utf8"),
+    ),
   );
   await db.batch(
-    migration
+    migrations
+      .join("\n")
       .split(";")
       .map((sql) => sql.trim())
       .filter(Boolean)
       .map((sql) => db.prepare(sql)),
   );
+  await db
+    .prepare("INSERT INTO admin_sessions(token_hash, expires_at) VALUES (?, ?)")
+    .bind(
+      createHash("sha256").update(smokeDeveloperToken).digest("hex"),
+      Date.now() + 2 * 3_600_000,
+    )
+    .run();
   await vite.listen();
 
   chrome = spawn(
@@ -271,6 +290,24 @@ try {
   const bravo = await makePage(cdp, "Smoke Bravo");
   await Promise.all([enterMultiplayer(cdp, alpha), enterMultiplayer(cdp, bravo)]);
 
+  await waitFor(
+    cdp,
+    alpha,
+    "[...document.querySelectorAll('button')].some((button) => button.textContent.includes('Create private') && button.disabled)",
+    "locked hosting action",
+  );
+  await evaluate(
+    cdp,
+    alpha,
+    `(() => { const input = document.querySelector('#coop-developer-code'); const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; setter.call(input, ${JSON.stringify(smokeDeveloperCode)}); input.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`,
+  );
+  assert.equal(await evaluate(cdp, alpha, clickText("Unlock hosting")), true);
+  await waitFor(
+    cdp,
+    alpha,
+    "[...document.querySelectorAll('button')].some((button) => button.textContent.includes('Create private') && !button.disabled)",
+    "developer hosting authorization",
+  );
   assert.equal(await evaluate(cdp, alpha, clickText("Create private")), true);
   await waitFor(cdp, alpha, "document.querySelector('.coop-room-code strong')", "private room");
   const roomCode = await evaluate(

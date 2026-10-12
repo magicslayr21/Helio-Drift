@@ -1,57 +1,41 @@
 export const UPDATE_LOG = [
   {
-    version: "0.4.2-alpha.7",
+    version: "0.5.0-alpha.1",
     date: "2026-10-13",
-    title: "Co-op release readiness",
-    items: [
-      "Two-browser, full-campaign, reconnect, fuzz, soak, and load checks added.",
-      "Room entity limits and simultaneous boss-kill cleanup hardened.",
-      "Co-op deployment, monitoring, cost, security, and rollback runbook added.",
-    ],
-  },
-  {
-    version: "0.4.2-alpha.6",
-    date: "2026-10-12",
-    title: "Online co-op flight deck",
-    items: [
-      "Multiplayer deployment, lobbies, ready-up, reconnects, and co-op HUD added.",
-      "Server-authored team results now use a separate co-op leaderboard.",
-    ],
-  },
-  {
-    version: "0.4.2-alpha.5",
-    date: "2026-10-12",
-    title: "Public co-op lobbies",
-    items: [
-      "Public room discovery and safe lobby summaries added.",
-      "Quick Join now allocates open room slots atomically.",
-    ],
-  },
-  {
-    version: "0.4.2-alpha.4",
-    date: "2026-10-12",
-    title: "Complete co-op campaign",
-    items: [
-      "Seeded sector directives and final co-op scaling added.",
-      "Tether Sentinels, Mine Wardens, revive interruption, and MK6 support added.",
-    ],
-  },
-  {
-    version: "0.4.2-alpha.3",
-    date: "2026-10-12",
-    title: "Authoritative co-op combat",
-    items: [
-      "Room servers now own combat, enemies, bosses, drops, and progression.",
-      "Co-op commands are ownership-checked and snapshots hide room internals.",
-    ],
-  },
-  {
-    version: "0.4.2-alpha.2",
-    date: "2026-10-12",
-    title: "Private co-op foundation",
-    items: [
-      "Private two-player room and secure reconnect foundations added.",
-      "Server-timed simulation, snapshots, prediction, and interpolation prepared.",
+    title: "Online Co-op Expansion",
+    sections: [
+      {
+        title: "ONLINE DEPLOYMENT",
+        items: [
+          "Private rooms, room-code joining, public patrols, browsing, and Quick Join added.",
+          "Ready-up, secure reconnects, individual callsigns, and two-player flight added.",
+          "Developer authorization is required to host during closed alpha; anyone can join.",
+        ],
+      },
+      {
+        title: "CO-OP CAMPAIGN",
+        items: [
+          "The full 25-wave campaign and optional MK6 challenge support two pilots.",
+          "Each pilot has separate hull, credits, weapons, upgrades, missiles, and drone.",
+          "Shared Overdrive, proximity revives, sector directives, and co-op scaling added.",
+        ],
+      },
+      {
+        title: "ENEMIES & BOSSES",
+        items: [
+          "Sentinels, Wardens, Spikers, asteroid mutations, and MK1–MK6 target either pilot.",
+          "Tether Sentinels and Mine Wardens add new team-focused hazards to later waves.",
+          "Boss defeats clear the battlefield and co-op victory or failure is synchronized.",
+        ],
+      },
+      {
+        title: "FLIGHT DECK & RECORDS",
+        items: [
+          "The co-op HUD shows teammate hull, directives, Overdrive, shops, and results.",
+          "Distinct pilot accents and keyboard, pointer, and touch controls support shared flight.",
+          "Server-authored co-op results use a separate global leaderboard.",
+        ],
+      },
     ],
   },
   {

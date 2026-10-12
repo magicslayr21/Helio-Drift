@@ -664,3 +664,10 @@ Changed areas:
 Milestone 8 is safe to review and merge without deployment. No remote D1 migration, Durable Object
 namespace publication, Worker deployment, GitHub Actions variable change, custom-domain change, or
 Pages release was performed. Production rollout remains a separate explicit approval step.
+
+## Closed-alpha hosting gate
+
+The `0.5.0-alpha.1` release requires a valid leaderboard developer session to create private or
+public rooms. The multiplayer Worker validates the session against shared D1 storage, while public
+browsing, Quick Join, room-code joining, and reconnecting remain open to every player. No production
+Worker, migration, or Pages deployment was performed as part of this change.

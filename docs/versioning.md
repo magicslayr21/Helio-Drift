@@ -2,7 +2,7 @@
 
 The version displayed in the game comes from `package.json`. Vite embeds it in
 both local and production builds; GitHub Actions build numbers no longer replace
-it. The current release is `0.4.2-alpha.1`.
+it. The current release is `0.5.0-alpha.1`.
 
 Use `MAJOR.MINOR.PATCH-alpha.N` while the game is in alpha.
 

@@ -27,8 +27,22 @@ test("public listing exposes safe room summaries and never private rooms", async
   assert.equal(JSON.stringify(listing.data).includes("Open Pilot"), false);
 
   assert.equal(
-    (await app.request("/rooms/public", { method: "POST", body: { name: "!", callsign: "Pilot" } }))
-      .status,
+    (
+      await app.request("/rooms/public", {
+        method: "POST",
+        body: { name: "Unauthorized Patrol", callsign: "Pilot" },
+      })
+    ).status,
+    401,
+  );
+  assert.equal(
+    (
+      await app.request("/rooms/public", {
+        method: "POST",
+        token: app.developerToken,
+        body: { name: "!", callsign: "Pilot" },
+      })
+    ).status,
     400,
   );
 });
@@ -140,6 +154,7 @@ test("public index survives restart and concurrent room creation", async (t) => 
     Array.from({ length: 6 }, (_, index) =>
       app.request("/rooms/public", {
         method: "POST",
+        token: app.developerToken,
         body: { name: `Patrol ${index + 1}`, callsign: `Pilot ${index + 1}` },
       }),
     ),

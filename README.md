@@ -70,4 +70,5 @@ The two-player campaign uses a separate Cloudflare Worker with MatchRoom and Lob
 Objects. Local commands, release checks, migrations, security controls, cost planning, staged
 deployment, and rollback are documented in the
 [online co-op release runbook](docs/multiplayer-deployment.md). Production deployment requires a
-separate explicit approval.
+separate explicit approval. During closed alpha, only players with the developer code can create a
+room; anyone can browse, Quick Join, join by code, or reconnect.

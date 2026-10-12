@@ -25,7 +25,7 @@ export interface PublicRoomPage {
 
 export type CoopConnectionState = "connecting" | "connected" | "reconnecting" | "closed";
 
-class MultiplayerError extends Error {
+export class MultiplayerError extends Error {
   constructor(
     message: string,
     readonly status: number,
@@ -75,15 +75,18 @@ async function request<T>(path: string, options: RequestInit = {}, token?: strin
   }
 }
 
-function create(path: string, body: object) {
-  return request<CoopSession>(path, { method: "POST", body: JSON.stringify(body) }).then(
-    saveCoopSession,
-  );
+function create(path: string, body: object, developerToken?: string) {
+  return request<CoopSession>(
+    path,
+    { method: "POST", body: JSON.stringify(body) },
+    developerToken,
+  ).then(saveCoopSession);
 }
 
-export const createPrivateRoom = (callsign: string) => create("/rooms/private", { callsign });
-export const createPublicRoom = (callsign: string, name: string) =>
-  create("/rooms/public", { callsign, name });
+export const createPrivateRoom = (callsign: string, developerToken: string) =>
+  create("/rooms/private", { callsign }, developerToken);
+export const createPublicRoom = (callsign: string, name: string, developerToken: string) =>
+  create("/rooms/public", { callsign, name }, developerToken);
 export const quickJoinRoom = (callsign: string) => create("/rooms/quick", { callsign });
 export const joinRoom = (callsign: string, code: string) =>
   create(`/rooms/${encodeURIComponent(code.trim().toUpperCase())}/join`, { callsign });

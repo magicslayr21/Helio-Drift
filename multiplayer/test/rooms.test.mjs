@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { multiplayerFixture } from "./fixture.mjs";
 
@@ -15,7 +16,43 @@ test("health, CORS and input validation are isolated from the leaderboard servic
     403,
   );
   assert.equal(
-    (await app.request("/rooms/private", { method: "POST", body: { callsign: "!" } })).status,
+    (await app.request("/rooms/private", { method: "POST", body: { callsign: "Open Pilot" } }))
+      .status,
+    401,
+  );
+  assert.equal(
+    (
+      await app.request("/rooms/private", {
+        method: "POST",
+        token: "A".repeat(43),
+        body: { callsign: "Open Pilot" },
+      })
+    ).status,
+    401,
+  );
+  const expiredToken = "E".repeat(43);
+  await app.db
+    .prepare("INSERT INTO admin_sessions(token_hash, expires_at) VALUES (?, ?)")
+    .bind(createHash("sha256").update(expiredToken).digest("hex"), Date.now() - 1)
+    .run();
+  assert.equal(
+    (
+      await app.request("/rooms/private", {
+        method: "POST",
+        token: expiredToken,
+        body: { callsign: "Open Pilot" },
+      })
+    ).status,
+    401,
+  );
+  assert.equal(
+    (
+      await app.request("/rooms/private", {
+        method: "POST",
+        token: app.developerToken,
+        body: { callsign: "!" },
+      })
+    ).status,
     400,
   );
   assert.equal((await app.request("/rooms/INVALID"))?.status, 400);
@@ -23,6 +60,7 @@ test("health, CORS and input validation are isolated from the leaderboard servic
     (
       await app.request("/rooms/private", {
         method: "POST",
+        token: app.developerToken,
         rawBody: JSON.stringify({ callsign: "x".repeat(5000) }),
       })
     ).status,

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,17 +24,25 @@ export async function multiplayerFixture(t) {
   });
   let mf = new Miniflare(options);
   let db = await mf.getD1Database("DB");
-  const migration = await readFile(
-    new URL("../../worker/migrations/0002_coop_leaderboard.sql", import.meta.url),
-    "utf8",
+  const migrations = await Promise.all(
+    ["0001_leaderboard.sql", "0002_coop_leaderboard.sql"].map((name) =>
+      readFile(new URL(`../../worker/migrations/${name}`, import.meta.url), "utf8"),
+    ),
   );
   await db.batch(
-    migration
+    migrations
+      .join("\n")
       .split(";")
       .map((sql) => sql.trim())
       .filter(Boolean)
       .map((sql) => db.prepare(sql)),
   );
+  const developerToken = "T".repeat(43);
+  const developerHash = createHash("sha256").update(developerToken).digest("hex");
+  await db
+    .prepare("INSERT INTO admin_sessions(token_hash, expires_at) VALUES (?, ?)")
+    .bind(developerHash, Date.now() + 2 * 3_600_000)
+    .run();
   const sockets = new Set();
   const inboxes = new WeakMap();
   t.after(async () => {
@@ -71,7 +80,11 @@ export async function multiplayerFixture(t) {
   }
 
   async function create(callsign = "Comet One") {
-    const response = await request("/rooms/private", { method: "POST", body: { callsign } });
+    const response = await request("/rooms/private", {
+      method: "POST",
+      token: developerToken,
+      body: { callsign },
+    });
     assert.equal(response.status, 201, JSON.stringify(response.data));
     return response.data;
   }
@@ -83,6 +96,7 @@ export async function multiplayerFixture(t) {
   async function createPublic(name = "Open Patrol", callsign = "Comet One") {
     const response = await request("/rooms/public", {
       method: "POST",
+      token: developerToken,
       body: { name, callsign },
     });
     assert.equal(response.status, 201, JSON.stringify(response.data));
@@ -153,6 +167,7 @@ export async function multiplayerFixture(t) {
 
   return {
     request,
+    developerToken,
     create,
     createPublic,
     joinRoom,

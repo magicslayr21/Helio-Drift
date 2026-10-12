@@ -78,13 +78,30 @@ export function UpdateLog({ onClose }: { onClose: () => void }) {
               </span>
             </div>
             <p className="mt-2 text-base font-medium text-amber-hot">{entry.title}</p>
-            <ul className="mt-3 list-disc space-y-1.5 pl-4 text-sm leading-relaxed text-amber/80 marker:text-ice/60">
-              {entry.items.map((item) => (
-                <li key={item} className="pl-1">
-                  {item}
-                </li>
-              ))}
-            </ul>
+            {"sections" in entry ? (
+              <div className="mt-4 space-y-4">
+                {entry.sections.map((section) => (
+                  <section key={section.title}>
+                    <h4 className="legend text-ice/75">{section.title}</h4>
+                    <ul className="mt-2 list-disc space-y-1.5 pl-4 text-sm leading-relaxed text-amber/80 marker:text-ice/60">
+                      {section.items.map((item) => (
+                        <li key={item} className="pl-1">
+                          {item}
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ))}
+              </div>
+            ) : (
+              <ul className="mt-3 list-disc space-y-1.5 pl-4 text-sm leading-relaxed text-amber/80 marker:text-ice/60">
+                {entry.items.map((item) => (
+                  <li key={item} className="pl-1">
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            )}
           </article>
         ))}
       </div>

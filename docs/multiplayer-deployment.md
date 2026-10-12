@@ -40,9 +40,13 @@ Public configuration:
 Private configuration:
 
 - `LEADERBOARD_ADMIN_CODE` is the only required Worker secret. Set it on the leaderboard Worker
-  with `npx wrangler secret put LEADERBOARD_ADMIN_CODE`. Never use a `VITE_*` name for it.
-- The multiplayer service has no shared browser secret. Reconnect tokens are random bearer
-  capabilities returned once, hashed before Durable Object storage, and scoped to one player slot.
+  with `npx wrangler secret put LEADERBOARD_ADMIN_CODE`. During closed alpha, this code unlocks
+  private or public room creation for a two-hour browser session. Never use a `VITE_*` name for it.
+- Both Workers share D1 so the multiplayer service can validate the leaderboard-issued session
+  without receiving or storing the raw developer code. Browsing, Quick Join, room-code joining,
+  and reconnecting remain open to all players.
+- Reconnect tokens are random bearer capabilities returned once, hashed before Durable Object
+  storage, and scoped to one player slot.
 
 Do not commit `.dev.vars`, Cloudflare API tokens, database exports, reconnect tokens, or admin
 sessions. Wrangler login or a narrowly scoped CI token supplies deployment authority.
@@ -139,6 +143,8 @@ usage; do not promise that every 25–35 minute run will remain free.
 
 - Cloudflare terminates TLS. Production clients must use HTTPS/WSS.
 - CORS rejects unlisted browser origins. CORS is not authentication; room tokens remain required.
+- Room creation requires a current developer session during closed alpha. Joining public or
+  private rooms does not require the developer code.
 - Room codes are discovery handles, not credentials. Reconnect tokens are hashed at rest and socket
   tickets are short-lived and one-use.
 - A Durable Object assigns command ownership from the authenticated socket. Client-supplied player

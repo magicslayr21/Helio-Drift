@@ -28,7 +28,13 @@ import type {
 import type { CoopEvent, CoopPlayerId } from "../game/simulation/coop-types";
 import { salvageUpgradePrice, weaponPrice } from "../game/simulation/weapons";
 import type { SalvageUpgradeId } from "../game/types";
-import { getCoopLeaderboard, isLeaderboardConfigured } from "../leaderboard/client";
+import {
+  authenticateDeveloper,
+  clearDeveloperSession,
+  getAdminSession,
+  getCoopLeaderboard,
+  isLeaderboardConfigured,
+} from "../leaderboard/client";
 import type { CoopLeaderboardPage } from "../leaderboard/types";
 import {
   CoopConnection,
@@ -39,6 +45,7 @@ import {
   isMultiplayerConfigured,
   joinRoom,
   loadCoopSession,
+  MultiplayerError,
   quickJoinRoom,
   saveCoopSession,
   type CoopConnectionState,
@@ -88,6 +95,10 @@ export function MultiplayerExperience({
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [board, setBoard] = useState<CoopLeaderboardPage | null>(null);
   const [shopOpen, setShopOpen] = useState(false);
+  const [developerSession, setDeveloperSession] = useState(getAdminSession);
+  const [developerCode, setDeveloperCode] = useState("");
+  const [developerPending, setDeveloperPending] = useState(false);
+  const [developerNotice, setDeveloperNotice] = useState("");
   const connection = useRef<CoopConnection | null>(null);
   const commandSequence = useRef(0);
 
@@ -147,6 +158,11 @@ export function MultiplayerExperience({
       try {
         enterSession(await operation());
       } catch (error) {
+        if (error instanceof MultiplayerError && error.status === 401) {
+          clearDeveloperSession();
+          setDeveloperSession(null);
+          setDeveloperNotice("Developer authorization expired. Enter the code again to host.");
+        }
         setNotice(error instanceof Error ? error.message : "Online co-op request failed.");
         audio.play("overheat");
       } finally {
@@ -155,6 +171,26 @@ export function MultiplayerExperience({
     },
     [enterSession],
   );
+
+  const authorizeHosting = async (event: FormEvent) => {
+    event.preventDefault();
+    if (developerPending) return;
+    setDeveloperPending(true);
+    setDeveloperNotice("");
+    try {
+      const next = await authenticateDeveloper(developerCode.trim());
+      setDeveloperSession(next);
+      setDeveloperCode("");
+      setDeveloperNotice("Hosting unlocked for this developer session.");
+      audio.play("levelup");
+    } catch (error) {
+      setDeveloperSession(null);
+      setDeveloperNotice(error instanceof Error ? error.message : "Developer access was denied.");
+      audio.play("overheat");
+    } finally {
+      setDeveloperPending(false);
+    }
+  };
 
   const loadRooms = useCallback(async (cursor = "") => {
     setPending(true);
@@ -226,6 +262,7 @@ export function MultiplayerExperience({
   };
 
   const recovered = loadCoopSession();
+  const hostingUnlocked = Boolean(developerSession);
   const state = snapshot?.state ?? null;
   const me = session && state ? state.players[session.playerId] : null;
   const teammateId: CoopPlayerId | null = session
@@ -426,6 +463,37 @@ export function MultiplayerExperience({
               <span>SURVIVE THE DRIFT.</span>
             </h1>
             <p>Separate loadouts. Shared waves, Overdrive, directives and victory.</p>
+            <div className={`coop-host-gate${hostingUnlocked ? " is-unlocked" : ""}`}>
+              {hostingUnlocked ? (
+                <>
+                  <strong>Developer hosting unlocked</strong>
+                  <span>You can create private or public rooms during the closed alpha.</span>
+                </>
+              ) : (
+                <form onSubmit={authorizeHosting}>
+                  <label htmlFor="coop-developer-code">Developer code to host</label>
+                  <div>
+                    <input
+                      id="coop-developer-code"
+                      type="password"
+                      value={developerCode}
+                      maxLength={256}
+                      required
+                      autoComplete="current-password"
+                      disabled={developerPending || !isLeaderboardConfigured()}
+                      onChange={(event) => setDeveloperCode(event.target.value)}
+                    />
+                    <button disabled={developerPending || !isLeaderboardConfigured()}>
+                      {developerPending ? "Checking…" : "Unlock hosting"}
+                    </button>
+                  </div>
+                  <span>
+                    Creating rooms is developer-only for now. Anyone can browse, join, or reconnect.
+                  </span>
+                </form>
+              )}
+              {developerNotice && <small role="status">{developerNotice}</small>}
+            </div>
             {recovered && (
               <button className="coop-recover" onClick={() => enterSession(recovered)}>
                 Reconnect to {recovered.roomCode} <Radio size={16} />
@@ -433,13 +501,22 @@ export function MultiplayerExperience({
             )}
           </div>
           <div className="coop-actions-grid">
-            <button onClick={() => void run(() => createPrivateRoom(callsign))} disabled={pending}>
+            <button
+              onClick={() =>
+                void run(() => createPrivateRoom(callsign, developerSession?.token ?? ""))
+              }
+              disabled={pending || !hostingUnlocked}
+            >
               <Shield /> <strong>Create private</strong>
-              <span>Share a six-character code</span>
+              <span>
+                {hostingUnlocked ? "Share a six-character code" : "Developer code required"}
+              </span>
             </button>
-            <button onClick={() => setScreen("create")} disabled={pending}>
+            <button onClick={() => setScreen("create")} disabled={pending || !hostingUnlocked}>
               <Users /> <strong>Create public</strong>
-              <span>List a named waiting room</span>
+              <span>
+                {hostingUnlocked ? "List a named waiting room" : "Developer code required"}
+              </span>
             </button>
             <button
               onClick={() => {
@@ -477,7 +554,7 @@ export function MultiplayerExperience({
           pending={pending}
           onSubmit={(event) => {
             event.preventDefault();
-            void run(() => createPublicRoom(callsign, roomName));
+            void run(() => createPublicRoom(callsign, roomName, developerSession?.token ?? ""));
           }}
         >
           <label>
