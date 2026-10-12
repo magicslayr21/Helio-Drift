@@ -1,5 +1,14 @@
 export const UPDATE_LOG = [
   {
+    version: "0.4.2-alpha.2",
+    date: "2026-10-12",
+    title: "Private co-op foundation",
+    items: [
+      "Private two-player room and secure reconnect foundations added.",
+      "Server-timed simulation, snapshots, prediction, and interpolation prepared.",
+    ],
+  },
+  {
     version: "0.4.2-alpha.1",
     date: "2026-10-12",
     title: "Run saving & callsigns",

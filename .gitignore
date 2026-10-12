@@ -9,4 +9,5 @@ server/data/
 .dev.vars
 .dev.vars.*
 worker-dist/
+multiplayer-dist/
 leaderboard-backup*.sql

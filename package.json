@@ -1,7 +1,7 @@
 {
   "name": "react-vite-tailwind",
   "private": true,
-  "version": "0.4.2-alpha.1",
+  "version": "0.4.2-alpha.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -18,7 +18,10 @@
     "cf:migrate:local": "wrangler d1 migrations apply DB --local",
     "cf:check": "wrangler deploy --dry-run --outdir worker-dist",
     "cf:test": "npm run cf:check && node --test worker/test/*.test.mjs",
-    "cf:deploy": "node scripts/cloudflare-deploy.mjs"
+    "cf:deploy": "node scripts/cloudflare-deploy.mjs",
+    "multiplayer:dev": "wrangler dev --config wrangler.multiplayer.jsonc --port 8788",
+    "multiplayer:check": "wrangler deploy --dry-run --config wrangler.multiplayer.jsonc --outdir multiplayer-dist",
+    "multiplayer:test": "npm run multiplayer:check && node --test multiplayer/test/*.test.mjs"
   },
   "dependencies": {
     "clsx": "2.1.1",

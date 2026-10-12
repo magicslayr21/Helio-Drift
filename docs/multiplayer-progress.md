@@ -1,7 +1,7 @@
 # Online co-op progress
 
 Branch: `feature/online-coop`  
-Current milestone: **2 — two-player local simulation (awaiting approval)**
+Current milestone: **3 — private room networking (awaiting approval)**
 Production deployment: **not started**
 
 This document is the implementation record for the two-player online survival expansion. Each
@@ -247,13 +247,44 @@ beam, arc, flak, missile, enemy, and boss behaviours remain in the browser engin
 authoritative combat extraction in Milestone 4. Cosmetic randomness is absent from the headless
 model; clients will generate effects from semantic events without consuming the gameplay stream.
 
+## Milestone 3 implementation
+
+The third milestone wraps the local co-op model in a separate Cloudflare Worker and SQLite-backed
+Durable Object. It remains a private-room development service: no multiplayer menu is enabled and
+nothing has been deployed.
+
+- `wrangler.multiplayer.jsonc` defines a new `helio-drift-multiplayer` Worker and `MatchRoom`
+  namespace. It does not reuse the leaderboard Worker, D1 binding, migrations, or production data.
+- Private rooms use unambiguous six-character codes. Durable Object serialization makes competing
+  joins atomic, limits rooms to two players, rejects late joins, and lets either ready player start;
+  the creator has no host authority.
+- Reconnect tokens are returned only at create/join time and stored as SHA-256 hashes. Browser
+  sockets use short-lived, one-use tickets, and opening a replacement connection invalidates the
+  previous session generation.
+- Room state, player slots, ready state, simulation snapshots, and reconnect ownership persist in
+  Durable Object storage. A temporarily disconnected running room advances through alarms and can
+  be reclaimed within a 90-second grace period; inactive rooms are scheduled for cleanup.
+- The room owns the 30 Hz simulation clock and emits JSON-safe authoritative snapshots every two
+  ticks (15 Hz). Inputs are assigned to the authenticated player, sequence checked, normalized by
+  the simulation, capped at 90 messages per second, and limited to 4 KiB.
+- Heartbeats, stale/unknown message errors, oversized-message closure, CORS validation, connection
+  replacement, leave/rejoin, and persisted refresh/reconnect paths are handled explicitly.
+- `ClientPrediction` replays only unacknowledged local movement after reconciliation.
+  `SnapshotInterpolator` orders server frames and interpolates player/entity positions without
+  predicting combat.
+- Ten Miniflare tests use two independent WebSockets and real Durable Object storage. Three client
+  tests cover prediction, acknowledgement replay, interpolation, ordering, and input normalization.
+
+Public room discovery, Quick Join, multiplayer menus, and production deployment remain reserved for
+later milestones. Specialized authoritative combat remains Milestone 4 work.
+
 ## Milestone status
 
 | Milestone                               | Status                      | Merge gate  |
 | --------------------------------------- | --------------------------- | ----------- |
 | 1. Audit and shared simulation refactor | Complete and approved       | Passed      |
-| 2. Two-player local simulation          | Complete; awaiting approval | Passed      |
-| 3. Private room networking              | Waiting                     | Not started |
+| 2. Two-player local simulation          | Complete and approved       | Passed      |
+| 3. Private room networking              | Complete; awaiting approval | Passed      |
 | 4. Authoritative multiplayer combat     | Waiting                     | Not started |
 | 5. Complete co-op campaign              | Waiting                     | Not started |
 | 6. Public lobbies and matchmaking       | Waiting                     | Not started |
@@ -317,5 +348,40 @@ Changed files:
 - `docs/multiplayer-progress.md` — Milestone 2 scope, verification, and approval gate
 
 Milestone 2 is safe to merge: it adds no network path, database migration, UI, or deployment. The
-single-player engine, save schema, and leaderboard contracts remain compatible. Milestone 3 must
-not begin until this local simulation boundary is approved.
+single-player engine, save schema, and leaderboard contracts remain compatible. Its approval gate
+was cleared before Milestone 3 began.
+
+## Milestone 3 verification
+
+Milestone 3 passed on 12 October 2026:
+
+- `npm run typecheck`
+- `npm run game:test`: 74/74 tests, including three client synchronization checks
+- `npm run leaderboard:test`: 12/12 tests
+- `XDG_CONFIG_HOME=/tmp/helio-coop-m3-wrangler npm run cf:test`: dry-run bundle plus 18/18
+  Worker/D1 tests
+- `XDG_CONFIG_HOME=/tmp/helio-coop-m3-wrangler npm run multiplayer:test`: separate Worker dry-run
+  bundle plus 10/10 Durable Object and WebSocket tests
+- `npm run build`
+- `npm run format:check`, explicit multiplayer/docs formatting, and `git diff --check`
+- Local multiplayer smoke: port 8788 health check and private-room creation
+- Chromium single-player smoke: campaign start, movement, save, reload, and continue
+
+Changed files:
+
+- `wrangler.multiplayer.jsonc` — isolated multiplayer Worker and Durable Object migration
+- `multiplayer/config.mjs` — room, ticket, timeout, cadence, and input limits
+- `multiplayer/worker.mjs` — private-room HTTP API, sessions, WebSockets, clock, persistence, and cleanup
+- `multiplayer/test/fixture.mjs` and `rooms.test.mjs` — Miniflare room/network integration coverage
+- `src/game/network/` — typed protocol, movement prediction, reconciliation, and interpolation
+- `test/multiplayer-client.test.mjs` — pure client synchronization tests
+- `package.json` and `package-lock.json` — `0.4.2-alpha.2` and multiplayer development/test commands
+- `.github/workflows/deploy-pages.yml` — multiplayer dry-run and tests in the existing quality gate
+- `.gitignore` — ignores the multiplayer dry-run bundle
+- `src/game/update-log.ts` — concise alpha release entry
+- `docs/multiplayer-progress.md` — Milestone 3 design, verification, and approval gate
+
+Milestone 3 is safe to review without deployment: the configuration declares a new namespace but no
+command in this milestone publishes it. The existing single-player game, save schema, leaderboard
+Worker, D1 database, and production bindings remain unchanged. Milestone 4 must not begin until the
+private-room boundary is approved.
