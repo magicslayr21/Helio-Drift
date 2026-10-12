@@ -18,7 +18,7 @@ registerHooks({
       return {
         format: "module",
         shortCircuit: true,
-        source: ts.transpileModule(readFileSync(new URL(url), "utf8"), {
+        source: ts.transpileModule(readFileSync(new URL(url), "utf8").replaceAll("import.meta.env", '({ DEV: true })'), {
           compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
         }).outputText,
       };
@@ -1124,4 +1124,121 @@ test("mixed late-boss combat survives upgraded drone attacks and mid-frame boss 
     }
     assert.equal(g.boss, null);
   }
+});
+
+
+test("failed initial saves retry without overwriting a newer run or tombstone", async (t) => {
+  const { RunSave } = await import("../src/game/run-save.ts");
+  let stored = null;
+  let blocked = true;
+  t.mock.method(localStorage, "getItem", () => stored);
+  t.mock.method(localStorage, "setItem", (_key, value) => {
+    if (blocked) throw new Error("Quota exceeded");
+    stored = value;
+  });
+  const save = new RunSave();
+  const g = game();
+  save.begin(g);
+  assert.equal(stored, null);
+  blocked = false;
+  assert.equal(save.write(g), true);
+  assert.equal(save.restore(game()), true);
+  g.wave = 25;
+  save.write(g);
+  g.wave = 20;
+  assert.equal(save.write(g), false, "stale tab cannot replace a wave 25 checkpoint");
+  assert.equal(JSON.parse(stored).state.wave, 25);
+  save.end();
+  const tombstone = stored;
+  save.write(g);
+  assert.equal(stored, tombstone);
+  const replacement = new RunSave();
+  blocked = true;
+  replacement.begin(g);
+  blocked = false;
+  assert.equal(replacement.write(g), true, "retry replacing an old run");
+  stored = JSON.stringify({ version: 1, id: "other-tab-run", state: {} });
+  assert.equal(replacement.write(g), false);
+  assert.equal(JSON.parse(stored).id, "other-tab-run");
+});
+
+test("late-wave boss saves restore progress and leaderboard metadata", async (t) => {
+  const { RunSave } = await import("../src/game/run-save.ts");
+  let stored = null;
+  t.mock.method(localStorage, "getItem", () => stored);
+  t.mock.method(localStorage, "setItem", (_key, value) => { stored = value; });
+  for (const wave of [20, 21, 24, 25]) {
+    const g = game();
+    g.wave = wave;
+    g.score = wave * 1000;
+    g.boss = g.makeBoss(false, 5);
+    g.salvageDrone.upgrades.shield = 3;
+    g.leaderboardRun = { runId: crypto.randomUUID(), revision: 90, durationSeconds: 800, deathCause: null, assisted: false, finalReport: null };
+    const save = new RunSave();
+    save.begin(g);
+    const restored = game();
+    assert.equal(save.restore(restored), true);
+    assert.equal(restored.wave, wave);
+    assert.equal(restored.score, g.score);
+    assert.equal(restored.leaderboardRun.revision, 90);
+    assert.equal(restored.salvageDrone.upgrades.shield, 3);
+  }
+});
+
+test("leaderboard retries old Worker shield rejection and retains failed reports", async (t) => {
+  const store = new Map();
+  t.mock.method(localStorage, "getItem", key => store.get(key) ?? null);
+  t.mock.method(localStorage, "setItem", (key, value) => store.set(key, value));
+  store.set("helios-leaderboard-player-v1", JSON.stringify({ playerId: "pilot", playerToken: "token", username: "TestPilot" }));
+  const client = await import("../src/leaderboard/client.ts");
+  const g = game();
+  g.wave = 25;
+  g.salvageDrone.upgrades.shield = 3;
+  g.leaderboardRun = { runId: crypto.randomUUID(), revision: 1, durationSeconds: 900, deathCause: null, assisted: false, finalReport: null };
+  const report = g.leaderboardReport();
+  const sent = [];
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    const body = JSON.parse(options.body);
+    sent.push(body);
+    return "shield" in body.drone.upgrades
+      ? new Response(JSON.stringify({ error: "Unknown Drone upgrade ID." }), { status: 400 })
+      : new Response(JSON.stringify({ accepted: true }));
+  });
+  // Preload persisted work to await the complete drain deterministically.
+  store.set("helios-leaderboard-pending-v1", JSON.stringify([report]));
+  await client.flushPendingRuns();
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].wave, 25);
+  assert.equal(sent[0].drone.upgrades.shield, 3);
+  assert.equal("shield" in sent[1].drone.upgrades, false);
+  assert.equal(client.getSyncStatus(), "saved");
+  assert.deepEqual(JSON.parse(store.get("helios-leaderboard-pending-v1")), []);
+  // A rejected wave 25 must remain available for retries, including after reload.
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ error: "Temporary rejection" }), { status: 400 }));
+  store.set("helios-leaderboard-pending-v1", JSON.stringify([report]));
+  await client.flushPendingRuns();
+  assert.equal(client.getSyncStatus(), "offline");
+  assert.equal(JSON.parse(store.get("helios-leaderboard-pending-v1"))[0].wave, 25);
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ accepted: true })));
+  await client.flushPendingRuns();
+  assert.equal(client.getSyncStatus(), "saved");
+  // Reports queued during a slow upload survive removal of the older revision.
+  let release;
+  let started;
+  const requestStarted = new Promise(resolve => { started = resolve; });
+  t.mock.method(globalThis, "fetch", async () => {
+    started();
+    await new Promise(resolve => { release = resolve; });
+    return new Response(JSON.stringify({ accepted: true }));
+  });
+  store.set("helios-leaderboard-pending-v1", JSON.stringify([report]));
+  const flushing = client.flushPendingRuns();
+  await requestStarted;
+  client.queueRun({ ...report, revision: report.revision + 1, status: "dead" });
+  release();
+  await flushing;
+  assert.equal(JSON.parse(store.get("helios-leaderboard-pending-v1"))[0].status, "dead");
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ accepted: true })));
+  await client.flushPendingRuns();
+  assert.deepEqual(JSON.parse(store.get("helios-leaderboard-pending-v1")), []);
 });

@@ -396,3 +396,11 @@
     transition: none;
   }
 }
+
+.campaign-action:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.campaign-choices .launch-profile {
+  margin-bottom: 1rem;
+}

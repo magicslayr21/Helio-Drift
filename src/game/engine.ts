@@ -266,7 +266,7 @@ export class Game {
   }
 
   saveRun() {
-    this.runSave.write(this);
+    return this.runSave.write(this);
   }
 
   /** Detached snapshots keep networking and moderation outside the simulation. */

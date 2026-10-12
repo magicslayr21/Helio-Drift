@@ -4,6 +4,8 @@ import { HeliosMark } from "./Masthead";
 import { DeployMenu } from "./DeployMenu";
 import {
   getIdentity,
+  hasCustomCallsign,
+  getSyncStatus,
   getLeaderboard,
   isLeaderboardConfigured,
   setUsername,
@@ -38,16 +40,32 @@ export function MainMenu({
 }) {
   const [deployOpen, setDeployOpen] = useState(false);
   const [callsign, setCallsign] = useState(getIdentity()?.username ?? "");
+  const [callsignReady, setCallsignReady] = useState(hasCustomCallsign);
   const [saving, setSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState("");
   const [page, setPage] = useState<LeaderboardPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [boardError, setBoardError] = useState("");
   const [refresh, setRefresh] = useState(0);
+  const [syncStatus, setSyncStatus] = useState(getSyncStatus);
   const configured = isLeaderboardConfigured();
 
   useEffect(() => {
-    if (!leaderboardOpen) setCallsign(getIdentity()?.username ?? "");
+    let previous = getSyncStatus();
+    const timer = window.setInterval(() => {
+      const next = getSyncStatus();
+      setSyncStatus(next);
+      if (next === "saved" && previous !== "saved") setRefresh((value) => value + 1);
+      previous = next;
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!leaderboardOpen) {
+      setCallsign(getIdentity()?.username ?? "");
+      setCallsignReady(hasCustomCallsign());
+    }
   }, [leaderboardOpen]);
 
   useEffect(() => {
@@ -90,6 +108,7 @@ export function MainMenu({
     try {
       const identity = await setUsername(callsign.trim());
       setCallsign(identity.username);
+      setCallsignReady(true);
       setProfileMessage(`Callsign saved: ${identity.username}`);
       setRefresh((value) => value + 1);
     } catch (error) {
@@ -152,6 +171,41 @@ export function MainMenu({
               hud={hud}
               canContinue={canContinue}
               callsign={getIdentity()?.username ?? ""}
+              callsignReady={
+                callsignReady && !saving && callsign.trim() === getIdentity()?.username
+              }
+              callsignForm={
+                <form className="launch-profile" onSubmit={saveCallsign}>
+                  <label className="launch-eyebrow" htmlFor="menu-callsign">
+                    Pilot callsign
+                  </label>
+                  <div className="launch-input-row">
+                    <input
+                      id="menu-callsign"
+                      value={callsign}
+                      onChange={(event) => setCallsign(event.target.value)}
+                      minLength={2}
+                      maxLength={24}
+                      required
+                      pattern="[A-Za-z0-9][A-Za-z0-9 _\-]{1,23}"
+                      placeholder="Choose your callsign"
+                      autoComplete="nickname"
+                      disabled={saving || !configured}
+                      aria-describedby="callsign-help"
+                    />
+                    <button disabled={saving || !configured}>{saving ? "Saving…" : "Save"}</button>
+                  </div>
+                  <p id="callsign-help" className="launch-hint">
+                    2–24 letters, numbers, spaces, underscores or hyphens.
+                  </p>
+                  <p role="status" className="launch-profile-message">
+                    {profileMessage ||
+                      (!configured
+                        ? "Callsign editing becomes available when the leaderboard is connected."
+                        : "Your identity across the global leaderboard.")}
+                  </p>
+                </form>
+              }
               onClose={() => setDeployOpen(false)}
               onContinue={() => {
                 setDeployOpen(false);
@@ -174,37 +228,14 @@ export function MainMenu({
           </p>
         </section>
         <aside className="launch-sidebar">
-          <form className="launch-profile" onSubmit={saveCallsign}>
-            <label className="launch-eyebrow" htmlFor="menu-callsign">
-              Pilot callsign
-            </label>
-            <div className="launch-input-row">
-              <input
-                id="menu-callsign"
-                value={callsign}
-                onChange={(event) => setCallsign(event.target.value)}
-                minLength={2}
-                maxLength={24}
-                required
-                pattern="[A-Za-z0-9][A-Za-z0-9 _\-]{1,23}"
-                placeholder="Choose your callsign"
-                autoComplete="nickname"
-                disabled={saving || !configured}
-                aria-describedby="callsign-help"
-              />
-              <button disabled={saving || !configured}>{saving ? "Saving…" : "Save"}</button>
-            </div>
-            <p id="callsign-help" className="launch-hint">
-              2–24 letters, numbers, spaces, underscores or hyphens.
-            </p>
-            <p role="status" className="launch-profile-message">
-              {profileMessage ||
-                (!configured
-                  ? "Callsign editing becomes available when the leaderboard is connected."
-                  : "Your identity across the global leaderboard.")}
-            </p>
-          </form>
           <section className="launch-board" aria-label="Global leaderboard preview">
+            {(syncStatus === "offline" || syncStatus === "syncing") && (
+              <p className="launch-board-message" role="status">
+                {syncStatus === "syncing"
+                  ? "Syncing your latest run…"
+                  : "Run sync pending. Retrying automatically."}
+              </p>
+            )}
             <div className="launch-board-heading">
               <div>
                 <p className="launch-eyebrow">

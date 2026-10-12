@@ -230,7 +230,10 @@ export default function GameShell({
     });
     gameRef.current = g;
     restoring = true;
-    setCanContinue(g.restoreRun(true));
+    const restoredRun = g.restoreRun(true);
+    setCanContinue(restoredRun);
+    // Recover a checkpoint that may never have reached the server before closing.
+    if (restoredRun) queueRun(g.leaderboardReport());
     restoring = false;
     // Low-frequency reporting is outside the canvas loop. Network failures never stop a run.
     const reportRun = () => {
@@ -338,7 +341,13 @@ export default function GameShell({
   const returnToMenu = useCallback(() => {
     const game = gameRef.current;
     if (!game) return;
-    game.saveRun();
+    if (game.saveRun() === false) {
+      window.alert(
+        "Your run could not be saved on this device. Check browser storage and any other open game tabs, then try Save & Return again. Your current run is still open.",
+      );
+      return;
+    }
+    queueRun(game.leaderboardReport());
     setCanContinue(game.wave > 0 && game.p.hull > 0);
     setPanel("none");
     game.setMode("menu");

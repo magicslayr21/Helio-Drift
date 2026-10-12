@@ -1,5 +1,18 @@
 export const UPDATE_LOG = [
   {
+    version: "0.4.2-alpha.1",
+    date: "2026-10-12",
+    title: "Run saving & callsigns",
+    items: [
+      "Failed first saves now retry; Save & Return warns if storage fails.",
+      "Older tabs cannot overwrite newer run progress.",
+      "Latest progress syncs on menu return and checkpoint recovery.",
+      "Rejected leaderboard reports stay queued for retry.",
+      "Guardian Link reports work with older leaderboard servers.",
+      "Campaign requires a saved callsign beside the launch buttons.",
+    ],
+  },
+  {
     version: "0.4.1-alpha.1",
     date: "2026-10-11",
     title: "Update log refresh",

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ArrowLeft, ArrowRight } from "lucide-react";
 import { HeliosMark } from "./Masthead";
@@ -73,6 +73,8 @@ export function DeployMenu({
   hud,
   canContinue,
   callsign,
+  callsignReady,
+  callsignForm,
   onClose,
   onContinue,
   onStart,
@@ -80,6 +82,8 @@ export function DeployMenu({
   hud: Hud;
   canContinue: boolean;
   callsign: string;
+  callsignReady: boolean;
+  callsignForm: ReactNode;
   onClose: () => void;
   onContinue: () => void;
   onStart: () => void;
@@ -194,6 +198,12 @@ export function DeployMenu({
               <p>SOLO FLIGHT / 25 WAVES</p>
             </div>
             <div className="campaign-choices">
+              {callsignForm}
+              {!callsignReady && (
+                <p className="campaign-warning" role="status">
+                  Save your own callsign to deploy. Existing pilots: confirm your callsign once.
+                </p>
+              )}
               {stage === "confirm" ? (
                 <>
                   <p className="deploy-eyebrow">Flight recorder overwrite</p>
@@ -202,7 +212,11 @@ export function DeployMenu({
                     Starting a new run permanently removes your previous saved progress. Submitted
                     leaderboard records remain.
                   </p>
-                  <button className="campaign-action" onClick={onStart}>
+                  <button
+                    className="campaign-action"
+                    disabled={!callsignReady}
+                    onClick={() => callsignReady && onStart()}
+                  >
                     Replace & start <ArrowRight size={20} />
                   </button>
                   <button
@@ -226,13 +240,18 @@ export function DeployMenu({
                       : "Start a new campaign and carve a path through the unknown."}
                   </p>
                   {canContinue && (
-                    <button className="campaign-action" onClick={onContinue}>
+                    <button
+                      className="campaign-action"
+                      disabled={!callsignReady}
+                      onClick={() => callsignReady && onContinue()}
+                    >
                       Continue run <ArrowRight size={20} />
                     </button>
                   )}
                   <button
                     className={`campaign-action${canContinue ? " campaign-action--secondary" : ""}`}
-                    onClick={() => (canContinue ? setStage("confirm") : onStart())}
+                    disabled={!callsignReady}
+                    onClick={() => callsignReady && (canContinue ? setStage("confirm") : onStart())}
                   >
                     Start new run <ArrowRight size={20} />
                   </button>

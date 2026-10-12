@@ -18,6 +18,7 @@ let flushing = false;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let retryDelay = 2000;
 let pendingMemory: RunReport[] = [];
+let confirmedCallsign = "";
 let syncStatus: "offline" | "syncing" | "saved" | "disabled" | "idle" = API ? "idle" : "disabled";
 
 class LeaderboardError extends Error {
@@ -31,6 +32,15 @@ class LeaderboardError extends Error {
 
 export const isLeaderboardConfigured = () => Boolean(API);
 export const getSyncStatus = () => syncStatus;
+export function hasCustomCallsign() {
+  const player = getIdentity();
+  try {
+    confirmedCallsign = localStorage.getItem("helios-confirmed-callsign-v1") || confirmedCallsign;
+  } catch {
+    /* Retain session confirmation. */
+  }
+  return Boolean(player && confirmedCallsign === player.username);
+}
 
 export function getIdentity(): PlayerIdentity | null {
   try {
@@ -136,6 +146,12 @@ export async function setUsername(username: string): Promise<PlayerIdentity> {
   );
   const next = { ...player, username: updated.username };
   saveIdentity(next);
+  confirmedCallsign = next.username;
+  try {
+    localStorage.setItem("helios-confirmed-callsign-v1", confirmedCallsign);
+  } catch {
+    /* Retain session confirmation. */
+  }
   return next;
 }
 export const getLeaderboard = (offset = 0, limit = 25, signal?: AbortSignal) =>
@@ -219,33 +235,42 @@ export async function flushPendingRuns() {
   syncStatus = "syncing";
   try {
     const player = await ensureIdentity();
+    let failed = false;
     for (const report of readPending()) {
       try {
-        await request(
-          `/runs/${encodeURIComponent(report.runId)}`,
-          { method: "PUT", body: JSON.stringify(report) },
-          player.playerToken,
-        );
-      } catch (error) {
-        if (error instanceof LeaderboardError && error.status === 401) {
-          identity = null;
-          try {
-            localStorage.removeItem(IDENTITY_KEY);
-          } catch {
-            /* Retry with a new profile. */
-          }
+        const submit = (body: RunReport) =>
+          request(
+            `/runs/${encodeURIComponent(report.runId)}`,
+            { method: "PUT", body: JSON.stringify(body) },
+            player.playerToken,
+          );
+        try {
+          await submit(report);
+        } catch (error) {
+          // Pre-Guardian-Link Workers reject only this optional telemetry field.
+          // Retry without it; keep the full local report and all ranking fields.
+          if (
+            !(error instanceof LeaderboardError) ||
+            error.status !== 400 ||
+            error.message !== "Unknown Drone upgrade ID." ||
+            !("shield" in report.drone.upgrades)
+          )
+            throw error;
+          const upgrades = { ...report.drone.upgrades };
+          delete upgrades.shield;
+          await submit({ ...report, drone: { ...report.drone, upgrades } });
         }
-        // Invalid or no-longer-owned reports must not block every later run.
-        if (
-          !(error instanceof LeaderboardError) ||
-          ![400, 403, 404, 409, 413, 422].includes(error.status)
-        )
-          throw error;
+      } catch (error) {
+        // Never silently discard progress or claim rejected reports were saved.
+        // Continue draining other runs so one rejection cannot block them all.
+        failed = true;
+        continue;
       }
       writePending(
         readPending().filter((r) => r.runId !== report.runId || r.revision > report.revision),
       );
     }
+    if (failed) throw new Error("Run sync pending");
     retryDelay = 2000;
     syncStatus = "saved";
   } catch {

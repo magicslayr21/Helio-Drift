@@ -142,10 +142,18 @@ function matches(value: unknown, template: unknown): boolean {
 export class RunSave {
   private id: string | null = null;
   private ended = false;
+  private written = false;
+  private previousId: string | null = null;
 
   begin(game: Game) {
     this.id = game.leaderboardRun?.runId ?? crypto.randomUUID();
     this.ended = false;
+    this.written = false;
+    try {
+      this.previousId = read()?.id ?? null;
+    } catch {
+      this.previousId = null;
+    }
     this.write(game, true);
   }
 
@@ -195,6 +203,7 @@ export class RunSave {
         return false;
       this.id = saved.id;
       this.ended = false;
+      this.written = true;
       for (const key of FIELDS) {
         Object.assign(game, { [key]: state[key] });
       }
@@ -274,7 +283,23 @@ export class RunSave {
     try {
       const current = replace ? null : read();
       // A dead or superseded run cannot be resurrected by another open tab.
-      if (!replace && (!current || current.id !== this.id || !current.state)) return;
+      if (
+        !replace &&
+        ((!current && this.written) ||
+          (current &&
+            (current.id !== this.id || !current.state) &&
+            (this.written || current.id !== this.previousId)))
+      )
+        return false;
+      if (
+        !replace &&
+        current?.id === this.id &&
+        current.state &&
+        (current.state.wave > game.wave ||
+          current.state.score > game.score ||
+          (current.leaderboard?.durationSeconds ?? 0) > (game.leaderboardRun?.durationSeconds ?? 0))
+      )
+        return false;
       const state = Object.fromEntries(FIELDS.map((key) => [key, game[key]]));
       localStorage.setItem(
         KEY,
@@ -286,8 +311,11 @@ export class RunSave {
           leaderboard: game.leaderboardRun,
         }),
       );
+      this.written = true;
+      return true;
     } catch {
       // Play remains available when the browser blocks or fills storage.
+      return false;
     }
   }
 
