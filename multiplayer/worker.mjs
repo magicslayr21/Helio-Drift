@@ -485,6 +485,8 @@ export class MatchRoom {
       case "equipDroneWeapon":
       case "chooseUpgrade":
       case "activateOverdrive":
+      case "startBonusBoss":
+      case "declineBonusBoss":
         return this.applyCombatCommand(socket, playerId, message);
       case "leave":
         return this.leave(socket, playerId);

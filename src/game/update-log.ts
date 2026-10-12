@@ -1,5 +1,14 @@
 export const UPDATE_LOG = [
   {
+    version: "0.4.2-alpha.4",
+    date: "2026-10-12",
+    title: "Complete co-op campaign",
+    items: [
+      "Seeded sector directives and final co-op scaling added.",
+      "Tether Sentinels, Mine Wardens, revive interruption, and MK6 support added.",
+    ],
+  },
+  {
     version: "0.4.2-alpha.3",
     date: "2026-10-12",
     title: "Authoritative co-op combat",

@@ -229,7 +229,7 @@ test("shared Overdrive is server-tracked and can be activated by either player",
   assert.equal(simulation.drainEvents().at(-1)?.type, "overdriveActivated");
 });
 
-test("boss waves use co-op health scaling and wave 25 ends in victory", () => {
+test("wave 25 offers the scaled MK6 challenge before final victory", () => {
   const simulation = combatFixture();
   simulation.state.team.wave = 24;
   simulation.state.rocks = [];
@@ -240,10 +240,34 @@ test("boss waves use co-op health scaling and wave 25 ends in victory", () => {
   simulation.state.boss.hp = 1;
   simulation.state.boss.x = 150;
   simulation.state.boss.y = 350;
+  simulation.state.players.p1.ship.fireTimer = 0;
   simulation.submit(input("p1", 1, { fire: true }));
   simulation.stepTicks(5);
-  assert.equal(simulation.state.phase, "victory");
+  assert.equal(simulation.state.phase, "bonusOffer");
+  assert.equal(simulation.state.team.bonusAvailable, true);
   assert.equal(simulation.state.team.bossesDefeated, 1);
+  assert.equal(simulation.drainEvents().at(-1)?.type, "bonusBossOffered");
+
+  simulation.submit({ type: "startBonusBoss", playerId: "p2", sequence: 1 });
+  simulation.stepTicks();
+  assert.equal(simulation.state.phase, "running");
+  assert.equal(simulation.state.boss?.mk, 6);
+  assert.equal(simulation.state.boss?.maxHp, 37000 * COOP_CONFIG.difficulty.bossHealth);
+  assert.equal(simulation.state.team.bonusActive, true);
+  assert.ok(simulation.state.enemies.some((enemy) => enemy.kind === "tetherSentinel"));
+  assert.ok(simulation.state.enemies.some((enemy) => enemy.kind === "mineWarden"));
+
+  simulation.state.enemies = [];
+  simulation.state.mines = [];
+  simulation.state.boss.hp = 1;
+  simulation.state.boss.x = 150;
+  simulation.state.boss.y = 350;
+  simulation.state.players.p1.ship.fireTimer = 0;
+  simulation.submit(input("p1", 2, { fire: true }));
+  simulation.stepTicks(5);
+  assert.equal(simulation.state.phase, "victory");
+  assert.equal(simulation.state.team.bonusDefeated, true);
+  assert.equal(simulation.state.team.bossesDefeated, 2);
   assert.equal(simulation.drainEvents().at(-1)?.type, "matchEnded");
 });
 
@@ -475,4 +499,169 @@ test("mutated asteroids steer, accelerate, bounce and detonate on the server", (
     simulation.state.rocks.some((rock) => rock.trait === "boom"),
     false,
   );
+});
+
+test("sector directives are seeded, rotate between sectors, and preserve co-op tuning", () => {
+  const first = new LocalCoopSimulation({ seed: 4001 });
+  const second = new LocalCoopSimulation({ seed: 4001 });
+  assert.equal(first.state.team.directive, second.state.team.directive);
+  const opening = first.state.team.directive;
+  for (const simulation of [first, second]) {
+    simulation.state.team.wave = 5;
+    simulation.state.rocks = [];
+    simulation.state.enemies = [];
+    simulation.state.boss = null;
+    simulation.stepTicks();
+  }
+  assert.equal(first.state.team.wave, 6);
+  assert.equal(first.state.team.directive, second.state.team.directive);
+  assert.notEqual(first.state.team.directive, opening);
+  assert.deepEqual(COOP_CONFIG.difficulty, {
+    enemyPressure: 1.5,
+    bossHealth: 1.2,
+    enemyDamage: 1.15,
+  });
+});
+
+test("Tether Sentinels and Mine Wardens unlock on schedule and escort bosses", () => {
+  const waveEight = combatFixture(4002);
+  waveEight.state.team.wave = 7;
+  waveEight.state.rocks = [];
+  waveEight.stepTicks();
+  assert.ok(waveEight.state.enemies.some((enemy) => enemy.kind === "tetherSentinel"));
+  assert.equal(
+    waveEight.state.enemies.some((enemy) => enemy.kind === "mineWarden"),
+    false,
+  );
+
+  const waveThirteen = combatFixture(4003);
+  waveThirteen.state.team.wave = 12;
+  waveThirteen.state.rocks = [];
+  waveThirteen.stepTicks();
+  assert.ok(waveThirteen.state.enemies.some((enemy) => enemy.kind === "mineWarden"));
+
+  const bossWave = combatFixture(4004);
+  bossWave.state.team.wave = 14;
+  bossWave.state.rocks = [];
+  bossWave.stepTicks();
+  assert.equal(bossWave.state.boss?.mk, 3);
+  assert.ok(bossWave.state.enemies.some((enemy) => enemy.kind === "tetherSentinel"));
+  assert.ok(bossWave.state.enemies.some((enemy) => enemy.kind === "mineWarden"));
+});
+
+test("Tether Sentinel telegraphs, pulls its target, and breaks beyond its cap", () => {
+  const simulation = combatFixture(4005);
+  simulation.state.rocks.push(stationaryRock(simulation, { x: 950, y: 50, hp: 999 }));
+  const player = simulation.state.players.p1;
+  player.ship.x = 300;
+  player.ship.y = 300;
+  simulation.state.players.p2.disabled = true;
+  simulation.state.enemies.push({
+    id: simulation.state.nextEntityId++,
+    kind: "tetherSentinel",
+    x: 600,
+    y: 300,
+    vx: 0,
+    vy: 0,
+    angle: Math.PI,
+    radius: COOP_CONFIG.tetherSentinel.radius,
+    hp: 500,
+    maxHp: 500,
+    fireTimer: 2,
+    behaviorTimer: 2,
+    warningTimer: 0.001,
+    burst: 0,
+    targetPlayerId: "p1",
+    aimX: player.ship.x,
+    aimY: player.ship.y,
+  });
+  simulation.stepTicks();
+  assert.equal(simulation.state.tethers[0]?.targetPlayerId, "p1");
+  const velocity = player.ship.vx;
+  simulation.stepTicks();
+  assert.ok(player.ship.vx > velocity);
+  player.ship.x = 0;
+  simulation.state.enemies[0].x = 900;
+  simulation.stepTicks();
+  assert.equal(simulation.state.tethers.length, 0);
+  assert.ok(simulation.drainEvents().some((event) => event.type === "tetherBroken"));
+});
+
+test("Mine Wardens deploy capped, telegraphed, destructible mines", () => {
+  const simulation = combatFixture(4006);
+  simulation.state.rocks.push(stationaryRock(simulation, { x: 950, y: 50, hp: 999 }));
+  const player = simulation.state.players.p1;
+  player.ship.x = 300;
+  player.ship.y = 300;
+  simulation.state.enemies.push({
+    id: simulation.state.nextEntityId++,
+    kind: "mineWarden",
+    x: 430,
+    y: 300,
+    vx: 0,
+    vy: 0,
+    angle: Math.PI,
+    radius: COOP_CONFIG.mineWarden.radius,
+    hp: 500,
+    maxHp: 500,
+    fireTimer: 0,
+    behaviorTimer: 2,
+    warningTimer: 0,
+    burst: 0,
+    targetPlayerId: null,
+    aimX: 0,
+    aimY: 0,
+  });
+  simulation.stepTicks();
+  assert.equal(simulation.state.mines.length, 1);
+  assert.ok(simulation.drainEvents().some((event) => event.type === "mineDeployed"));
+  const mine = simulation.state.mines[0];
+  mine.hp = 1;
+  mine.x = 170;
+  mine.y = 350;
+  player.ship.x = 100;
+  player.ship.y = 350;
+  player.ship.angle = 0;
+  simulation.submit(input("p1", 1, { fire: true }));
+  simulation.stepTicks(5);
+  assert.equal(simulation.state.mines.length, 0);
+  assert.ok(simulation.drainEvents().some((event) => event.type === "mineDestroyed"));
+
+  for (let index = 0; index < COOP_CONFIG.mineWarden.mineCap + 3; index++) {
+    simulation.state.enemies[0].fireTimer = 0;
+    simulation.stepTicks();
+  }
+  assert.ok(simulation.state.mines.length <= COOP_CONFIG.mineWarden.mineCap);
+});
+
+test("taking damage interrupts an active revive before it can resume", () => {
+  const simulation = combatFixture(4007);
+  simulation.state.rocks.push(stationaryRock(simulation, { x: 950, y: 50, hp: 999 }));
+  const reviver = simulation.state.players.p1;
+  const target = simulation.state.players.p2;
+  target.disabled = true;
+  target.ship.hull = 0;
+  target.ship.x = reviver.ship.x + 30;
+  target.ship.y = reviver.ship.y;
+  simulation.submit(input("p1", 1, { interact: true }));
+  simulation.stepTicks(30);
+  assert.ok(target.reviveProgress > 0);
+  simulation.state.hostileProjectiles.push({
+    id: simulation.state.nextEntityId++,
+    sourceId: 999,
+    source: "boss",
+    x: reviver.ship.x,
+    y: reviver.ship.y,
+    vx: 0,
+    vy: 0,
+    radius: 8,
+    damage: 1,
+    life: 1,
+    hitPlayerIds: [],
+  });
+  simulation.stepTicks();
+  assert.equal(target.reviveProgress, 0);
+  assert.ok(reviver.reviveLockout > 0);
+  simulation.stepTicks(Math.floor(COOP_CONFIG.revive.interruptionSeconds * 15));
+  assert.equal(target.disabled, true);
 });

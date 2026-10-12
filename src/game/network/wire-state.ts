@@ -18,6 +18,8 @@ export function createWireState(state: CoopMatchState): CoopWireState {
     projectiles: structuredClone(state.projectiles),
     hostileProjectiles: structuredClone(state.hostileProjectiles),
     hazards: structuredClone(state.hazards),
+    tethers: structuredClone(state.tethers),
+    mines: structuredClone(state.mines),
     pickups: structuredClone(state.pickups),
     boss: structuredClone(state.boss),
   };

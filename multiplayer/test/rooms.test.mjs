@@ -207,6 +207,11 @@ test("malformed and stale client messages cannot mutate another player", async (
     (await app.nextMessage(a.socket, (message) => message.type === "error")).code,
     "invalid_command",
   );
+  send(a.socket, { type: "startBonusBoss", sequence: 3 });
+  assert.equal(
+    (await app.nextMessage(a.socket, (message) => message.type === "error")).code,
+    "rejected_command",
+  );
   a.socket.send("not json");
   assert.equal(
     (await app.nextMessage(a.socket, (message) => message.type === "error")).code,

@@ -112,6 +112,7 @@ function interpolatePositions(from: CoopWireState, to: CoopWireState, alpha: num
     "projectiles",
     "hostileProjectiles",
     "hazards",
+    "mines",
     "pickups",
   ] as const) {
     const rightById = new Map(to[key].map((entity) => [entity.id, entity]));

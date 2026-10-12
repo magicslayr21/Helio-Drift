@@ -38,6 +38,8 @@ export type MultiplayerClientMessage =
   | { type: "equipDroneWeapon"; sequence: number; weapon: WeaponId | null }
   | { type: "chooseUpgrade"; sequence: number; upgrade: string }
   | { type: "activateOverdrive"; sequence: number }
+  | { type: "startBonusBoss"; sequence: number }
+  | { type: "declineBonusBoss"; sequence: number }
   | { type: "heartbeat" }
   | { type: "ready"; ready: boolean }
   | { type: "start" }

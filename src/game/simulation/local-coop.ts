@@ -23,6 +23,7 @@ import { COOP_CONFIG, COOP_FIXED_DT } from "./coop-config";
 import type {
   CoopBossState,
   CoopCommand,
+  CoopDirectiveId,
   CoopEvent,
   CoopEnemyKind,
   CoopEnemyState,
@@ -83,12 +84,18 @@ export class LocalCoopSimulation {
         overdrive: 0,
         overdriveRemaining: 0,
         elapsedSeconds: 0,
+        directive: null,
+        bonusAvailable: false,
+        bonusActive: false,
+        bonusDefeated: false,
       },
       rocks: [],
       enemies: [],
       projectiles: [],
       hostileProjectiles: [],
       hazards: [],
+      tethers: [],
+      mines: [],
       pickups: [],
       boss: null,
     };
@@ -105,9 +112,16 @@ export class LocalCoopSimulation {
     simulation.state.enemies ??= [];
     simulation.state.hostileProjectiles ??= [];
     simulation.state.hazards ??= [];
+    simulation.state.tethers ??= [];
+    simulation.state.mines ??= [];
+    simulation.state.team.directive ??= null;
+    simulation.state.team.bonusAvailable ??= false;
+    simulation.state.team.bonusActive ??= false;
+    simulation.state.team.bonusDefeated ??= false;
     for (const player of Object.values(simulation.state.players)) player.input.missile ??= false;
     for (const player of Object.values(simulation.state.players)) player.supportQuietTimer ??= 0;
     for (const player of Object.values(simulation.state.players)) player.lastCommandSequence ??= -1;
+    for (const player of Object.values(simulation.state.players)) player.reviveLockout ??= 0;
     for (const rock of simulation.state.rocks) rock.fuse ??= -1;
     for (const projectile of simulation.state.projectiles) {
       projectile.kind ??= "shot";
@@ -149,6 +163,7 @@ export class LocalCoopSimulation {
       disabled: false,
       reviveProgress: 0,
       reviveCooldown: 0,
+      reviveLockout: 0,
       supportQuietTimer: 0,
       lastInputSequence: -1,
       lastCommandSequence: -1,
@@ -173,9 +188,11 @@ export class LocalCoopSimulation {
 
   submit(command: CoopCommand) {
     const player = this.state.players[command.playerId];
+    const bonusCommand = command.type === "startBonusBoss" || command.type === "declineBonusBoss";
     if (
       !player ||
-      this.state.phase !== "running" ||
+      (bonusCommand && this.state.phase !== "bonusOffer") ||
+      (this.state.phase !== "running" && !(this.state.phase === "bonusOffer" && bonusCommand)) ||
       !Number.isSafeInteger(command.sequence) ||
       command.sequence <=
         (command.type === "input" ? player.lastInputSequence : player.lastCommandSequence)
@@ -213,6 +230,8 @@ export class LocalCoopSimulation {
         "chooseUpgrade",
         "equipDroneWeapon",
         "activateOverdrive",
+        "startBonusBoss",
+        "declineBonusBoss",
       ].includes(command.type)
     )
       return false;
@@ -260,6 +279,7 @@ export class LocalCoopSimulation {
       const player = this.state.players[id];
       player.ship.invuln = Math.max(0, player.ship.invuln - dt);
       player.reviveCooldown = Math.max(0, player.reviveCooldown - dt);
+      player.reviveLockout = Math.max(0, player.reviveLockout - dt);
       player.supportQuietTimer = Math.max(0, player.supportQuietTimer - dt);
       if (player.disabled) continue;
       stepPlayerMovement(player.ship, player.input, dt, { width: this.width, height: this.height });
@@ -285,6 +305,8 @@ export class LocalCoopSimulation {
     this.updateProjectiles(dt);
     this.updateHostileProjectiles(dt);
     this.updateHazards(dt);
+    this.updateTethers(dt);
+    this.updateMines(dt);
     this.updatePickups(dt);
     this.updatePlayerCollisions();
     this.updateRevives(dt);
@@ -350,6 +372,13 @@ export class LocalCoopSimulation {
               playerId: player.id,
             });
           }
+          break;
+        case "startBonusBoss":
+          if (this.state.phase === "bonusOffer" && this.state.team.bonusAvailable)
+            this.startBonusBoss(player.id);
+          break;
+        case "declineBonusBoss":
+          if (this.state.phase === "bonusOffer") this.endMatch("victory");
           break;
       }
     }
@@ -493,6 +522,7 @@ export class LocalCoopSimulation {
   private fireInstantWeapon(player: CoopPlayerState, damage: number, maximumTargets: number) {
     const candidates = [
       ...this.state.enemies.map((entity) => ({ entity, type: "enemy" as const })),
+      ...this.state.mines.map((entity) => ({ entity, type: "mine" as const })),
       ...this.state.rocks.map((entity) => ({ entity, type: "rock" as const })),
       ...(this.state.boss ? [{ entity: this.state.boss, type: "boss" as const }] : []),
     ]
@@ -512,6 +542,7 @@ export class LocalCoopSimulation {
     for (const target of candidates) {
       if (target.type === "boss") this.damageBoss(damage, player);
       else if (target.type === "enemy") this.damageEnemy(target.entity, damage, player);
+      else if (target.type === "mine") this.damageMine(target.entity, damage, player);
       else this.damageRock(target.entity, damage, player);
     }
   }
@@ -589,6 +620,7 @@ export class LocalCoopSimulation {
       (mounted?.damage ?? 0) * GAME_CONFIG.salvage.weaponDamageScale;
     if (target.type === "boss") this.damageBoss(damage, player);
     else if (target.type === "enemy") this.damageEnemy(target.entity, damage, player);
+    else if (target.type === "mine") this.damageMine(target.entity, damage, player);
     else this.damageRock(target.entity, damage, player);
     drone.fireTimer = Math.max(
       GAME_CONFIG.salvage.minFireInterval,
@@ -631,6 +663,20 @@ export class LocalCoopSimulation {
       if (projectile.kind === "shot" && projectile.extra > 0 && projectile.fuse <= 0) {
         this.spawnShrapnel(projectile);
         consumed = true;
+      }
+      if (!consumed) {
+        for (const mine of [...this.state.mines]) {
+          if (projectile.hitIds.includes(mine.id)) continue;
+          if (
+            Math.hypot(projectile.x - mine.x, projectile.y - mine.y) >
+            projectile.radius + mine.radius
+          )
+            continue;
+          projectile.hitIds.push(mine.id);
+          this.damageMine(mine, projectile.damage, this.state.players[projectile.ownerId]);
+          consumed = projectile.kind === "missile" || projectile.pierce-- <= 0;
+          if (consumed) break;
+        }
       }
       if (!consumed) {
         for (const enemy of [...this.state.enemies]) {
@@ -710,6 +756,9 @@ export class LocalCoopSimulation {
     for (const enemy of [...this.state.enemies])
       if (Math.hypot(enemy.x - projectile.x, enemy.y - projectile.y) <= projectile.blastRadius)
         this.damageEnemy(enemy, projectile.blastDamage, player);
+    for (const mine of [...this.state.mines])
+      if (Math.hypot(mine.x - projectile.x, mine.y - projectile.y) <= projectile.blastRadius)
+        this.damageMine(mine, projectile.blastDamage, player);
     for (const rock of [...this.state.rocks])
       if (Math.hypot(rock.x - projectile.x, rock.y - projectile.y) <= projectile.blastRadius)
         this.damageRock(rock, projectile.blastDamage, player);
@@ -776,6 +825,46 @@ export class LocalCoopSimulation {
           enemy.warningTimer = 0.35;
           enemy.aimX = target.ship.x;
           enemy.aimY = target.ship.y;
+        }
+      } else if (enemy.kind === "tetherSentinel") {
+        const dx = target.ship.x - enemy.x;
+        const dy = target.ship.y - enemy.y;
+        const distance = Math.hypot(dx, dy) || 1;
+        const direction =
+          distance > COOP_CONFIG.tetherSentinel.preferredDistance + 60
+            ? 1
+            : distance < COOP_CONFIG.tetherSentinel.preferredDistance - 60
+              ? -1
+              : 0;
+        enemy.vx = (dx / distance) * COOP_CONFIG.tetherSentinel.speed * direction;
+        enemy.vy = (dy / distance) * COOP_CONFIG.tetherSentinel.speed * direction;
+        enemy.angle = Math.atan2(dy, dx);
+        const hasTether = this.state.tethers.some((tether) => tether.sourceId === enemy.id);
+        if (!hasTether && enemy.fireTimer <= 0 && enemy.warningTimer <= 0) {
+          enemy.warningTimer = COOP_CONFIG.tetherSentinel.telegraphSeconds;
+          enemy.aimX = target.ship.x;
+          enemy.aimY = target.ship.y;
+        }
+      } else if (enemy.kind === "mineWarden") {
+        const dx = target.ship.x - enemy.x;
+        const dy = target.ship.y - enemy.y;
+        const distance = Math.hypot(dx, dy) || 1;
+        const direction =
+          distance > COOP_CONFIG.mineWarden.preferredDistance + 80
+            ? 1
+            : distance < COOP_CONFIG.mineWarden.preferredDistance - 80
+              ? -1
+              : 0;
+        enemy.vx = (dx / distance) * COOP_CONFIG.mineWarden.speed * direction;
+        enemy.vy = (dy / distance) * COOP_CONFIG.mineWarden.speed * direction;
+        enemy.angle = Math.atan2(dy, dx);
+        if (enemy.fireTimer <= 0 && this.state.mines.length < COOP_CONFIG.mineWarden.mineCap) {
+          this.deployMine(enemy);
+          enemy.fireTimer = randomBetween(
+            this.random,
+            COOP_CONFIG.mineWarden.deploymentMin,
+            COOP_CONFIG.mineWarden.deploymentMax,
+          );
         }
       } else {
         const preferred =
@@ -866,6 +955,27 @@ export class LocalCoopSimulation {
         this.state.team.wave >= GAME_CONFIG.enemies.spikers.eightShotWave
           ? GAME_CONFIG.enemies.spikers.lateFireInterval
           : GAME_CONFIG.enemies.spikers.fireInterval;
+      return;
+    }
+    if (enemy.kind === "tetherSentinel") {
+      const target = enemy.targetPlayerId && this.state.players[enemy.targetPlayerId];
+      if (target && !target.disabled) {
+        this.state.tethers.push({
+          id: this.nextId(),
+          sourceId: enemy.id,
+          targetPlayerId: target.id,
+          strength: COOP_CONFIG.tetherSentinel.strength,
+          minimumDistance: COOP_CONFIG.tetherSentinel.minimumDistance,
+          maximumDistance: COOP_CONFIG.tetherSentinel.maximumDistance,
+        });
+        this.events.push({
+          type: "tetherStarted",
+          tick: this.state.tick,
+          entityId: enemy.id,
+          playerId: target.id,
+        });
+      }
+      enemy.fireTimer = COOP_CONFIG.tetherSentinel.cooldownSeconds;
       return;
     }
     this.fireEnemyShot(enemy, enemy.aimX, enemy.aimY);
@@ -967,7 +1077,50 @@ export class LocalCoopSimulation {
   private triggerBossAbility(boss: CoopBossState) {
     const target = this.nearestPlayer(boss.x, boss.y);
     if (!target) return;
-    if (boss.mk === 4) {
+    if (boss.mk === 6) {
+      if (randomChance(this.random, 0.5)) {
+        this.state.hazards.push({
+          id: this.nextId(),
+          sourceId: boss.id,
+          kind: "singularity",
+          x: this.width / 2,
+          y: this.height / 2,
+          radius: GAME_CONFIG.bosses.mk6.regenesisRadius,
+          timer: GAME_CONFIG.bosses.mk6.singularityDuration,
+          damage: GAME_CONFIG.bosses.mk6.regenesisDamage,
+        });
+        this.events.push({
+          type: "bossAbility",
+          tick: this.state.tick,
+          mk: boss.mk,
+          ability: "singularity",
+        });
+      } else {
+        for (let index = 0; index < GAME_CONFIG.bosses.mk6.strikeCount; index++)
+          this.state.hazards.push({
+            id: this.nextId(),
+            sourceId: boss.id,
+            kind: "strike",
+            x: randomBetween(this.random, 80, this.width - 80),
+            y: randomBetween(this.random, 100, this.height - 80),
+            radius: randomBetween(
+              this.random,
+              GAME_CONFIG.bosses.mk6.strikeRadiusMin,
+              GAME_CONFIG.bosses.mk6.strikeRadiusMax,
+            ),
+            timer:
+              GAME_CONFIG.bosses.mk6.strikeFirstWarning +
+              index * GAME_CONFIG.bosses.mk6.strikeWarningStep,
+            damage: GAME_CONFIG.bosses.mk6.strikePlayerDamage,
+          });
+        this.events.push({
+          type: "bossAbility",
+          tick: this.state.tick,
+          mk: boss.mk,
+          ability: "solarStrikes",
+        });
+      }
+    } else if (boss.mk === 4) {
       this.state.hazards.push({
         id: this.nextId(),
         sourceId: boss.id,
@@ -1065,6 +1218,17 @@ export class LocalCoopSimulation {
     for (let index = this.state.hazards.length - 1; index >= 0; index--) {
       const hazard = this.state.hazards[index];
       hazard.timer -= dt;
+      if (hazard.kind === "singularity" && hazard.timer > 0) {
+        for (const id of PLAYER_IDS) {
+          const player = this.state.players[id];
+          if (player.disabled) continue;
+          const distance = Math.hypot(hazard.x - player.ship.x, hazard.y - player.ship.y) || 1;
+          if (distance > hazard.radius) continue;
+          const pull = GAME_CONFIG.bosses.mk6.singularityPull * (1 - distance / hazard.radius);
+          player.ship.vx += ((hazard.x - player.ship.x) / distance) * pull * dt;
+          player.ship.vy += ((hazard.y - player.ship.y) / distance) * pull * dt;
+        }
+      }
       if (hazard.timer > 0) continue;
       for (const id of PLAYER_IDS) {
         const player = this.state.players[id];
@@ -1076,6 +1240,109 @@ export class LocalCoopSimulation {
       }
       this.state.hazards.splice(index, 1);
     }
+  }
+
+  private updateTethers(dt: number) {
+    for (let index = this.state.tethers.length - 1; index >= 0; index--) {
+      const tether = this.state.tethers[index];
+      const source = this.state.enemies.find((enemy) => enemy.id === tether.sourceId);
+      const player = this.state.players[tether.targetPlayerId];
+      const distance = source
+        ? Math.hypot(source.x - player.ship.x, source.y - player.ship.y)
+        : Number.POSITIVE_INFINITY;
+      if (!source || player.disabled || distance > tether.maximumDistance) {
+        this.state.tethers.splice(index, 1);
+        this.events.push({
+          type: "tetherBroken",
+          tick: this.state.tick,
+          entityId: tether.sourceId,
+          playerId: player.id,
+        });
+        continue;
+      }
+      if (distance <= tether.minimumDistance) continue;
+      player.ship.vx += ((source.x - player.ship.x) / distance) * tether.strength * dt;
+      player.ship.vy += ((source.y - player.ship.y) / distance) * tether.strength * dt;
+    }
+  }
+
+  private deployMine(enemy: CoopEnemyState) {
+    const mine = {
+      id: this.nextId(),
+      ownerId: enemy.id,
+      x: enemy.x,
+      y: enemy.y,
+      radius: COOP_CONFIG.mineWarden.mineRadius,
+      hp: COOP_CONFIG.mineWarden.mineHp,
+      maxHp: COOP_CONFIG.mineWarden.mineHp,
+      armTimer: COOP_CONFIG.mineWarden.mineArmSeconds,
+      triggerTimer: -1,
+      blastRadius: COOP_CONFIG.mineWarden.mineBlastRadius,
+      damage: COOP_CONFIG.mineWarden.mineDamage,
+      life: COOP_CONFIG.mineWarden.mineLifetime,
+    };
+    this.state.mines.push(mine);
+    this.events.push({ type: "mineDeployed", tick: this.state.tick, entityId: mine.id });
+  }
+
+  private updateMines(dt: number) {
+    for (let index = this.state.mines.length - 1; index >= 0; index--) {
+      const mine = this.state.mines[index];
+      mine.armTimer -= dt;
+      mine.life -= dt;
+      if (mine.life <= 0) {
+        this.state.mines.splice(index, 1);
+        continue;
+      }
+      if (mine.armTimer > 0) continue;
+      const close = PLAYER_IDS.some((id) => {
+        const player = this.state.players[id];
+        return (
+          !player.disabled &&
+          Math.hypot(player.ship.x - mine.x, player.ship.y - mine.y) <= mine.blastRadius * 0.8
+        );
+      });
+      if (close && mine.triggerTimer < 0)
+        mine.triggerTimer = COOP_CONFIG.mineWarden.mineWarningSeconds;
+      if (mine.triggerTimer < 0) continue;
+      mine.triggerTimer -= dt;
+      if (mine.triggerTimer <= 0) this.explodeMine(mine);
+    }
+  }
+
+  private explodeMine(mine: CoopMatchState["mines"][number]) {
+    const index = this.state.mines.findIndex((candidate) => candidate.id === mine.id);
+    if (index < 0) return;
+    this.state.mines.splice(index, 1);
+    for (const id of PLAYER_IDS) {
+      const player = this.state.players[id];
+      if (
+        !player.disabled &&
+        Math.hypot(player.ship.x - mine.x, player.ship.y - mine.y) <= mine.blastRadius
+      )
+        this.damagePlayer(player, mine.damage * COOP_CONFIG.difficulty.enemyDamage);
+    }
+  }
+
+  private damageMine(
+    mine: CoopMatchState["mines"][number],
+    amount: number,
+    player: CoopPlayerState,
+  ) {
+    const dealt = Math.min(mine.hp, amount);
+    mine.hp -= amount;
+    player.stats.damage += dealt;
+    this.chargeOverdrive(dealt);
+    if (mine.hp > 0) return;
+    const index = this.state.mines.findIndex((candidate) => candidate.id === mine.id);
+    if (index >= 0) this.state.mines.splice(index, 1);
+    this.state.team.score += 45;
+    this.events.push({
+      type: "mineDestroyed",
+      tick: this.state.tick,
+      entityId: mine.id,
+      playerId: player.id,
+    });
   }
 
   private updateRocks(dt: number) {
@@ -1181,9 +1448,13 @@ export class LocalCoopSimulation {
         const damage =
           enemy.kind === "spiker"
             ? GAME_CONFIG.enemies.spikers.playerContactDamage
-            : enemy.kind === "warden" || enemy.kind === "wardenTurret"
-              ? GAME_CONFIG.enemies.wardens.playerContactDamage
-              : GAME_CONFIG.enemies.sentinels.playerContactDamage;
+            : enemy.kind === "tetherSentinel"
+              ? COOP_CONFIG.tetherSentinel.contactDamage
+              : enemy.kind === "mineWarden"
+                ? COOP_CONFIG.mineWarden.contactDamage
+                : enemy.kind === "warden" || enemy.kind === "wardenTurret"
+                  ? GAME_CONFIG.enemies.wardens.playerContactDamage
+                  : GAME_CONFIG.enemies.sentinels.playerContactDamage;
         this.damagePlayer(player, damage * COOP_CONFIG.difficulty.enemyDamage);
         player.ship.invuln = GAME_CONFIG.player.collisionInvulnerability;
         continue;
@@ -1235,6 +1506,7 @@ export class LocalCoopSimulation {
     player.ship.hull -= incoming - redirected;
     player.supportQuietTimer = GAME_CONFIG.salvage.repairQuietSeconds;
     player.drone.hitTimer = GAME_CONFIG.salvage.repairQuietSeconds;
+    player.reviveLockout = COOP_CONFIG.revive.interruptionSeconds;
     this.events.push({
       type: "playerDamaged",
       tick: this.state.tick,
@@ -1258,7 +1530,13 @@ export class LocalCoopSimulation {
       const close =
         Math.hypot(target.ship.x - reviver.ship.x, target.ship.y - reviver.ship.y) <=
         COOP_CONFIG.revive.range;
-      if (reviver.disabled || !reviver.input.interact || !close || target.reviveCooldown > 0) {
+      if (
+        reviver.disabled ||
+        reviver.reviveLockout > 0 ||
+        !reviver.input.interact ||
+        !close ||
+        target.reviveCooldown > 0
+      ) {
         target.reviveProgress = 0;
         continue;
       }
@@ -1288,8 +1566,24 @@ export class LocalCoopSimulation {
     const index = this.state.enemies.findIndex((candidate) => candidate.id === enemy.id);
     if (index < 0) return;
     this.state.enemies.splice(index, 1);
+    for (let tetherIndex = this.state.tethers.length - 1; tetherIndex >= 0; tetherIndex--)
+      if (this.state.tethers[tetherIndex].sourceId === enemy.id) {
+        const tether = this.state.tethers[tetherIndex];
+        this.state.tethers.splice(tetherIndex, 1);
+        this.events.push({
+          type: "tetherBroken",
+          tick: this.state.tick,
+          entityId: enemy.id,
+          playerId: tether.targetPlayerId,
+        });
+      }
     player.stats.kills++;
-    const reward = enemy.kind === "warden" ? 260 : enemy.kind === "spiker" ? 220 : 130;
+    const reward =
+      enemy.kind === "warden" || enemy.kind === "mineWarden"
+        ? 260
+        : enemy.kind === "spiker" || enemy.kind === "tetherSentinel"
+          ? 220
+          : 130;
     this.state.team.score += reward;
     this.gainXp(player, reward * 0.22);
     this.state.pickups.push({
@@ -1457,7 +1751,18 @@ export class LocalCoopSimulation {
     this.state.projectiles = [];
     this.state.hostileProjectiles = [];
     this.state.hazards = [];
-    if (this.state.team.wave >= RUN_PACING.finalWave) this.endMatch("victory");
+    this.state.tethers = [];
+    this.state.mines = [];
+    if (boss.mk === 6) {
+      this.state.team.bonusActive = false;
+      this.state.team.bonusAvailable = false;
+      this.state.team.bonusDefeated = true;
+      this.endMatch("victory");
+    } else if (this.state.team.wave >= RUN_PACING.finalWave) {
+      this.state.team.bonusAvailable = true;
+      this.state.phase = "bonusOffer";
+      this.events.push({ type: "bonusBossOffered", tick: this.state.tick });
+    }
   }
 
   private chargeOverdrive(damage: number) {
@@ -1491,9 +1796,12 @@ export class LocalCoopSimulation {
     if (this.state.phase !== "running" || this.state.team.wave >= RUN_PACING.finalWave) return;
     this.state.team.wave++;
     this.state.team.sector = sectorForWave(this.state.team.wave) + 1;
+    if ((this.state.team.wave - 1) % RUN_PACING.sectorLength === 0) this.selectSectorDirective();
     this.state.projectiles = [];
     this.state.hostileProjectiles = [];
     this.state.hazards = [];
+    this.state.tethers = [];
+    this.state.mines = [];
     for (const id of PLAYER_IDS) {
       const player = this.state.players[id];
       player.credits +=
@@ -1507,6 +1815,10 @@ export class LocalCoopSimulation {
       this.spawnEnemy("sentinel");
       if (this.state.team.wave >= 20) this.spawnEnemy("warden");
       if (this.state.team.wave >= GAME_CONFIG.enemies.spikers.unlockWave) this.spawnEnemy("spiker");
+      if (this.state.team.wave >= COOP_CONFIG.tetherSentinel.bossEscortFromWave)
+        this.spawnEnemy("tetherSentinel");
+      if (this.state.team.wave >= COOP_CONFIG.mineWarden.bossEscortFromWave)
+        this.spawnEnemy("mineWarden");
       this.state.rocks.push(
         this.makeRock(
           randomBetween(this.random, 80, this.width - 80),
@@ -1523,8 +1835,14 @@ export class LocalCoopSimulation {
           Math.ceil(tuningWave * GAME_CONFIG.waves.regularRockCountScale),
       );
       const count = Math.min(
-        GAME_CONFIG.waves.regularRockCountCap,
-        Math.ceil(base * COOP_CONFIG.difficulty.enemyPressure),
+        GAME_CONFIG.waves.regularRockCountCap +
+          (this.state.team.directive === "asteroidSurge"
+            ? COOP_CONFIG.directives.asteroidSurgeExtraRocks
+            : 0),
+        Math.ceil(base * COOP_CONFIG.difficulty.enemyPressure) +
+          (this.state.team.directive === "asteroidSurge"
+            ? COOP_CONFIG.directives.asteroidSurgeExtraRocks
+            : 0),
       );
       for (let index = 0; index < count; index++) {
         const size = randomChance(this.random, 0.45) ? 3 : 2;
@@ -1557,11 +1875,35 @@ export class LocalCoopSimulation {
         )
           this.spawnEnemy("spiker");
       }
+      if (this.state.team.wave >= COOP_CONFIG.tetherSentinel.unlockWave) {
+        this.spawnEnemy("tetherSentinel");
+        if (this.state.team.wave >= 18 && randomChance(this.random, 0.3))
+          this.spawnEnemy("tetherSentinel");
+      }
+      if (this.state.team.wave >= COOP_CONFIG.mineWarden.unlockWave) {
+        this.spawnEnemy("mineWarden");
+        if (this.state.team.wave >= 22 && randomChance(this.random, 0.25))
+          this.spawnEnemy("mineWarden");
+      }
     }
     this.events.push({
       type: "waveStarted",
       tick: this.state.tick,
       wave: this.state.team.wave,
+      sector: this.state.team.sector,
+    });
+  }
+
+  private selectSectorDirective() {
+    const directives: CoopDirectiveId[] = ["asteroidSurge", "elitePatrol", "volatileSpace"];
+    const previous = this.state.team.directive;
+    const available = directives.filter((directive) => directive !== previous);
+    const directive = available[randomInteger(this.random, 0, available.length - 1)];
+    this.state.team.directive = directive;
+    this.events.push({
+      type: "directiveSelected",
+      tick: this.state.tick,
+      directive,
       sector: this.state.team.sector,
     });
   }
@@ -1592,6 +1934,33 @@ export class LocalCoopSimulation {
     };
   }
 
+  private startBonusBoss(playerId: CoopPlayerId) {
+    const hp = GAME_CONFIG.bosses.bonusHp * COOP_CONFIG.difficulty.bossHealth;
+    this.state.phase = "running";
+    this.state.team.bonusAvailable = false;
+    this.state.team.bonusActive = true;
+    this.state.boss = {
+      id: this.nextId(),
+      mk: 6,
+      x: this.width / 2,
+      y: this.height * 0.25,
+      radius: GAME_CONFIG.bosses.bonusRadius,
+      hp,
+      maxHp: hp,
+      vx: 0,
+      vy: 0,
+      phase: 1,
+      attackTimer: GAME_CONFIG.bosses.baseAttackTimer,
+      abilityTimer: 3.5,
+    };
+    this.spawnEnemy("warden");
+    this.spawnEnemy("sentinel");
+    this.spawnEnemy("spiker");
+    this.spawnEnemy("tetherSentinel");
+    this.spawnEnemy("mineWarden");
+    this.events.push({ type: "bonusBossStarted", tick: this.state.tick, playerId });
+  }
+
   private spawnEnemy(kind: CoopEnemyKind) {
     const wave = this.state.team.wave;
     const tuningWave = scaledWave(wave);
@@ -1602,6 +1971,18 @@ export class LocalCoopSimulation {
       hp = GAME_CONFIG.enemies.spikers.hpBase + wave * GAME_CONFIG.enemies.spikers.hpPerWave;
       radius = GAME_CONFIG.enemies.spikers.radius;
       fireTimer = GAME_CONFIG.enemies.spikers.fireInterval;
+    } else if (kind === "tetherSentinel") {
+      hp = COOP_CONFIG.tetherSentinel.baseHp + wave * COOP_CONFIG.tetherSentinel.hpPerWave;
+      radius = COOP_CONFIG.tetherSentinel.radius;
+      fireTimer = randomBetween(this.random, 1.5, 3);
+    } else if (kind === "mineWarden") {
+      hp = COOP_CONFIG.mineWarden.baseHp + wave * COOP_CONFIG.mineWarden.hpPerWave;
+      radius = COOP_CONFIG.mineWarden.radius;
+      fireTimer = randomBetween(
+        this.random,
+        COOP_CONFIG.mineWarden.deploymentMin,
+        COOP_CONFIG.mineWarden.deploymentMax,
+      );
     } else if (kind === "warden" || kind === "wardenTurret") {
       hp =
         kind === "wardenTurret"
@@ -1624,6 +2005,8 @@ export class LocalCoopSimulation {
         GAME_CONFIG.enemies.sentinels.fireIntervalMax,
       );
     }
+    if (this.state.team.directive === "elitePatrol")
+      hp *= COOP_CONFIG.directives.elitePatrolHealthMultiplier;
     const angle = this.random.next() * TAU;
     const speed =
       kind === "spiker"
@@ -1711,7 +2094,14 @@ export class LocalCoopSimulation {
     )
       pool.push("boom");
     if (wave >= RUN_PACING.traitWaves.fast) pool.push("fast");
-    const chance = Math.min(0.95, 0.15 + (wave - 1) * 0.04);
+    const chance = Math.min(
+      0.95,
+      0.15 +
+        (wave - 1) * 0.04 +
+        (this.state.team.directive === "volatileSpace"
+          ? COOP_CONFIG.directives.volatileMutationBonus
+          : 0),
+    );
     if (!randomChance(this.random, chance)) return "none";
     return randomChance(this.random, 0.4)
       ? pool[pool.length - 1]
@@ -1731,6 +2121,7 @@ export class LocalCoopSimulation {
   private nearestTarget(x: number, y: number) {
     const targets = [
       ...this.state.enemies.map((entity) => ({ entity, type: "enemy" as const })),
+      ...this.state.mines.map((entity) => ({ entity, type: "mine" as const })),
       ...this.state.rocks.map((entity) => ({ entity, type: "rock" as const })),
       ...(this.state.boss ? [{ entity: this.state.boss, type: "boss" as const }] : []),
     ];

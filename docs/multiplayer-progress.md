@@ -1,7 +1,7 @@
 # Online co-op progress
 
 Branch: `feature/online-coop`  
-Current milestone: **4 — authoritative multiplayer combat (awaiting approval)**
+Current milestone: **5 — complete co-op campaign (awaiting approval)**
 Production deployment: **not started**
 
 This document is the implementation record for the two-player online survival expansion. Each
@@ -304,6 +304,31 @@ or production deployment.
   hostile fire, Spiker volleys, missiles, rewards, boss phases/cleanup, snapshot privacy and size,
   and socket ownership spoofing.
 
+## Milestone 5 implementation
+
+The fifth milestone completes the authoritative 25-wave co-op campaign and optional MK6 encounter.
+It does not enable multiplayer UI, public matchmaking, or production deployment.
+
+- The measurable co-op profile remains centralized at 1.5× enemy pressure, 1.2× boss health, and
+  1.15× enemy damage.
+- Each sector receives a deterministic seeded directive. Asteroid Surge increases field density,
+  Elite Patrol increases enemy hull, and Volatile Space increases mutated-asteroid pressure. A new
+  directive is chosen at each sector boundary without immediately repeating.
+- Tether Sentinels unlock at wave 8. Their visible warning creates a capped link to the nearest
+  active pilot, pulls beyond its safe distance, and breaks on range, disable, or source destruction.
+- Mine Wardens unlock at wave 13. They deploy capped mines with arming and trigger warnings; mines
+  can be destroyed by pilot weapons, missiles, or salvage drones before their blast resolves.
+- Both enemy types follow the regular wave schedule, appear with eligible bosses, target either
+  pilot, emit compact semantic events, and remain fully snapshot/restoration safe.
+- Revive progress now resets and pauses briefly when the reviving pilot takes damage. The existing
+  three-second proximity hold, partial-health return, cooldown, shared Overdrive, proximity charge
+  bonus, expiry, and both-disabled failure remain server-owned.
+- Defeating MK5 records campaign completion and enters an authoritative bonus offer. Either player
+  may begin the scaled 37,000-HP MK6 encounter or finish the run; defeating MK6 records the bonus
+  result and final victory. MK6 has synchronized escorts, solar strikes, and singularity pull.
+- Five new deterministic tests cover directives/scaling, unlock and boss schedules, tether rules,
+  destructible mine caps, revive interruption, and the full MK5-to-MK6 transition.
+
 ## Milestone status
 
 | Milestone                               | Status                      | Merge gate  |
@@ -311,8 +336,8 @@ or production deployment.
 | 1. Audit and shared simulation refactor | Complete and approved       | Passed      |
 | 2. Two-player local simulation          | Complete and approved       | Passed      |
 | 3. Private room networking              | Complete and approved       | Passed      |
-| 4. Authoritative multiplayer combat     | Complete; awaiting approval | Passed      |
-| 5. Complete co-op campaign              | Waiting                     | Not started |
+| 4. Authoritative multiplayer combat     | Complete and approved       | Passed      |
+| 5. Complete co-op campaign              | Complete; awaiting approval | Passed      |
 | 6. Public lobbies and matchmaking       | Waiting                     | Not started |
 | 7. Multiplayer UI and leaderboard       | Waiting                     | Not started |
 | 8. Integration and release readiness    | Waiting                     | Not started |
@@ -440,3 +465,30 @@ Milestone 4 is safe to review without deployment. It changes only the unshipped 
 path and shared headless modules; the single-player engine, local save schema, leaderboard Worker,
 D1 data, and production bindings remain unchanged. Milestone 5 remains behind the next approval
 gate.
+
+## Milestone 5 verification
+
+Milestone 5 passed on 12 October 2026:
+
+- `npm run typecheck`
+- `npm run game:test`: 85/85 tests, including five new complete-campaign checks
+- `npm run leaderboard:test`: 12/12 tests
+- `XDG_CONFIG_HOME=/tmp/helio-coop-m5-wrangler npm run cf:test`: dry-run bundle plus 18/18
+  Worker/D1 tests
+- `XDG_CONFIG_HOME=/tmp/helio-coop-m5-wrangler npm run multiplayer:test`: separate Worker dry-run
+  bundle plus 10/10 Durable Object and WebSocket tests
+- `npm run build`
+- `npm run format:check`, explicit multiplayer/docs formatting, and `git diff --check`
+
+Changed areas:
+
+- `src/game/simulation/coop-config.ts`, `coop-types.ts`, and `local-coop.ts` — directives, final
+  scaling, revive interruption, Tether Sentinels, Mine Wardens/mines, and MK6 bonus flow
+- `src/game/network/` and `multiplayer/worker.mjs` — new synchronized state and validated bonus
+  commands
+- `test/local-coop.test.mjs` — deterministic campaign-content and transition coverage
+- `package.json`, `package-lock.json`, and `src/game/update-log.ts` — `0.4.2-alpha.4` release record
+
+Milestone 5 is safe to review without deployment. Multiplayer UI and public lobby work remain in
+later milestones; the single-player campaign, save schema, leaderboard Worker, D1 data, and
+production bindings remain unchanged. Milestone 6 remains behind the next approval gate.
