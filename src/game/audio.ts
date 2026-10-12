@@ -54,6 +54,7 @@ class AudioEngine {
   private lastAt: Record<string, number> = {};
   musicEnabled = true;
   private music: MusicScore | null = null;
+  private musicOverride: MusicTheme | null = null;
 
   constructor() {
     try {
@@ -126,6 +127,16 @@ class AudioEngine {
     if (this.music?.retune(mode)) return;
     this.stopMusic();
     this.music = new MusicScore(this.ctx!, this.comp!, mode);
+  }
+
+  setMusicOverride(mode: MusicTheme | null) {
+    this.musicOverride = mode;
+    if (mode) this.setMusic(mode);
+    else this.stopMusic();
+  }
+
+  get hasMusicOverride() {
+    return this.musicOverride !== null;
   }
 
   stopMusic() {

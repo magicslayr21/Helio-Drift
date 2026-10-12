@@ -18,7 +18,16 @@ export default defineConfig({
       JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version,
     ),
   },
-  server: { proxy: { "/api": "http://127.0.0.1:8787" } },
+  server: {
+    proxy: {
+      "/api": "http://127.0.0.1:8787",
+      "/multiplayer-api": {
+        target: "http://127.0.0.1:8788",
+        rewrite: (path) => path.replace(/^\/multiplayer-api/, "/api"),
+        ws: true,
+      },
+    },
+  },
   plugins: [react(), tailwindcss(), viteSingleFile()],
   resolve: {
     alias: {

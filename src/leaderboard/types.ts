@@ -44,6 +44,25 @@ export interface LeaderboardPage {
   total: number;
   updatedAt: string;
 }
+export type CoopRunStatus = "victory" | "defeat" | "abandoned";
+export interface CoopLeaderboardEntry {
+  id: string;
+  playerOne: string;
+  playerTwo: string;
+  score: number;
+  wave: number;
+  sector: number;
+  durationSeconds: number;
+  bossesDefeated: number;
+  status: CoopRunStatus;
+  completed: boolean;
+  finishedAt: string;
+  rank: number;
+}
+export interface CoopLeaderboardPage {
+  entries: CoopLeaderboardEntry[];
+  total: number;
+}
 export interface PlayerIdentity {
   playerId: string;
   playerToken: string;

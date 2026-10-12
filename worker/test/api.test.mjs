@@ -5,6 +5,64 @@ import { fixture } from "./fixture.mjs";
 
 leaderboardContract(fixture);
 
+test("co-op records are ranked separately without changing single-player rows", async (t) => {
+  const api = await fixture(t);
+  const timestamp = "2026-10-12T02:00:00.000Z";
+  await api.db.batch([
+    api.db
+      .prepare(
+        `INSERT INTO coop_runs VALUES
+          (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        "coop-loss",
+        "AAA234",
+        "Nova",
+        "Vega",
+        90_000,
+        24,
+        5,
+        1500,
+        4,
+        "defeat",
+        0,
+        timestamp,
+        timestamp,
+      ),
+    api.db
+      .prepare(
+        `INSERT INTO coop_runs VALUES
+          (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        "coop-win",
+        "BBB234",
+        "Alpha",
+        "Bravo",
+        70_000,
+        25,
+        5,
+        1800,
+        5,
+        "victory",
+        1,
+        timestamp,
+        timestamp,
+      ),
+  ]);
+
+  const board = await api.request("/leaderboard/coop?limit=10");
+  assert.equal(board.status, 200);
+  assert.equal(board.data.total, 2);
+  assert.equal(board.data.entries[0].id, "coop-win");
+  assert.deepEqual(
+    [board.data.entries[0].playerOne, board.data.entries[0].playerTwo],
+    ["Alpha", "Bravo"],
+  );
+  assert.equal(board.data.entries[0].completed, true);
+  assert.equal((await api.request("/leaderboard")).data.total, 0);
+});
+
 test("two players racing to create a run cannot take ownership from each other", async (t) => {
   const api = await fixture(t);
   const first = await api.player("First Pilot");

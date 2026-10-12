@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,10 +17,23 @@ export async function multiplayerFixture(t) {
       MATCH_ROOMS: { className: "MatchRoom", useSQLite: true },
       LOBBY_INDEX: { className: "LobbyIndex", useSQLite: true },
     },
+    d1Databases: { DB: "leaderboard" },
     resourcePersistencePath: directory,
     telemetry: { enabled: false },
   });
   let mf = new Miniflare(options);
+  let db = await mf.getD1Database("DB");
+  const migration = await readFile(
+    new URL("../../worker/migrations/0002_coop_leaderboard.sql", import.meta.url),
+    "utf8",
+  );
+  await db.batch(
+    migration
+      .split(";")
+      .map((sql) => sql.trim())
+      .filter(Boolean)
+      .map((sql) => db.prepare(sql)),
+  );
   const sockets = new Set();
   const inboxes = new WeakMap();
   t.after(async () => {
@@ -146,6 +159,9 @@ export async function multiplayerFixture(t) {
     connect,
     nextMessage,
     nextClose,
+    get db() {
+      return db;
+    },
     async restart() {
       for (const socket of sockets) {
         try {
@@ -155,6 +171,7 @@ export async function multiplayerFixture(t) {
       sockets.clear();
       await mf.dispose();
       mf = new Miniflare(options);
+      db = await mf.getD1Database("DB");
     },
   };
 }

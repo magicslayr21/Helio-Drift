@@ -1,5 +1,6 @@
 import type {
   AdminSession,
+  CoopLeaderboardPage,
   LeaderboardPage,
   PlayerIdentity,
   RunDetails,
@@ -156,6 +157,8 @@ export async function setUsername(username: string): Promise<PlayerIdentity> {
 }
 export const getLeaderboard = (offset = 0, limit = 25, signal?: AbortSignal) =>
   request<LeaderboardPage>(`/leaderboard?offset=${offset}&limit=${limit}`, { signal });
+export const getCoopLeaderboard = (offset = 0, limit = 25, signal?: AbortSignal) =>
+  request<CoopLeaderboardPage>(`/leaderboard/coop?offset=${offset}&limit=${limit}`, { signal });
 export function getAdminSession(): AdminSession | null {
   if (admin && Date.parse(admin.expiresAt) <= Date.now()) admin = null;
   return admin;

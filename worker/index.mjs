@@ -221,6 +221,41 @@ export async function handleRequest(request, env) {
         updatedAt: metadata.results[0].value,
       });
     }
+    if (request.method === "GET" && path === "/api/leaderboard/coop") {
+      await limit(`coop-read:${address}`, 240, 60_000);
+      const offset = integer(Number(url.searchParams.get("offset") ?? 0), "Offset", 0, 1_000_000);
+      const pageSize = integer(Number(url.searchParams.get("limit") ?? 25), "Limit", 1, 100);
+      const ranking = `completed DESC, wave DESC, score DESC, bosses_defeated DESC,
+        duration_seconds DESC, id ASC`;
+      const [page, count] = await db.batch([
+        db
+          .prepare(
+            `SELECT id, player_one, player_two, score, wave, sector, duration_seconds,
+              bosses_defeated, status, completed, finished_at,
+              ROW_NUMBER() OVER (ORDER BY ${ranking}) AS rank
+            FROM coop_runs ORDER BY ${ranking} LIMIT ? OFFSET ?`,
+          )
+          .bind(pageSize, offset),
+        db.prepare("SELECT COUNT(*) AS total FROM coop_runs"),
+      ]);
+      return send(200, {
+        entries: page.results.map((row) => ({
+          id: row.id,
+          playerOne: row.player_one,
+          playerTwo: row.player_two,
+          score: row.score,
+          wave: row.wave,
+          sector: row.sector,
+          durationSeconds: row.duration_seconds,
+          bossesDefeated: row.bosses_defeated,
+          status: row.status,
+          completed: Boolean(row.completed),
+          finishedAt: row.finished_at,
+          rank: row.rank,
+        })),
+        total: count.results[0].total,
+      });
+    }
     if (request.method === "POST" && path === "/api/players") {
       await limit(`register:${address}`, 40, 3_600_000);
       const body = await readBody(request);

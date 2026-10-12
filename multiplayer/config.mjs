@@ -21,7 +21,7 @@ export const NETWORK_CONFIG = Object.freeze({
 export function normalizeCallsign(value) {
   if (typeof value !== "string") return null;
   const callsign = value.trim().replace(/\s+/g, " ");
-  if (callsign.length < 2 || callsign.length > 20) return null;
+  if (callsign.length < 2 || callsign.length > 24) return null;
   if (!/^[A-Za-z0-9][A-Za-z0-9 _.-]*$/.test(callsign)) return null;
   return callsign;
 }

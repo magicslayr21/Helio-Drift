@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ArrowLeft, ArrowRight } from "lucide-react";
 import { HeliosMark } from "./Masthead";
+import { MultiplayerExperience } from "./MultiplayerExperience";
 import type { Hud } from "../game/types";
 import nebula from "../assets/nebula.jpg";
 import "./DeployMenu.css";
@@ -14,7 +15,12 @@ const MODES: { id: ModeId; name: string; caption: string; number: string }[] = [
     caption: "Five sectors. One pilot. Into the unknown.",
     number: "01",
   },
-  { id: "multiplayer", name: "Multiplayer", caption: "Not released yet.", number: "02" },
+  {
+    id: "multiplayer",
+    name: "Multiplayer",
+    caption: "Two pilots. One synchronized survival campaign.",
+    number: "02",
+  },
   { id: "extras", name: "Extras", caption: "Not released yet.", number: "03" },
   { id: "unlimited", name: "Unlimited", caption: "Not released yet.", number: "04" },
 ];
@@ -88,13 +94,13 @@ export function DeployMenu({
   onContinue: () => void;
   onStart: () => void;
 }) {
-  const [stage, setStage] = useState<"modes" | "campaign" | "confirm">("modes");
+  const [stage, setStage] = useState<"modes" | "campaign" | "confirm" | "multiplayer">("modes");
   const [selected, setSelected] = useState<ModeId | null>(null);
   const dialog = useRef<HTMLDialogElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const back = () => {
     if (stage === "confirm") setStage("campaign");
-    else if (stage === "campaign") setStage("modes");
+    else if (stage === "campaign" || stage === "multiplayer") setStage("modes");
     else onClose();
   };
   useEffect(() => {
@@ -124,153 +130,171 @@ export function DeployMenu({
       }}
       onKeyDown={(event) => event.stopPropagation()}
     >
-      <header className="deploy-header">
-        <button
-          className="deploy-back"
-          onClick={back}
-          aria-label={
-            stage === "confirm"
-              ? "Back to campaign"
-              : stage === "campaign"
-                ? "Back to modes"
-                : "Back to menu"
-          }
-        >
-          <ArrowLeft size={20} /> <span>Back</span>
-        </button>
-        <span className="deploy-breadcrumb">
-          <HeliosMark size={23} /> Deploy{" "}
-          <span>/ {stage === "modes" ? "Select mode" : "Campaign"}</span>
-        </span>
-        <span className="deploy-pilot">{callsign || "Independent pilot"}</span>
-      </header>
-      <main className="deploy-content">
-        <div className="deploy-heading">
-          <div>
-            <p className="deploy-eyebrow">Helios flight systems / mission control</p>
-            <h1 ref={heading} tabIndex={-1} id="deploy-title">
-              {stage === "modes"
-                ? "CHOOSE YOUR FRONTIER"
-                : stage === "confirm"
-                  ? "A NEW BEGINNING"
-                  : "CAMPAIGN"}
-            </h1>
-          </div>
-          <p>
-            {stage === "modes"
-              ? "Your next transmission begins here."
-              : "Twenty-five waves. Five sectors. One way forward."}
-          </p>
-        </div>
-        {stage === "modes" ? (
-          <div className="deploy-grid">
-            {MODES.map((mode) => (
-              <button
-                key={mode.id}
-                aria-label={mode.name}
-                aria-pressed={selected === mode.id}
-                aria-describedby={`deploy-${mode.id}-description`}
-                className={`deploy-tile deploy-tile--${mode.id}${selected === mode.id ? " is-selected" : ""}`}
-                onClick={() => {
-                  setSelected(mode.id);
-                  if (mode.id === "campaign") setStage("campaign");
-                }}
-              >
-                <span className="deploy-tile-top">
-                  <span>HD / {mode.number}</span>
-                  <span>{mode.id === "campaign" ? "Ready to launch" : "Unreleased"}</span>
-                </span>
-                <ModeInsignia mode={mode.id} />
-                <span className="deploy-tile-label">
-                  <span className="deploy-mode-name">{mode.name}</span>
-                  {mode.id === "campaign" && <ArrowRight size={22} />}
-                </span>
-                <span id={`deploy-${mode.id}-description`} className="deploy-caption">
-                  {mode.caption}
-                </span>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <section className="campaign-panel" aria-label="Campaign launch options">
-            <div className="campaign-art">
-              <ModeInsignia mode="campaign" />
-              <p>SOLO FLIGHT / 25 WAVES</p>
+      {stage !== "multiplayer" && (
+        <header className="deploy-header">
+          <button
+            className="deploy-back"
+            onClick={back}
+            aria-label={
+              stage === "confirm"
+                ? "Back to campaign"
+                : stage === "campaign"
+                  ? "Back to modes"
+                  : "Back to menu"
+            }
+          >
+            <ArrowLeft size={20} /> <span>Back</span>
+          </button>
+          <span className="deploy-breadcrumb">
+            <HeliosMark size={23} /> Deploy{" "}
+            <span>/ {stage === "modes" ? "Select mode" : "Campaign"}</span>
+          </span>
+          <span className="deploy-pilot">{callsign || "Independent pilot"}</span>
+        </header>
+      )}
+      {stage === "multiplayer" ? (
+        <MultiplayerExperience callsign={callsign} onExit={() => setStage("modes")} />
+      ) : (
+        <main className="deploy-content">
+          <div className="deploy-heading">
+            <div>
+              <p className="deploy-eyebrow">Helios flight systems / mission control</p>
+              <h1 ref={heading} tabIndex={-1} id="deploy-title">
+                {stage === "modes"
+                  ? "CHOOSE YOUR FRONTIER"
+                  : stage === "confirm"
+                    ? "A NEW BEGINNING"
+                    : "CAMPAIGN"}
+              </h1>
             </div>
-            <div className="campaign-choices">
-              {callsignForm}
-              {!callsignReady && (
-                <p className="campaign-warning" role="status">
-                  Save your own callsign to deploy. Existing pilots: confirm your callsign once.
-                </p>
-              )}
-              {stage === "confirm" ? (
-                <>
-                  <p className="deploy-eyebrow">Flight recorder overwrite</p>
-                  <h2>Replace your saved run?</h2>
-                  <p className="campaign-warning">
-                    Starting a new run permanently removes your previous saved progress. Submitted
-                    leaderboard records remain.
+            <p>
+              {stage === "modes"
+                ? "Your next transmission begins here."
+                : "Twenty-five waves. Five sectors. One way forward."}
+            </p>
+          </div>
+          {stage === "modes" ? (
+            <div className="deploy-grid">
+              {MODES.map((mode) => (
+                <button
+                  key={mode.id}
+                  disabled={mode.id === "multiplayer" && !callsignReady}
+                  aria-label={mode.name}
+                  aria-pressed={selected === mode.id}
+                  aria-describedby={`deploy-${mode.id}-description`}
+                  className={`deploy-tile deploy-tile--${mode.id}${selected === mode.id ? " is-selected" : ""}`}
+                  onClick={() => {
+                    setSelected(mode.id);
+                    if (mode.id === "campaign") setStage("campaign");
+                    if (mode.id === "multiplayer" && callsignReady) setStage("multiplayer");
+                  }}
+                >
+                  <span className="deploy-tile-top">
+                    <span>HD / {mode.number}</span>
+                    <span>
+                      {mode.id === "campaign" || mode.id === "multiplayer"
+                        ? "Ready to launch"
+                        : "Unreleased"}
+                    </span>
+                  </span>
+                  <ModeInsignia mode={mode.id} />
+                  <span className="deploy-tile-label">
+                    <span className="deploy-mode-name">{mode.name}</span>
+                    {(mode.id === "campaign" || mode.id === "multiplayer") && (
+                      <ArrowRight size={22} />
+                    )}
+                  </span>
+                  <span id={`deploy-${mode.id}-description`} className="deploy-caption">
+                    {mode.id === "multiplayer" && !callsignReady
+                      ? "Save your callsign under Campaign to unlock co-op."
+                      : mode.caption}
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <section className="campaign-panel" aria-label="Campaign launch options">
+              <div className="campaign-art">
+                <ModeInsignia mode="campaign" />
+                <p>SOLO FLIGHT / 25 WAVES</p>
+              </div>
+              <div className="campaign-choices">
+                {callsignForm}
+                {!callsignReady && (
+                  <p className="campaign-warning" role="status">
+                    Save your own callsign to deploy. Existing pilots: confirm your callsign once.
                   </p>
-                  <button
-                    className="campaign-action"
-                    disabled={!callsignReady}
-                    onClick={() => callsignReady && onStart()}
-                  >
-                    Replace & start <ArrowRight size={20} />
-                  </button>
-                  <button
-                    className="campaign-action campaign-action--secondary"
-                    onClick={() => setStage("campaign")}
-                  >
-                    Keep previous run <ArrowLeft size={18} />
-                  </button>
-                </>
-              ) : (
-                <>
-                  <p className="deploy-eyebrow">
-                    {canContinue
-                      ? "Flight recorder / signal recovered"
-                      : "Flight recorder / standing by"}
-                  </p>
-                  <h2>{canContinue ? "Your journey continues." : "The belt is waiting."}</h2>
-                  <p className="campaign-summary">
-                    {canContinue
-                      ? `Wave ${hud.wave} · Level ${hud.level} · ${hud.score.toLocaleString()} points`
-                      : "Start a new campaign and carve a path through the unknown."}
-                  </p>
-                  {canContinue && (
+                )}
+                {stage === "confirm" ? (
+                  <>
+                    <p className="deploy-eyebrow">Flight recorder overwrite</p>
+                    <h2>Replace your saved run?</h2>
+                    <p className="campaign-warning">
+                      Starting a new run permanently removes your previous saved progress. Submitted
+                      leaderboard records remain.
+                    </p>
                     <button
                       className="campaign-action"
                       disabled={!callsignReady}
-                      onClick={() => callsignReady && onContinue()}
+                      onClick={() => callsignReady && onStart()}
                     >
-                      Continue run <ArrowRight size={20} />
+                      Replace & start <ArrowRight size={20} />
                     </button>
-                  )}
-                  <button
-                    className={`campaign-action${canContinue ? " campaign-action--secondary" : ""}`}
-                    disabled={!callsignReady}
-                    onClick={() => callsignReady && (canContinue ? setStage("confirm") : onStart())}
-                  >
-                    Start new run <ArrowRight size={20} />
-                  </button>
-                  {canContinue && (
-                    <p className="deploy-caption">
-                      Starting a new run requires confirmation before replacing this save.
+                    <button
+                      className="campaign-action campaign-action--secondary"
+                      onClick={() => setStage("campaign")}
+                    >
+                      Keep previous run <ArrowLeft size={18} />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <p className="deploy-eyebrow">
+                      {canContinue
+                        ? "Flight recorder / signal recovered"
+                        : "Flight recorder / standing by"}
                     </p>
-                  )}
-                </>
-              )}
-            </div>
-          </section>
-        )}
-        <footer className="deploy-footer">
-          <span>Flight deck / {stage === "modes" ? "01" : "02"}</span>
-          <span>Esc to go back</span>
-          <span>HELIOS / ALPHA</span>
-        </footer>
-      </main>
+                    <h2>{canContinue ? "Your journey continues." : "The belt is waiting."}</h2>
+                    <p className="campaign-summary">
+                      {canContinue
+                        ? `Wave ${hud.wave} · Level ${hud.level} · ${hud.score.toLocaleString()} points`
+                        : "Start a new campaign and carve a path through the unknown."}
+                    </p>
+                    {canContinue && (
+                      <button
+                        className="campaign-action"
+                        disabled={!callsignReady}
+                        onClick={() => callsignReady && onContinue()}
+                      >
+                        Continue run <ArrowRight size={20} />
+                      </button>
+                    )}
+                    <button
+                      className={`campaign-action${canContinue ? " campaign-action--secondary" : ""}`}
+                      disabled={!callsignReady}
+                      onClick={() =>
+                        callsignReady && (canContinue ? setStage("confirm") : onStart())
+                      }
+                    >
+                      Start new run <ArrowRight size={20} />
+                    </button>
+                    {canContinue && (
+                      <p className="deploy-caption">
+                        Starting a new run requires confirmation before replacing this save.
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+            </section>
+          )}
+          <footer className="deploy-footer">
+            <span>Flight deck / {stage === "modes" ? "01" : "02"}</span>
+            <span>Esc to go back</span>
+            <span>HELIOS / ALPHA</span>
+          </footer>
+        </main>
+      )}
     </dialog>,
     document.body,
   );

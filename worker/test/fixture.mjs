@@ -39,6 +39,17 @@ export async function fixture(t, overrides = {}) {
       .filter(Boolean)
       .map((sql) => db.prepare(sql)),
   );
+  const coopMigration = await readFile(
+    new URL("../migrations/0002_coop_leaderboard.sql", import.meta.url),
+    "utf8",
+  );
+  await db.batch(
+    coopMigration
+      .split(";")
+      .map((sql) => sql.trim())
+      .filter(Boolean)
+      .map((sql) => db.prepare(sql)),
+  );
   async function request(path, { method = "GET", token, body, rawBody, headers = {} } = {}) {
     const response = await mf.dispatchFetch(`https://leaderboard.example/api${path}`, {
       method,

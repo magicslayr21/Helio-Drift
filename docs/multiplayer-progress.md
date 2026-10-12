@@ -1,7 +1,7 @@
 # Online co-op progress
 
 Branch: `feature/online-coop`  
-Current milestone: **6 — public lobbies and matchmaking (awaiting approval)**
+Current milestone: **7 — multiplayer UI and co-op leaderboard (awaiting approval)**
 Production deployment: **not started**
 
 This document is the implementation record for the two-player online survival expansion. Each
@@ -350,6 +350,33 @@ multiplayer menu, change the leaderboard, or deploy either Worker.
 - Six Miniflare tests cover privacy, validation, pagination, concurrent Quick Join, join/leave/start
   synchronization, empty-room cleanup, concurrent creation, and Durable Object restart recovery.
 
+## Milestone 7 implementation
+
+The seventh milestone connects the existing deployment menu to the authoritative multiplayer
+service and adds an isolated co-op results board. Neither Worker nor the frontend has been deployed.
+
+- The Multiplayer tile now opens private-room creation, room-code joining, named public-room
+  creation, public browsing, Quick Join, reconnect recovery, and the co-op leaderboard. A saved
+  callsign is required before entering the mode.
+- The ready room shows the six-character code, both connection/ready states, and permits either
+  ready pilot to start. Closing or refreshing the page retains only the scoped reconnect capability;
+  explicit Leave invalidates it.
+- A responsive canvas client renders the authoritative arena with distinct amber and cyan ship
+  accents, interpolated remote state, predicted/reconciled local movement, asteroid mutations,
+  enemies, bosses, mines, tethers, hazards, pickups, and projectiles. Combat outcomes remain owned
+  by the Match Durable Object.
+- The co-op HUD exposes connection state, teammate hull, revive proximity/progress, sector
+  directive, shared Overdrive, individual credits, loadouts, upgrade points, bonus-MK6 choice,
+  victory/failure, and per-pilot match statistics. Keyboard, pointer, and compact touch controls are
+  available without changing either ship's identity.
+- An additive `coop_runs` D1 table stores team score, both callsigns, highest wave and sector,
+  survival time, bosses defeated, and completion status. The Match Durable Object writes the final
+  record directly and idempotently; browsers have no score-submission endpoint.
+- The leaderboard Worker exposes a read-only, separately ranked co-op board. Existing `players` and
+  `runs` tables, single-player ranking routes, save data, and production rows remain unchanged.
+- GitHub Pages accepts a public `VITE_MULTIPLAYER_URL` build variable, while local Vite development
+  proxies `/multiplayer-api` to the isolated Worker on port 8788.
+
 ## Milestone status
 
 | Milestone                               | Status                      | Merge gate  |
@@ -359,8 +386,8 @@ multiplayer menu, change the leaderboard, or deploy either Worker.
 | 3. Private room networking              | Complete and approved       | Passed      |
 | 4. Authoritative multiplayer combat     | Complete and approved       | Passed      |
 | 5. Complete co-op campaign              | Complete and approved       | Passed      |
-| 6. Public lobbies and matchmaking       | Complete; awaiting approval | Passed      |
-| 7. Multiplayer UI and leaderboard       | Waiting                     | Not started |
+| 6. Public lobbies and matchmaking       | Complete and approved       | Passed      |
+| 7. Multiplayer UI and leaderboard       | Complete; awaiting approval | Passed      |
 | 8. Integration and release readiness    | Waiting                     | Not started |
 
 ## Milestone 1 verification
@@ -541,3 +568,38 @@ Changed areas:
 Milestone 6 is safe to review without deployment. The additive migration is declared but has not
 been published. Multiplayer UI and co-op leaderboard work remain in Milestone 7; the single-player
 campaign, saves, existing leaderboard Worker, D1 data, and production bindings remain unchanged.
+
+## Milestone 7 verification
+
+Milestone 7 passed on 12 October 2026:
+
+- `npm run typecheck`
+- `npm run game:test`: 87/87 tests, including reconnect-session and WebSocket URL checks
+- `npm run leaderboard:test`: 12/12 local single-player API contract tests
+- `XDG_CONFIG_HOME=/tmp/helio-coop-m7-cf npm run cf:test`: dry-run bundle plus 19/19 Worker/D1
+  tests, including isolated co-op ranking
+- `XDG_CONFIG_HOME=/tmp/helio-coop-m7-multi npm run multiplayer:test`: separate Worker dry-run
+  bundle plus 17/17 Durable Object, lobby, socket, and idempotent-result tests
+- `npm run build`
+- `npm run format:check`, explicit multiplayer/docs formatting, and `git diff --check`
+
+Changed areas:
+
+- `src/components/MultiplayerExperience.tsx`, `CoopArena.tsx`, and their styles — complete lobby,
+  ready-room, synchronized arena, HUD, co-op shop, result, and responsive-control presentation
+- `src/multiplayer/client.ts` — HTTP lobby client, secure reconnect persistence, WebSocket tickets,
+  heartbeats, reconnect backoff, and typed commands
+- `multiplayer/worker.mjs` and `results.mjs` — terminal-result generation, retry, and idempotent D1
+  persistence from the authoritative room
+- `worker/migrations/0002_coop_leaderboard.sql` and `worker/index.mjs` — additive co-op storage and
+  separate read-only ranking route
+- Worker, multiplayer, and gameplay tests — D1 isolation, idempotency, ranking, reconnect, and URL
+  coverage
+- `vite.config.ts`, `wrangler.multiplayer.jsonc`, the Pages workflow, and package scripts — local
+  proxy, shared D1 binding, public build URL, and local migration support
+- `package.json`, `package-lock.json`, and `src/game/update-log.ts` — `0.4.2-alpha.6` release record
+
+Milestone 7 is safe to review without deployment. The new D1 migration and Worker binding are
+additive declarations only; no production migration, Worker publish, or Pages release has occurred.
+Milestone 8 integration, soak/load measurement, release documentation, and deployment planning
+remain behind the next approval gate.

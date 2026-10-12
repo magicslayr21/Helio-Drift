@@ -10,6 +10,7 @@ import {
   normalizeRoomCode,
   normalizeRoomName,
 } from "./config.mjs";
+import { writeCoopResult } from "./results.mjs";
 
 const encoder = new TextEncoder();
 const requestBuckets = new Map();
@@ -192,7 +193,7 @@ export async function handleRequest(request, env) {
       rateLimit(`create:${address}`, 20, 60_000);
       const body = await readJson(request);
       const callsign = normalizeCallsign(body.callsign);
-      if (!callsign) throw new RequestError(400, "Callsign must be 2–20 safe characters.");
+      if (!callsign) throw new RequestError(400, "Callsign must be 2–24 safe characters.");
       for (let attempt = 0; attempt < 12; attempt++) {
         const code = newRoomCode();
         const response = await roomRequest(env, code, "/internal/create", {
@@ -223,7 +224,7 @@ export async function handleRequest(request, env) {
       const body = await readJson(request);
       const callsign = normalizeCallsign(body.callsign);
       const name = normalizeRoomName(body.name);
-      if (!callsign) throw new RequestError(400, "Callsign must be 2–20 safe characters.");
+      if (!callsign) throw new RequestError(400, "Callsign must be 2–24 safe characters.");
       if (!name) throw new RequestError(400, "Room name must be 3–32 safe characters.");
       return withCors(
         await lobbyRequest(env, "/internal/create", {
@@ -238,7 +239,7 @@ export async function handleRequest(request, env) {
       rateLimit(`quick:${address}`, 40, 60_000);
       const body = await readJson(request);
       const callsign = normalizeCallsign(body.callsign);
-      if (!callsign) throw new RequestError(400, "Callsign must be 2–20 safe characters.");
+      if (!callsign) throw new RequestError(400, "Callsign must be 2–24 safe characters.");
       return withCors(
         await lobbyRequest(env, "/internal/quick", {
           method: "POST",
@@ -262,7 +263,7 @@ export async function handleRequest(request, env) {
       rateLimit(`join:${address}`, 40, 60_000);
       const body = await readJson(request);
       const callsign = normalizeCallsign(body.callsign);
-      if (!callsign) throw new RequestError(400, "Callsign must be 2–20 safe characters.");
+      if (!callsign) throw new RequestError(400, "Callsign must be 2–24 safe characters.");
       return withCors(
         await roomRequest(env, code, "/internal/join", {
           method: "POST",
@@ -315,11 +316,15 @@ export class MatchRoom {
     this.clock = null;
     this.lastClockAt = 0;
     this.lastPersistedTick = 0;
+    this.resultSubmission = null;
     this.messageBuckets = new Map();
     this.operationTail = Promise.resolve();
     this.ready = state.blockConcurrencyWhile(async () => {
       this.room = (await state.storage.get("room")) ?? null;
       if (!this.room) return;
+      this.room.matchId ??= crypto.randomUUID();
+      this.room.resultSubmittedAt ??= null;
+      this.room.finishedAt ??= null;
       const now = Date.now();
       this.room.tickets = (this.room.tickets ?? []).filter((ticket) => ticket.expiresAt > now);
       const connectedIds = new Set(
@@ -362,6 +367,7 @@ export class MatchRoom {
         const now = Date.now();
         this.room = {
           version: 1,
+          matchId: crypto.randomUUID(),
           code,
           visibility,
           name,
@@ -377,6 +383,8 @@ export class MatchRoom {
           },
           tickets: [],
           match: null,
+          finishedAt: null,
+          resultSubmittedAt: null,
         };
         await this.persist();
         await this.scheduleAlarm();
@@ -710,12 +718,14 @@ export class MatchRoom {
         .every((candidate) => candidate.left)
     ) {
       this.room.phase = "closed";
+      this.room.finishedAt ??= Date.now();
       this.room.expiresAt = Date.now() + NETWORK_CONFIG.completedRoomLifetimeMs;
       this.stopClock();
     }
     await this.syncLobby();
     await this.persist();
-    await this.scheduleAlarm(1000);
+    if (this.room.match && this.room.phase === "closed") await this.submitResult("abandoned");
+    await this.scheduleAlarm(this.room.resultSubmittedAt ? undefined : 1000);
   }
 
   ensureClock() {
@@ -746,11 +756,18 @@ export class MatchRoom {
       this.state.waitUntil(this.persist());
     }
     if (this.room.match.phase === "victory" || this.room.match.phase === "defeat") {
+      const outcome = this.room.match.phase;
       this.room.phase = "finished";
+      this.room.finishedAt ??= now;
       this.room.expiresAt = now + NETWORK_CONFIG.completedRoomLifetimeMs;
       this.stopClock();
+      this.broadcastSnapshot();
       this.broadcastRoom();
-      this.state.waitUntil(this.persist().then(() => this.scheduleAlarm()));
+      this.state.waitUntil(
+        this.persist()
+          .then(() => this.submitResult(outcome))
+          .then(() => this.scheduleAlarm(this.room?.resultSubmittedAt ? undefined : 5000)),
+      );
     }
   }
 
@@ -788,16 +805,31 @@ export class MatchRoom {
       const latestDisconnect = Math.max(...active.map((player) => player.disconnectedAt ?? now));
       if (active.length === 0 || now - latestDisconnect >= NETWORK_CONFIG.reconnectGraceMs) {
         this.room.phase = "closed";
+        this.room.finishedAt ??= now;
         this.room.expiresAt = now + NETWORK_CONFIG.completedRoomLifetimeMs;
       }
       if (this.room.match?.phase === "victory" || this.room.match?.phase === "defeat") {
         this.room.phase = "finished";
+        this.room.finishedAt ??= now;
         this.room.expiresAt = now + NETWORK_CONFIG.completedRoomLifetimeMs;
       }
       this.touch();
       await this.persist();
     }
-    await this.scheduleAlarm(this.room.phase === "running" ? 1000 : undefined);
+    if (
+      !this.room.resultSubmittedAt &&
+      this.room.match &&
+      (this.room.phase === "finished" || this.room.phase === "closed")
+    ) {
+      const status =
+        this.room.match.phase === "victory" || this.room.match.phase === "defeat"
+          ? this.room.match.phase
+          : "abandoned";
+      await this.submitResult(status);
+    }
+    await this.scheduleAlarm(
+      this.room.phase === "running" ? 1000 : this.room.resultSubmittedAt ? undefined : 5000,
+    );
   }
 
   async scheduleAlarm(delay) {
@@ -858,6 +890,30 @@ export class MatchRoom {
 
   async persist() {
     if (this.room) await this.state.storage.put("room", this.room);
+  }
+
+  async submitResult(status) {
+    if (!this.room?.match || this.room.resultSubmittedAt) return true;
+    if (this.resultSubmission) return this.resultSubmission;
+    this.resultSubmission = (async () => {
+      try {
+        const finishedAt = this.room.finishedAt ?? Date.now();
+        this.room.finishedAt = finishedAt;
+        await writeCoopResult(this.env.DB, this.room, status);
+        this.room.resultSubmittedAt = Date.now();
+        await this.persist();
+        return true;
+      } catch (error) {
+        console.error(
+          "co-op result submission failed",
+          error instanceof Error ? error.name : "Error",
+        );
+        return false;
+      } finally {
+        this.resultSubmission = null;
+      }
+    })();
+    return this.resultSubmission;
   }
 
   async exclusive(operation) {

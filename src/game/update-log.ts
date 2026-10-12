@@ -1,5 +1,14 @@
 export const UPDATE_LOG = [
   {
+    version: "0.4.2-alpha.6",
+    date: "2026-10-12",
+    title: "Online co-op flight deck",
+    items: [
+      "Multiplayer deployment, lobbies, ready-up, reconnects, and co-op HUD added.",
+      "Server-authored team results now use a separate co-op leaderboard.",
+    ],
+  },
+  {
     version: "0.4.2-alpha.5",
     date: "2026-10-12",
     title: "Public co-op lobbies",

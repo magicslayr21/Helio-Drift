@@ -867,7 +867,7 @@ export class Game {
             ? "boss"
             : "flight",
       );
-    else audio.stopMusic();
+    else if (!audio.hasMusicOverride) audio.stopMusic();
 
     if (this.mode === "playing" || this.mode === "gameover" || this.mode === "victory") {
       const target = this.mode === "gameover" || this.mode === "victory" ? 0.3 : 1;
