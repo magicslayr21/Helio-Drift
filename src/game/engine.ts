@@ -34,7 +34,6 @@ import {
   MAX_WEAPON_LEVEL,
   weaponMaxLevel,
   WEAPON_DEFS,
-  WEAPON_BASE_PRICE,
   STAT_UPGRADES,
   SALVAGE_BASE_PRICE,
   SALVAGE_UPGRADES,
@@ -74,6 +73,11 @@ import type {
 } from "./types";
 import { GAME_CONFIG } from "./game-config";
 import { stepPlayerMovement, type FlightIntent } from "./simulation/movement";
+import {
+  salvageUpgradePrice as calculateSalvageUpgradePrice,
+  weaponPrice as calculateWeaponPrice,
+  weaponSimulationStats,
+} from "./simulation/weapons";
 import { RunSave, type SavedLeaderboardRun } from "./run-save";
 import type { RunReport, RunStatus } from "../leaderboard/types";
 
@@ -574,171 +578,62 @@ export class Game {
   }
 
   weaponStats(W: WeaponId, L: number) {
-    const p = this.p;
-    const lv = Math.max(0, Math.min(weaponMaxLevel(W), L) - 1);
-    const weapon = GAME_CONFIG.weaponProgression.weapons[W];
-    const s: {
-      rate: number;
-      dmg: number;
-      shots: number;
-      arc: number;
-      speed: number;
-      life: number;
-      r: number;
-      pierce: number;
-      bounces: number;
-      fuse: number;
-      turn: number;
-      extra: number;
-      extraDmg: number;
-      kind: Bullet["kind"];
-      color: string;
-      sfx: Sfx;
-    } = {
-      rate: weapon.baseRate,
-      dmg: "baseDamage" in weapon ? weapon.baseDamage : 16,
-      shots: "baseShots" in weapon ? weapon.baseShots : 1,
-      arc: 0.026,
-      speed: 720,
-      life: 1.15,
-      r: 3.6,
-      pierce: p.pierce,
-      bounces: 0,
-      fuse: 0,
-      turn: 0,
-      extra: 0,
-      extraDmg: 0,
-      kind: "plasma",
-      color: AMBER_HOT,
-      sfx: "pulse",
-    };
+    const simulation = weaponSimulationStats(this.p, this.salvageDrone, W, L);
+    let color: string = AMBER_HOT;
+    let sfx: Sfx = "pulse";
     switch (W) {
-      case "pulse": {
-        const weapon = GAME_CONFIG.weaponProgression.weapons[W];
-        s.rate *= 1 + weapon.ratePerLevel * lv;
-        s.dmg *= 1 + weapon.damagePerLevel * lv;
-        s.shots += Math.floor(lv / weapon.shotsEveryLevels);
+      case "spread":
+        sfx = "spread";
         break;
-      }
-      case "spread": {
-        const weapon = GAME_CONFIG.weaponProgression.weapons[W];
-        s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
-        s.dmg = weapon.baseDamage * (1 + weapon.damagePerLevel * lv);
-        s.shots = weapon.baseShots + Math.floor(lv * weapon.shotsPerLevel);
-        s.arc = weapon.arc;
-        s.sfx = "spread";
+      case "seeker":
+        color = "#ff8fb0";
+        sfx = "seeker";
         break;
-      }
-      case "seeker": {
-        const weapon = GAME_CONFIG.weaponProgression.weapons[W];
-        s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
-        s.dmg = weapon.baseDamage * (1 + weapon.damagePerLevel * lv);
-        s.shots = weapon.baseShots + Math.floor(lv / weapon.shotsEveryLevels);
-        s.speed = weapon.speed;
-        s.life = weapon.life;
-        s.r = weapon.radius;
-        s.arc = weapon.arc;
-        s.turn = weapon.turn;
-        s.kind = "seeker";
-        s.color = "#ff8fb0";
-        s.sfx = "seeker";
+      case "ricochet":
+        color = ICE;
+        sfx = "ricochet";
         break;
-      }
-      case "ricochet": {
-        const weapon = GAME_CONFIG.weaponProgression.weapons[W];
-        s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
-        s.dmg = weapon.baseDamage * (1 + weapon.damagePerLevel * lv);
-        s.shots = weapon.baseShots + Math.floor(lv / weapon.shotsEveryLevels);
-        s.bounces = weapon.baseBounces + Math.floor(lv / weapon.bouncesEveryLevels);
-        s.speed = weapon.speed;
-        s.life = weapon.life;
-        s.r = weapon.radius;
-        s.kind = "ricochet";
-        s.color = ICE;
-        s.sfx = "ricochet";
+      case "flak":
+        color = AMBER;
+        sfx = "flak";
         break;
-      }
-      case "flak": {
-        const weapon = GAME_CONFIG.weaponProgression.weapons[W];
-        s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
-        s.dmg = weapon.baseDamage;
-        s.shots = weapon.baseShots + Math.floor(lv / weapon.shotsEveryLevels);
-        s.fuse = weapon.fuse;
-        s.speed = weapon.speed;
-        s.life = weapon.life;
-        s.r = weapon.radius;
-        s.kind = "flak";
-        s.color = AMBER;
-        s.sfx = "flak";
-        s.extra = weapon.baseShrapnel + weapon.shrapnelPerLevel * lv;
-        s.extraDmg = weapon.shrapnelDamage * (1 + weapon.shrapnelDamagePerLevel * lv);
+      case "rail":
+        color = ICE;
+        sfx = "rail";
         break;
-      }
-      case "rail": {
-        const weapon = GAME_CONFIG.weaponProgression.weapons[W];
-        s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
-        s.dmg =
-          weapon.baseDamage *
-          weapon.damageScale *
-          (1 + weapon.damagePerLevel * lv) *
-          (lv >= 5 ? weapon.maxLevelDamageBonus : 1);
-        s.pierce = weapon.basePierce + Math.floor(lv / weapon.pierceEveryLevels) + p.pierce;
-        s.speed = weapon.speed;
-        s.life = weapon.life;
-        s.r = weapon.radius;
-        s.turn = weapon.turn;
-        s.kind = "rail";
-        s.color = ICE;
-        s.sfx = "rail";
+      case "laser":
+        color = ICE;
+        sfx = "arc";
         break;
-      }
-      case "laser": {
-        const weapon = GAME_CONFIG.weaponProgression.weapons[W];
-        // the player fires a raycast beam; a drone mount fires coherent bolts
-        // that still read unmistakably as beam energy
-        s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
-        s.dmg = weapon.damage * (1 + weapon.damagePerLevel * lv);
-        // never "beamStart" here: that opens the persistent beam voice, which
-        // only closes on beamStop and would leave a stuck drone whine
-        s.speed = weapon.speed;
-        s.life = weapon.life;
-        s.r = weapon.radius;
-        s.pierce = 1 + p.pierce;
-        s.color = ICE;
-        s.sfx = "arc";
+      case "arc":
+        color = "#bff3ff";
+        sfx = "arc";
         break;
-      }
-      case "arc": {
-        const weapon = GAME_CONFIG.weaponProgression.weapons[W];
-        s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
-        s.dmg = weapon.baseDamage * (1 + weapon.damagePerLevel * lv);
-        s.speed = weapon.speed;
-        s.life = weapon.life;
-        s.r = weapon.radius;
-        s.color = "#bff3ff";
-        s.sfx = "arc";
-        break;
-      }
-      default:
+      case "pulse":
         break;
     }
-    s.rate *= this.playerAttackRate();
-    s.dmg *= p.damageMul;
-    s.extraDmg *= p.damageMul;
-    s.shots += p.extraShots;
-    return s;
+    return {
+      rate: simulation.rate,
+      dmg: simulation.damage,
+      shots: simulation.shots,
+      arc: simulation.arc,
+      speed: simulation.speed,
+      life: simulation.life,
+      r: simulation.radius,
+      pierce: simulation.pierce,
+      bounces: simulation.bounces,
+      fuse: simulation.fuse,
+      turn: simulation.homing,
+      extra: simulation.extra,
+      extraDmg: simulation.extraDamage,
+      kind: simulation.kind,
+      color,
+      sfx,
+    };
   }
 
   weaponPrice(w: WeaponId): number | null {
-    const level = this.p.weapons[w];
-    if (level >= weaponMaxLevel(w)) return null;
-    const base = WEAPON_BASE_PRICE[WEAPON_DEFS[w].rarity];
-    return (
-      Math.round(
-        (base * Math.pow(GAME_CONFIG.weaponProgression.priceMultiplier, level)) /
-          GAME_CONFIG.weaponProgression.priceRounding,
-      ) * GAME_CONFIG.weaponProgression.priceRounding
-    );
+    return calculateWeaponPrice(this.p, w);
   }
 
   equipSalvageWeapon(w: WeaponId | null): boolean {
@@ -830,17 +725,7 @@ export class Game {
   }
 
   salvageUpgradePrice(id: SalvageUpgradeId): number | null {
-    const def = SALVAGE_UPGRADES[id];
-    const level = this.salvageDrone.upgrades[id];
-    if (level >= def.max) return null;
-    const nextIsFinal = level + 1 === def.max;
-    const finalMultiplier = nextIsFinal ? GAME_CONFIG.salvage.finalUpgradePriceMultiplier : 1;
-    return (
-      Math.round(
-        (def.base * Math.pow(GAME_CONFIG.salvage.upgradePriceMultiplier, level) * finalMultiplier) /
-          GAME_CONFIG.weaponProgression.priceRounding,
-      ) * GAME_CONFIG.weaponProgression.priceRounding
-    );
+    return calculateSalvageUpgradePrice(this.salvageDrone, id);
   }
 
   salvageShopInfo(): SalvageShopInfo {

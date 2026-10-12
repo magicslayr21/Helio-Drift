@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { registerHooks } from "node:module";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import ts from "typescript";
 
 registerHooks({
@@ -151,16 +151,20 @@ test("shared movement is numerically identical to the previous campaign movement
 
     stepPlayerMovement(actual, intent, dt, { width: 1000, height: 700 });
     for (const key of ["x", "y", "vx", "vy", "angle"]) {
-      assert.ok(Math.abs(actual[key] - expected[key]) < 1e-12, `${key} changed for ${JSON.stringify(intent)}`);
+      assert.ok(
+        Math.abs(actual[key] - expected[key]) < 1e-12,
+        `${key} changed for ${JSON.stringify(intent)}`,
+      );
     }
     assert.equal(actual.thrusting, expected.thrusting);
   }
 });
 
 test("shared simulation modules remain free of browser and engine dependencies", () => {
-  const files = ["campaign.ts", "movement.ts", "random.ts"];
+  const simulationDirectory = new URL("../src/game/simulation/", import.meta.url);
+  const files = readdirSync(simulationDirectory).filter((file) => file.endsWith(".ts"));
   for (const file of files) {
-    const source = readFileSync(new URL(`../src/game/simulation/${file}`, import.meta.url), "utf8");
+    const source = readFileSync(new URL(file, simulationDirectory), "utf8");
     assert.doesNotMatch(source, /from ["']\.\.\/engine["']/);
     assert.doesNotMatch(
       source,

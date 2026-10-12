@@ -1,7 +1,7 @@
 # Online co-op progress
 
 Branch: `feature/online-coop`  
-Current milestone: **1 — audit and shared simulation refactor**  
+Current milestone: **2 — two-player local simulation (awaiting approval)**
 Production deployment: **not started**
 
 This document is the implementation record for the two-player online survival expansion. Each
@@ -216,18 +216,49 @@ public waiting rooms. Match objects reject third players and in-progress joins.
   domains, and measured cost expectations.
 - Prepare a reviewable deployment plan. Production deployment remains a separate explicit approval.
 
+## Milestone 2 implementation
+
+The second milestone adds a headless, platform-neutral co-op match model under
+`src/game/simulation/`. It does not add rooms, WebSockets, menus, or a production service.
+
+- `CoopMatchState` is fully JSON-safe and separates two indexed player records from shared team,
+  wave, boss, projectile, asteroid, pickup, score, and Overdrive state.
+- `FixedStepRunner` advances authoritative rules at 30 Hz, bounds catch-up work, and snapshots its
+  tick and accumulator for exact restoration.
+- `LocalCoopSimulation` owns a server-seeded gameplay random stream, validates sequenced commands,
+  and advances two ships with independent health, credits, XP, weapons, upgrades, salvage drones,
+  inputs, and statistics.
+- Projectiles carry an immutable player owner ID. Damage, kills, rewards, boss damage, pickup
+  collection, purchases, and semantic events are attributed through that ID rather than ambient
+  single-player state.
+- The shared model includes deterministic wave spawning, asteroid mutation/splitting rules, boss
+  health scaling, wave-25 victory, both-disabled defeat, three-second proximity revives, and shared
+  Overdrive state. The revive and Overdrive foundations arrive here so their state and commands do
+  not need a later wire-format migration; final tuning remains part of Milestone 5.
+- Weapon prices, salvage-upgrade prices, and core weapon statistics now live in a shared module.
+  The existing browser engine delegates to those rules, avoiding separate single-player and co-op
+  balance tables.
+- Ten tests cover fixed stepping, independent movement, malformed/stale commands, deterministic
+  replay and restoration, combat ownership, normal and boom splitting, player-scoped economy,
+  upgrades and drones, revive, Overdrive, boss scaling, victory, and JSON-safe snapshots.
+
+The local match intentionally uses the common projectile subset for its combat proof. Specialized
+beam, arc, flak, missile, enemy, and boss behaviours remain in the browser engine until the full
+authoritative combat extraction in Milestone 4. Cosmetic randomness is absent from the headless
+model; clients will generate effects from semantic events without consuming the gameplay stream.
+
 ## Milestone status
 
-| Milestone | Status | Merge gate |
-| --- | --- | --- |
-| 1. Audit and shared simulation refactor | Complete; awaiting approval | Passed |
-| 2. Two-player local simulation | Waiting for approval | Not started |
-| 3. Private room networking | Waiting | Not started |
-| 4. Authoritative multiplayer combat | Waiting | Not started |
-| 5. Complete co-op campaign | Waiting | Not started |
-| 6. Public lobbies and matchmaking | Waiting | Not started |
-| 7. Multiplayer UI and leaderboard | Waiting | Not started |
-| 8. Integration and release readiness | Waiting | Not started |
+| Milestone                               | Status                      | Merge gate  |
+| --------------------------------------- | --------------------------- | ----------- |
+| 1. Audit and shared simulation refactor | Complete and approved       | Passed      |
+| 2. Two-player local simulation          | Complete; awaiting approval | Passed      |
+| 3. Private room networking              | Waiting                     | Not started |
+| 4. Authoritative multiplayer combat     | Waiting                     | Not started |
+| 5. Complete co-op campaign              | Waiting                     | Not started |
+| 6. Public lobbies and matchmaking       | Waiting                     | Not started |
+| 7. Multiplayer UI and leaderboard       | Waiting                     | Not started |
+| 8. Integration and release readiness    | Waiting                     | Not started |
 
 ## Milestone 1 verification
 
@@ -258,3 +289,33 @@ Changed files:
 
 Milestone 1 is safe to merge: it does not add a network path, database migration, multiplayer UI,
 or production deployment. The single-player save schema and leaderboard contracts are unchanged.
+
+## Milestone 2 verification
+
+Milestone 2 passed on 12 October 2026:
+
+- `npm run typecheck`
+- `npm run game:test`: 71/71 tests, including ten new local co-op simulation checks
+- `npm run leaderboard:test`: 12/12 tests
+- `XDG_CONFIG_HOME=/tmp/helio-coop-m2-wrangler npm run cf:test`: dry-run bundle plus 18/18
+  Worker/D1 tests
+- `npm run build`
+- `npm run format:check` and `git diff --check`
+- Chromium smoke test: campaign start, live movement, save, reload, and continue with no page errors
+
+Changed files:
+
+- `src/game/simulation/coop-config.ts` — shared tick, arena, difficulty, revive, and Overdrive tuning
+- `src/game/simulation/coop-types.ts` — serializable match, player, entity, command, and event contracts
+- `src/game/simulation/fixed-step.ts` — snapshot-capable 30 Hz accumulator
+- `src/game/simulation/local-coop.ts` — deterministic two-player headless match
+- `src/game/simulation/weapons.ts` — shared weapon/economy simulation rules
+- `src/game/simulation/index.ts` — exports the Milestone 2 simulation surface
+- `src/game/engine.ts` — delegates existing weapon/economy calculations to the shared rules
+- `test/local-coop.test.mjs` — deterministic two-player and ownership regression coverage
+- `test/shared-simulation.test.mjs` — enforces the browser-free boundary for every shared module
+- `docs/multiplayer-progress.md` — Milestone 2 scope, verification, and approval gate
+
+Milestone 2 is safe to merge: it adds no network path, database migration, UI, or deployment. The
+single-player engine, save schema, and leaderboard contracts remain compatible. Milestone 3 must
+not begin until this local simulation boundary is approved.
