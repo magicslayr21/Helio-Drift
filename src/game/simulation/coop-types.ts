@@ -6,6 +6,7 @@ export type CoopMatchPhase = "waiting" | "running" | "victory" | "defeat";
 
 export interface CoopInputState extends FlightIntent {
   fire: boolean;
+  missile: boolean;
   interact: boolean;
 }
 
@@ -32,7 +33,9 @@ export interface CoopPlayerState {
   disabled: boolean;
   reviveProgress: number;
   reviveCooldown: number;
+  supportQuietTimer: number;
   lastInputSequence: number;
+  lastCommandSequence: number;
   input: CoopInputState;
   stats: CoopPlayerStats;
 }
@@ -48,6 +51,7 @@ export interface CoopRockState {
   hp: number;
   maxHp: number;
   trait: RockTrait;
+  fuse: number;
 }
 
 export interface CoopProjectileState {
@@ -65,6 +69,59 @@ export interface CoopProjectileState {
   homing: number;
   hitIds: number[];
   weapon: WeaponId;
+  kind: "shot" | "missile" | "shrapnel";
+  fuse: number;
+  blastRadius: number;
+  blastDamage: number;
+  extra: number;
+  extraDamage: number;
+}
+
+export type CoopEnemyKind = "sentinel" | "warden" | "spiker" | "wardenTurret";
+
+export interface CoopEnemyState {
+  id: number;
+  kind: CoopEnemyKind;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  angle: number;
+  radius: number;
+  hp: number;
+  maxHp: number;
+  fireTimer: number;
+  behaviorTimer: number;
+  warningTimer: number;
+  burst: number;
+  targetPlayerId: CoopPlayerId | null;
+  aimX: number;
+  aimY: number;
+}
+
+export interface CoopHostileProjectileState {
+  id: number;
+  sourceId: number;
+  source: CoopEnemyKind | "boss";
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  damage: number;
+  life: number;
+  hitPlayerIds: CoopPlayerId[];
+}
+
+export interface CoopHazardState {
+  id: number;
+  sourceId: number;
+  kind: "strike" | "shockwave";
+  x: number;
+  y: number;
+  radius: number;
+  timer: number;
+  damage: number;
 }
 
 export interface CoopPickupState {
@@ -86,6 +143,11 @@ export interface CoopBossState {
   radius: number;
   hp: number;
   maxHp: number;
+  vx: number;
+  vy: number;
+  phase: 1 | 2 | 3;
+  attackTimer: number;
+  abilityTimer: number;
 }
 
 export interface CoopTeamState {
@@ -109,7 +171,10 @@ export interface CoopMatchState {
   players: Record<CoopPlayerId, CoopPlayerState>;
   team: CoopTeamState;
   rocks: CoopRockState[];
+  enemies: CoopEnemyState[];
   projectiles: CoopProjectileState[];
+  hostileProjectiles: CoopHostileProjectileState[];
+  hazards: CoopHazardState[];
   pickups: CoopPickupState[];
   boss: CoopBossState | null;
 }
@@ -123,9 +188,11 @@ export type CoopCommand =
       moveY: number;
       aimAngle: number;
       fire: boolean;
+      missile: boolean;
       interact: boolean;
     }
   | { type: "buyWeapon"; playerId: CoopPlayerId; sequence: number; weapon: WeaponId }
+  | { type: "selectWeapon"; playerId: CoopPlayerId; sequence: number; weapon: WeaponId }
   | { type: "buyDrone"; playerId: CoopPlayerId; sequence: number }
   | {
       type: "buyDroneUpgrade";
@@ -134,14 +201,21 @@ export type CoopCommand =
       upgrade: SalvageUpgradeId;
     }
   | { type: "chooseUpgrade"; playerId: CoopPlayerId; sequence: number; upgrade: string }
+  | { type: "equipDroneWeapon"; playerId: CoopPlayerId; sequence: number; weapon: WeaponId | null }
   | { type: "activateOverdrive"; playerId: CoopPlayerId; sequence: number };
 
 export type CoopEvent =
   | { type: "waveStarted"; tick: number; wave: number; sector: number }
   | { type: "weaponFired"; tick: number; playerId: CoopPlayerId; weapon: WeaponId }
+  | { type: "missileFired"; tick: number; playerId: CoopPlayerId }
   | { type: "asteroidDestroyed"; tick: number; playerId: CoopPlayerId; entityId: number }
   | { type: "bossDamaged"; tick: number; playerId: CoopPlayerId; amount: number }
   | { type: "bossDefeated"; tick: number; playerId: CoopPlayerId; mk: number }
+  | { type: "bossAbility"; tick: number; mk: number; ability: string }
+  | { type: "enemySpawned"; tick: number; entityId: number; kind: CoopEnemyKind }
+  | { type: "enemyDestroyed"; tick: number; playerId: CoopPlayerId; entityId: number }
+  | { type: "playerDamaged"; tick: number; playerId: CoopPlayerId; amount: number }
+  | { type: "pickupCollected"; tick: number; playerId: CoopPlayerId; kind: "credit" | "repair" }
   | { type: "purchaseAccepted"; tick: number; playerId: CoopPlayerId; item: string; cost: number }
   | { type: "purchaseRejected"; tick: number; playerId: CoopPlayerId; item: string }
   | { type: "playerDisabled"; tick: number; playerId: CoopPlayerId }

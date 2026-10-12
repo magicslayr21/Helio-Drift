@@ -10,12 +10,22 @@ import {
   freshSalvageDrone,
   weaponMaxLevel,
 } from "../balance";
-import { bossMkForWave, isBossWave, RUN_PACING, scaledWave, sectorForWave } from "./campaign";
+import {
+  bossMkForWave,
+  isBossWave,
+  maxSentinels,
+  RUN_PACING,
+  scaledWave,
+  sentinelWaveCount,
+  sectorForWave,
+} from "./campaign";
 import { COOP_CONFIG, COOP_FIXED_DT } from "./coop-config";
 import type {
   CoopBossState,
   CoopCommand,
   CoopEvent,
+  CoopEnemyKind,
+  CoopEnemyState,
   CoopMatchState,
   CoopPlayerId,
   CoopPlayerState,
@@ -75,7 +85,10 @@ export class LocalCoopSimulation {
         elapsedSeconds: 0,
       },
       rocks: [],
+      enemies: [],
       projectiles: [],
+      hostileProjectiles: [],
+      hazards: [],
       pickups: [],
       boss: null,
     };
@@ -89,6 +102,28 @@ export class LocalCoopSimulation {
   ) {
     const simulation = new LocalCoopSimulation({ seed: snapshot.seed, width, height });
     simulation.state = structuredClone(snapshot);
+    simulation.state.enemies ??= [];
+    simulation.state.hostileProjectiles ??= [];
+    simulation.state.hazards ??= [];
+    for (const player of Object.values(simulation.state.players)) player.input.missile ??= false;
+    for (const player of Object.values(simulation.state.players)) player.supportQuietTimer ??= 0;
+    for (const player of Object.values(simulation.state.players)) player.lastCommandSequence ??= -1;
+    for (const rock of simulation.state.rocks) rock.fuse ??= -1;
+    for (const projectile of simulation.state.projectiles) {
+      projectile.kind ??= "shot";
+      projectile.fuse ??= 0;
+      projectile.blastRadius ??= 0;
+      projectile.blastDamage ??= 0;
+      projectile.extra ??= 0;
+      projectile.extraDamage ??= 0;
+    }
+    if (simulation.state.boss) {
+      simulation.state.boss.vx ??= 0;
+      simulation.state.boss.vy ??= 0;
+      simulation.state.boss.phase ??= 1;
+      simulation.state.boss.attackTimer ??= GAME_CONFIG.bosses.baseAttackTimer;
+      simulation.state.boss.abilityTimer ??= GAME_CONFIG.bosses.baseAttackTimer * 2;
+    }
     simulation.random.restore(snapshot.randomState);
     simulation.runner.restore({ tick: snapshot.tick, accumulator: snapshot.clockAccumulator });
     simulation.events = [];
@@ -114,8 +149,17 @@ export class LocalCoopSimulation {
       disabled: false,
       reviveProgress: 0,
       reviveCooldown: 0,
+      supportQuietTimer: 0,
       lastInputSequence: -1,
-      input: { moveX: 0, moveY: 0, aimAngle: ship.angle, fire: false, interact: false },
+      lastCommandSequence: -1,
+      input: {
+        moveX: 0,
+        moveY: 0,
+        aimAngle: ship.angle,
+        fire: false,
+        missile: false,
+        interact: false,
+      },
       stats: {
         damage: 0,
         kills: 0,
@@ -133,7 +177,8 @@ export class LocalCoopSimulation {
       !player ||
       this.state.phase !== "running" ||
       !Number.isSafeInteger(command.sequence) ||
-      command.sequence <= player.lastInputSequence
+      command.sequence <=
+        (command.type === "input" ? player.lastInputSequence : player.lastCommandSequence)
     )
       return false;
     if (command.type === "input") {
@@ -144,6 +189,7 @@ export class LocalCoopSimulation {
         moveY: clamp(command.moveY, -1, 1),
         aimAngle: wrapAngle(command.aimAngle),
         fire: Boolean(command.fire),
+        missile: Boolean(command.missile),
         interact: Boolean(command.interact),
       };
     }
@@ -161,14 +207,17 @@ export class LocalCoopSimulation {
       ![
         "input",
         "buyWeapon",
+        "selectWeapon",
         "buyDrone",
         "buyDroneUpgrade",
         "chooseUpgrade",
+        "equipDroneWeapon",
         "activateOverdrive",
       ].includes(command.type)
     )
       return false;
-    player.lastInputSequence = command.sequence;
+    if (command.type === "input") player.lastInputSequence = command.sequence;
+    else player.lastCommandSequence = command.sequence;
     this.commands.push(command);
     return true;
   }
@@ -211,21 +260,38 @@ export class LocalCoopSimulation {
       const player = this.state.players[id];
       player.ship.invuln = Math.max(0, player.ship.invuln - dt);
       player.reviveCooldown = Math.max(0, player.reviveCooldown - dt);
+      player.supportQuietTimer = Math.max(0, player.supportQuietTimer - dt);
       if (player.disabled) continue;
       stepPlayerMovement(player.ship, player.input, dt, { width: this.width, height: this.height });
       player.ship.fireTimer -= dt;
+      player.ship.missileTimer = Math.max(0, player.ship.missileTimer - dt);
+      player.ship.missileCharge += dt;
+      if (
+        player.ship.missiles < player.ship.maxMissiles &&
+        player.ship.missileCharge >= player.ship.missileRegen
+      ) {
+        player.ship.missiles++;
+        player.ship.missileCharge -= player.ship.missileRegen;
+      }
       if (player.input.fire && player.ship.fireTimer <= 0) this.fire(player);
+      if (player.input.missile && !player.ship.missileHeld) this.fireMissile(player);
+      player.ship.missileHeld = player.input.missile;
       this.updateDrone(player, dt);
     }
 
     this.updateRocks(dt);
+    this.updateEnemies(dt);
+    this.updateBoss(dt);
     this.updateProjectiles(dt);
+    this.updateHostileProjectiles(dt);
+    this.updateHazards(dt);
     this.updatePickups(dt);
     this.updatePlayerCollisions();
     this.updateRevives(dt);
     if (this.state.phase !== "running") return;
 
-    if (!this.state.boss && this.state.rocks.length === 0) this.startNextWave();
+    if (!this.state.boss && this.state.rocks.length === 0 && this.state.enemies.length === 0)
+      this.startNextWave();
     this.state.randomState = this.random.snapshot();
   }
 
@@ -242,11 +308,16 @@ export class LocalCoopSimulation {
             aimAngle: command.aimAngle,
             aimTurnMultiplier: 3.2,
             fire: command.fire,
+            missile: command.missile,
             interact: command.interact,
           };
           break;
         case "buyWeapon":
           this.buyWeapon(player, command.weapon);
+          break;
+        case "selectWeapon":
+          if (player.ship.weapons[command.weapon] > 0) player.ship.primary = command.weapon;
+          else this.reject(player, command.weapon);
           break;
         case "buyDrone":
           this.buyDrone(player);
@@ -256,6 +327,15 @@ export class LocalCoopSimulation {
           break;
         case "chooseUpgrade":
           this.chooseUpgrade(player, command.upgrade);
+          break;
+        case "equipDroneWeapon":
+          if (
+            player.drone.purchased &&
+            (command.weapon === null ||
+              (player.ship.weapons[command.weapon] > 0 && command.weapon !== player.ship.primary))
+          )
+            player.drone.weapon = command.weapon;
+          else this.reject(player, command.weapon ?? "droneWeapon");
           break;
         case "activateOverdrive":
           if (
@@ -364,6 +444,15 @@ export class LocalCoopSimulation {
     const overdrive =
       this.state.team.overdriveRemaining > 0 ? COOP_CONFIG.overdrive.fireRateMultiplier : 1;
     player.ship.fireTimer = 1 / (stats.rate * overdrive);
+    if (weapon === "laser" || weapon === "arc") {
+      this.fireInstantWeapon(
+        player,
+        stats.damage,
+        weapon === "arc" ? 2 + player.ship.weapons.arc : 1,
+      );
+      this.events.push({ type: "weaponFired", tick: this.state.tick, playerId: player.id, weapon });
+      return;
+    }
     const startX = player.ship.x + Math.cos(player.ship.angle) * 18;
     const startY = player.ship.y + Math.sin(player.ship.angle) * 18;
     for (let shot = 0; shot < stats.shots; shot++) {
@@ -390,9 +479,72 @@ export class LocalCoopSimulation {
         homing: stats.homing,
         hitIds: [],
         weapon,
+        kind: "shot",
+        fuse: stats.fuse,
+        blastRadius: 0,
+        blastDamage: 0,
+        extra: stats.extra,
+        extraDamage: stats.extraDamage,
       });
     }
     this.events.push({ type: "weaponFired", tick: this.state.tick, playerId: player.id, weapon });
+  }
+
+  private fireInstantWeapon(player: CoopPlayerState, damage: number, maximumTargets: number) {
+    const candidates = [
+      ...this.state.enemies.map((entity) => ({ entity, type: "enemy" as const })),
+      ...this.state.rocks.map((entity) => ({ entity, type: "rock" as const })),
+      ...(this.state.boss ? [{ entity: this.state.boss, type: "boss" as const }] : []),
+    ]
+      .map((entry) => ({
+        ...entry,
+        distance: Math.hypot(entry.entity.x - player.ship.x, entry.entity.y - player.ship.y),
+        angle: Math.abs(
+          wrapAngle(
+            Math.atan2(entry.entity.y - player.ship.y, entry.entity.x - player.ship.x) -
+              player.ship.angle,
+          ),
+        ),
+      }))
+      .filter((entry) => entry.distance <= 760 && entry.angle <= 0.16)
+      .sort((left, right) => left.distance - right.distance || left.entity.id - right.entity.id)
+      .slice(0, maximumTargets);
+    for (const target of candidates) {
+      if (target.type === "boss") this.damageBoss(damage, player);
+      else if (target.type === "enemy") this.damageEnemy(target.entity, damage, player);
+      else this.damageRock(target.entity, damage, player);
+    }
+  }
+
+  private fireMissile(player: CoopPlayerState) {
+    if (player.ship.missiles <= 0 || player.ship.missileTimer > 0) return;
+    player.ship.missiles--;
+    player.ship.missileTimer = 0.45;
+    player.ship.missileCharge = 0;
+    const angle = player.ship.angle;
+    this.state.projectiles.push({
+      id: this.nextId(),
+      ownerId: player.id,
+      x: player.ship.x + Math.cos(angle) * 20,
+      y: player.ship.y + Math.sin(angle) * 20,
+      vx: Math.cos(angle) * GAME_CONFIG.simulation.missileSpeed,
+      vy: Math.sin(angle) * GAME_CONFIG.simulation.missileSpeed,
+      radius: 7,
+      damage: player.ship.blastDmg,
+      life: 3.2,
+      pierce: 0,
+      bounces: 0,
+      homing: 3.5,
+      hitIds: [],
+      weapon: player.ship.primary,
+      kind: "missile",
+      fuse: 0,
+      blastRadius: player.ship.blastR,
+      blastDamage: player.ship.blastDmg,
+      extra: 0,
+      extraDamage: 0,
+    });
+    this.events.push({ type: "missileFired", tick: this.state.tick, playerId: player.id });
   }
 
   private updateDrone(player: CoopPlayerState, dt: number) {
@@ -403,15 +555,46 @@ export class LocalCoopSimulation {
     drone.x += (targetX - drone.x) * Math.min(1, dt * 5);
     drone.y += (targetY - drone.y) * Math.min(1, dt * 5);
     drone.fireTimer -= dt;
-    const rock = this.nearestRock(drone.x, drone.y);
-    if (!rock || drone.fireTimer > 0) return;
+    drone.pulseTimer -= dt;
+    const repairLevel = drone.upgrades.repairPulse;
+    const supportRange =
+      GAME_CONFIG.salvage.repairPulseRange +
+      drone.upgrades.scan * GAME_CONFIG.salvage.repairPulseRangePerScan;
+    if (
+      repairLevel > 0 &&
+      player.supportQuietTimer <= 0 &&
+      Math.hypot(drone.x - player.ship.x, drone.y - player.ship.y) <= supportRange &&
+      drone.pulseTimer <= 0
+    ) {
+      player.ship.hull = Math.min(
+        player.ship.maxHull,
+        player.ship.hull +
+          (repairLevel >= 3
+            ? GAME_CONFIG.salvage.repairPulseLevel3Heal
+            : GAME_CONFIG.salvage.repairPulseHeal),
+      );
+      drone.pulseTimer =
+        GAME_CONFIG.salvage.repairPulseIntervals[
+          Math.min(repairLevel, GAME_CONFIG.salvage.repairPulseIntervals.length) - 1
+        ];
+    }
+    const target = this.nearestTarget(drone.x, drone.y);
+    if (!target || drone.fireTimer > 0) return;
+    const mounted = drone.weapon
+      ? weaponSimulationStats(player.ship, drone, drone.weapon, player.ship.weapons[drone.weapon])
+      : null;
     const damage =
       GAME_CONFIG.salvage.baseShotDamage +
-      drone.upgrades.overcharge * GAME_CONFIG.salvage.overchargeDamagePerLevel;
-    this.damageRock(rock, damage, player);
+      drone.upgrades.overcharge * GAME_CONFIG.salvage.overchargeDamagePerLevel +
+      (mounted?.damage ?? 0) * GAME_CONFIG.salvage.weaponDamageScale;
+    if (target.type === "boss") this.damageBoss(damage, player);
+    else if (target.type === "enemy") this.damageEnemy(target.entity, damage, player);
+    else this.damageRock(target.entity, damage, player);
     drone.fireTimer = Math.max(
       GAME_CONFIG.salvage.minFireInterval,
-      GAME_CONFIG.salvage.starterFireInterval -
+      (mounted
+        ? GAME_CONFIG.salvage.attachedFireInterval
+        : GAME_CONFIG.salvage.starterFireInterval) -
         drone.upgrades.overcharge * GAME_CONFIG.salvage.overchargeFireReduction -
         drone.upgrades.twinCannons * GAME_CONFIG.salvage.twinCadenceReduction,
     );
@@ -421,6 +604,7 @@ export class LocalCoopSimulation {
     for (let index = this.state.projectiles.length - 1; index >= 0; index--) {
       const projectile = this.state.projectiles[index];
       projectile.life -= dt;
+      projectile.fuse -= dt;
       if (projectile.homing > 0) this.guideProjectile(projectile, dt);
       projectile.x += projectile.vx * dt;
       projectile.y += projectile.vy * dt;
@@ -444,6 +628,24 @@ export class LocalCoopSimulation {
         projectile.x > this.width + 80 ||
         projectile.y < -80 ||
         projectile.y > this.height + 80;
+      if (projectile.kind === "shot" && projectile.extra > 0 && projectile.fuse <= 0) {
+        this.spawnShrapnel(projectile);
+        consumed = true;
+      }
+      if (!consumed) {
+        for (const enemy of [...this.state.enemies]) {
+          if (projectile.hitIds.includes(enemy.id)) continue;
+          if (
+            Math.hypot(projectile.x - enemy.x, projectile.y - enemy.y) >
+            projectile.radius + enemy.radius
+          )
+            continue;
+          projectile.hitIds.push(enemy.id);
+          this.damageEnemy(enemy, projectile.damage, this.state.players[projectile.ownerId]);
+          consumed = projectile.kind === "missile" || projectile.pierce-- <= 0;
+          if (consumed) break;
+        }
+      }
       if (!consumed && this.state.boss && !projectile.hitIds.includes(this.state.boss.id)) {
         if (
           Math.hypot(projectile.x - this.state.boss.x, projectile.y - this.state.boss.y) <=
@@ -451,7 +653,7 @@ export class LocalCoopSimulation {
         ) {
           projectile.hitIds.push(this.state.boss.id);
           this.damageBoss(projectile.damage, this.state.players[projectile.ownerId]);
-          consumed = projectile.pierce-- <= 0;
+          consumed = projectile.kind === "missile" || projectile.pierce-- <= 0;
         }
       }
       if (!consumed) {
@@ -464,16 +666,63 @@ export class LocalCoopSimulation {
             continue;
           projectile.hitIds.push(rock.id);
           this.damageRock(rock, projectile.damage, this.state.players[projectile.ownerId]);
-          consumed = projectile.pierce-- <= 0;
+          consumed = projectile.kind === "missile" || projectile.pierce-- <= 0;
           if (consumed) break;
         }
       }
-      if (consumed) this.state.projectiles.splice(index, 1);
+      if (consumed) {
+        if (projectile.kind === "missile") this.explodeMissile(projectile);
+        this.state.projectiles.splice(index, 1);
+      }
     }
   }
 
+  private spawnShrapnel(projectile: CoopProjectileState) {
+    for (let index = 0; index < projectile.extra; index++) {
+      const angle = (index / projectile.extra) * TAU + this.random.next() * 0.2;
+      this.state.projectiles.push({
+        id: this.nextId(),
+        ownerId: projectile.ownerId,
+        x: projectile.x,
+        y: projectile.y,
+        vx: Math.cos(angle) * 520,
+        vy: Math.sin(angle) * 520,
+        radius: 2.8,
+        damage: projectile.extraDamage,
+        life: 0.55,
+        pierce: 0,
+        bounces: 0,
+        homing: 0,
+        hitIds: [],
+        weapon: "flak",
+        kind: "shrapnel",
+        fuse: 0,
+        blastRadius: 0,
+        blastDamage: 0,
+        extra: 0,
+        extraDamage: 0,
+      });
+    }
+  }
+
+  private explodeMissile(projectile: CoopProjectileState) {
+    const player = this.state.players[projectile.ownerId];
+    for (const enemy of [...this.state.enemies])
+      if (Math.hypot(enemy.x - projectile.x, enemy.y - projectile.y) <= projectile.blastRadius)
+        this.damageEnemy(enemy, projectile.blastDamage, player);
+    for (const rock of [...this.state.rocks])
+      if (Math.hypot(rock.x - projectile.x, rock.y - projectile.y) <= projectile.blastRadius)
+        this.damageRock(rock, projectile.blastDamage, player);
+    if (
+      this.state.boss &&
+      Math.hypot(this.state.boss.x - projectile.x, this.state.boss.y - projectile.y) <=
+        projectile.blastRadius + this.state.boss.radius
+    )
+      this.damageBoss(projectile.blastDamage, player);
+  }
+
   private guideProjectile(projectile: CoopProjectileState, dt: number) {
-    const target = this.state.boss ?? this.nearestRock(projectile.x, projectile.y);
+    const target = this.nearestTarget(projectile.x, projectile.y)?.entity;
     if (!target) return;
     const speed = Math.hypot(projectile.vx, projectile.vy) || 1;
     const current = Math.atan2(projectile.vy, projectile.vx);
@@ -485,15 +734,437 @@ export class LocalCoopSimulation {
     projectile.vy = Math.sin(angle) * speed;
   }
 
+  private updateEnemies(dt: number) {
+    for (const enemy of this.state.enemies) {
+      const target = this.nearestPlayer(enemy.x, enemy.y);
+      if (!target) continue;
+      enemy.targetPlayerId = target.id;
+      enemy.fireTimer -= dt;
+      enemy.behaviorTimer -= dt;
+      if (enemy.warningTimer > 0) {
+        enemy.warningTimer -= dt;
+        if (enemy.warningTimer <= 0) this.completeEnemyAttack(enemy);
+      }
+
+      if (enemy.kind === "spiker") {
+        if (enemy.behaviorTimer <= 0) {
+          const turn = randomBetween(
+            this.random,
+            -GAME_CONFIG.enemies.spikers.turnAngle,
+            GAME_CONFIG.enemies.spikers.turnAngle,
+          );
+          const speed = Math.hypot(enemy.vx, enemy.vy);
+          const angle = Math.atan2(enemy.vy, enemy.vx) + turn;
+          enemy.vx = Math.cos(angle) * speed;
+          enemy.vy = Math.sin(angle) * speed;
+          enemy.behaviorTimer = randomBetween(
+            this.random,
+            GAME_CONFIG.enemies.spikers.turnIntervalMin,
+            GAME_CONFIG.enemies.spikers.turnIntervalMax,
+          );
+        }
+        enemy.angle += GAME_CONFIG.enemies.spikers.spinRate * dt;
+        if (enemy.fireTimer <= 0 && enemy.warningTimer <= 0) {
+          enemy.warningTimer = GAME_CONFIG.enemies.spikers.fireWarning;
+          enemy.aimX = target.ship.x;
+          enemy.aimY = target.ship.y;
+        }
+      } else if (enemy.kind === "wardenTurret") {
+        enemy.vx = 0;
+        enemy.vy = 0;
+        if (enemy.fireTimer <= 0 && enemy.warningTimer <= 0) {
+          enemy.warningTimer = 0.35;
+          enemy.aimX = target.ship.x;
+          enemy.aimY = target.ship.y;
+        }
+      } else {
+        const preferred =
+          enemy.kind === "warden"
+            ? GAME_CONFIG.enemies.wardens.preferredDistance
+            : GAME_CONFIG.enemies.sentinels.preferredDistance;
+        const speed =
+          enemy.kind === "warden"
+            ? GAME_CONFIG.enemies.wardens.speed
+            : GAME_CONFIG.enemies.sentinels.speed;
+        const dx = target.ship.x - enemy.x;
+        const dy = target.ship.y - enemy.y;
+        const distance = Math.hypot(dx, dy) || 1;
+        const direction = distance > preferred + 80 ? 1 : distance < preferred - 80 ? -1 : 0;
+        enemy.vx = (dx / distance) * speed * direction + (-dy / distance) * speed * 0.18;
+        enemy.vy = (dy / distance) * speed * direction + (dx / distance) * speed * 0.18;
+        enemy.angle = Math.atan2(dy, dx);
+        if (
+          enemy.kind === "warden" &&
+          enemy.behaviorTimer <= 0 &&
+          this.state.enemies.filter((candidate) => candidate.kind === "wardenTurret").length <
+            GAME_CONFIG.enemies.wardens.turretCap
+        ) {
+          const turret = this.spawnEnemy("wardenTurret");
+          turret.x = clamp(
+            enemy.x + randomBetween(this.random, -90, 90),
+            turret.radius,
+            this.width - turret.radius,
+          );
+          turret.y = clamp(
+            enemy.y + randomBetween(this.random, -90, 90),
+            turret.radius,
+            this.height - turret.radius,
+          );
+          enemy.behaviorTimer = randomBetween(
+            this.random,
+            GAME_CONFIG.enemies.wardens.turretIntervalMin,
+            GAME_CONFIG.enemies.wardens.turretIntervalMax,
+          );
+        }
+        if (enemy.fireTimer <= 0 && enemy.warningTimer <= 0) {
+          if (enemy.kind === "warden") {
+            enemy.warningTimer = GAME_CONFIG.enemies.wardens.aimWarning;
+            enemy.aimX = target.ship.x + target.ship.vx * 0.45;
+            enemy.aimY = target.ship.y + target.ship.vy * 0.45;
+          } else {
+            this.fireEnemyShot(enemy, target.ship.x, target.ship.y);
+            enemy.fireTimer = randomBetween(
+              this.random,
+              GAME_CONFIG.enemies.sentinels.fireIntervalMin,
+              GAME_CONFIG.enemies.sentinels.fireIntervalMax,
+            );
+            if (this.state.team.wave >= GAME_CONFIG.enemies.sentinels.burstFromWave)
+              enemy.burst = 1;
+          }
+        } else if (enemy.kind === "sentinel" && enemy.burst > 0 && enemy.fireTimer <= -0.22) {
+          this.fireEnemyShot(enemy, target.ship.x, target.ship.y);
+          enemy.burst = 0;
+        }
+      }
+
+      enemy.x += enemy.vx * dt;
+      enemy.y += enemy.vy * dt;
+      if (enemy.kind === "spiker") {
+        if (enemy.x < enemy.radius || enemy.x > this.width - enemy.radius) enemy.vx *= -1;
+        if (enemy.y < enemy.radius || enemy.y > this.height - enemy.radius) enemy.vy *= -1;
+      }
+      enemy.x = clamp(enemy.x, enemy.radius, this.width - enemy.radius);
+      enemy.y = clamp(enemy.y, enemy.radius, this.height - enemy.radius);
+    }
+  }
+
+  private completeEnemyAttack(enemy: CoopEnemyState) {
+    if (enemy.kind === "spiker") {
+      const count = this.state.team.wave >= GAME_CONFIG.enemies.spikers.eightShotWave ? 8 : 4;
+      for (let shot = 0; shot < count; shot++) {
+        const angle = (shot / count) * TAU;
+        this.spawnHostile(
+          enemy,
+          angle,
+          GAME_CONFIG.enemies.spikers.boltSpeed,
+          GAME_CONFIG.enemies.spikers.boltDamage,
+          GAME_CONFIG.enemies.spikers.boltRadius,
+          GAME_CONFIG.enemies.spikers.boltLifetime,
+        );
+      }
+      enemy.fireTimer =
+        this.state.team.wave >= GAME_CONFIG.enemies.spikers.eightShotWave
+          ? GAME_CONFIG.enemies.spikers.lateFireInterval
+          : GAME_CONFIG.enemies.spikers.fireInterval;
+      return;
+    }
+    this.fireEnemyShot(enemy, enemy.aimX, enemy.aimY);
+    enemy.fireTimer =
+      enemy.kind === "warden"
+        ? randomBetween(
+            this.random,
+            GAME_CONFIG.enemies.wardens.shotDelayMin,
+            GAME_CONFIG.enemies.wardens.shotDelayMax,
+          )
+        : 2.2;
+  }
+
+  private fireEnemyShot(enemy: CoopEnemyState, targetX: number, targetY: number) {
+    const angle = Math.atan2(targetY - enemy.y, targetX - enemy.x);
+    if (enemy.kind === "warden" || enemy.kind === "wardenTurret")
+      this.spawnHostile(
+        enemy,
+        angle,
+        GAME_CONFIG.enemies.wardens.boltSpeed,
+        GAME_CONFIG.enemies.wardens.boltDamage,
+        GAME_CONFIG.enemies.wardens.boltRadius,
+        GAME_CONFIG.enemies.wardens.boltLifetime,
+      );
+    else
+      this.spawnHostile(
+        enemy,
+        angle,
+        GAME_CONFIG.enemies.sentinels.boltSpeed,
+        GAME_CONFIG.enemies.sentinels.boltDamage,
+        GAME_CONFIG.enemies.sentinels.boltRadius,
+        GAME_CONFIG.enemies.sentinels.boltLifetime,
+      );
+  }
+
+  private spawnHostile(
+    source: CoopEnemyState | CoopBossState,
+    angle: number,
+    speed: number,
+    damage: number,
+    radius: number,
+    life: number,
+  ) {
+    this.state.hostileProjectiles.push({
+      id: this.nextId(),
+      sourceId: source.id,
+      source: "kind" in source ? source.kind : "boss",
+      x: source.x + Math.cos(angle) * source.radius,
+      y: source.y + Math.sin(angle) * source.radius,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      radius,
+      damage,
+      life,
+      hitPlayerIds: [],
+    });
+  }
+
+  private updateBoss(dt: number) {
+    const boss = this.state.boss;
+    if (!boss) return;
+    const fraction = boss.hp / boss.maxHp;
+    boss.phase =
+      fraction <= GAME_CONFIG.bosses.attackPhaseThresholds[1]
+        ? 3
+        : fraction <= GAME_CONFIG.bosses.attackPhaseThresholds[0]
+          ? 2
+          : 1;
+    boss.attackTimer -= dt;
+    boss.abilityTimer -= dt;
+    const targetX =
+      this.width / 2 +
+      Math.sin(this.state.team.elapsedSeconds * 0.45 + boss.mk) * this.width * 0.28;
+    const targetY = this.height * (0.2 + 0.08 * Math.cos(this.state.team.elapsedSeconds * 0.3));
+    boss.vx = (targetX - boss.x) * 0.7;
+    boss.vy = (targetY - boss.y) * 0.7;
+    boss.x = clamp(boss.x + boss.vx * dt, boss.radius, this.width - boss.radius);
+    boss.y = clamp(boss.y + boss.vy * dt, boss.radius, this.height * 0.55);
+    if (boss.attackTimer <= 0) {
+      const shots = 4 + boss.mk + boss.phase * 2;
+      const offset = this.random.next() * TAU;
+      for (let shot = 0; shot < shots; shot++)
+        this.spawnHostile(
+          boss,
+          offset + (shot / shots) * TAU,
+          180 + boss.mk * 22,
+          6 + boss.mk * 1.4,
+          6,
+          5,
+        );
+      boss.attackTimer = Math.max(0.65, GAME_CONFIG.bosses.baseAttackTimer - boss.phase * 0.35);
+    }
+    if (boss.abilityTimer <= 0) {
+      this.triggerBossAbility(boss);
+      boss.abilityTimer = Math.max(2.4, 6.2 - boss.phase * 0.7 - boss.mk * 0.2);
+    }
+  }
+
+  private triggerBossAbility(boss: CoopBossState) {
+    const target = this.nearestPlayer(boss.x, boss.y);
+    if (!target) return;
+    if (boss.mk === 4) {
+      this.state.hazards.push({
+        id: this.nextId(),
+        sourceId: boss.id,
+        kind: "strike",
+        x: target.ship.x,
+        y: target.ship.y,
+        radius: GAME_CONFIG.bosses.mk4.strikeRadius,
+        timer: GAME_CONFIG.bosses.mk4.strikeWarning,
+        damage: GAME_CONFIG.bosses.mk4.strikeDamage,
+      });
+      this.events.push({
+        type: "bossAbility",
+        tick: this.state.tick,
+        mk: boss.mk,
+        ability: "ignitionStrike",
+      });
+    } else if (boss.mk === 5) {
+      this.state.hazards.push({
+        id: this.nextId(),
+        sourceId: boss.id,
+        kind: "shockwave",
+        x: boss.x,
+        y: boss.y,
+        radius: 190 + boss.phase * 45,
+        timer: 0.8,
+        damage: 15 + boss.phase * 3,
+      });
+      this.events.push({
+        type: "bossAbility",
+        tick: this.state.tick,
+        mk: boss.mk,
+        ability: "shockwave",
+      });
+    } else {
+      const trait: RockTrait = boss.mk === 1 ? "none" : boss.mk === 2 ? "homing" : "bounce";
+      const count = boss.mk === 3 ? 3 : 2;
+      for (let index = 0; index < count; index++)
+        this.state.rocks.push(
+          this.makeRock(
+            randomBetween(this.random, 40, this.width - 40),
+            -30,
+            2,
+            trait,
+            randomBetween(this.random, -30, 30),
+            randomBetween(this.random, 100, 180),
+          ),
+        );
+      this.events.push({
+        type: "bossAbility",
+        tick: this.state.tick,
+        mk: boss.mk,
+        ability: "meteorCall",
+      });
+    }
+    if (randomChance(this.random, GAME_CONFIG.bosses.abilityRockChance)) {
+      const trait = BOSS_SPECS[boss.mk].trait;
+      this.state.rocks.push(
+        this.makeRock(boss.x, boss.y, randomInteger(this.random, 1, 3) as 1 | 2 | 3, trait),
+      );
+    }
+  }
+
+  private updateHostileProjectiles(dt: number) {
+    for (let index = this.state.hostileProjectiles.length - 1; index >= 0; index--) {
+      const shot = this.state.hostileProjectiles[index];
+      shot.life -= dt;
+      shot.x += shot.vx * dt;
+      shot.y += shot.vy * dt;
+      let consumed =
+        shot.life <= 0 ||
+        shot.x < -50 ||
+        shot.x > this.width + 50 ||
+        shot.y < -50 ||
+        shot.y > this.height + 50;
+      if (!consumed)
+        for (const id of PLAYER_IDS) {
+          const player = this.state.players[id];
+          if (player.disabled || shot.hitPlayerIds.includes(id)) continue;
+          if (
+            Math.hypot(player.ship.x - shot.x, player.ship.y - shot.y) >
+            GAME_CONFIG.player.shipRadius + shot.radius
+          )
+            continue;
+          shot.hitPlayerIds.push(id);
+          this.damagePlayer(player, shot.damage * COOP_CONFIG.difficulty.enemyDamage);
+          player.ship.invuln = 0.18;
+          consumed = true;
+          break;
+        }
+      if (consumed) this.state.hostileProjectiles.splice(index, 1);
+    }
+  }
+
+  private updateHazards(dt: number) {
+    for (let index = this.state.hazards.length - 1; index >= 0; index--) {
+      const hazard = this.state.hazards[index];
+      hazard.timer -= dt;
+      if (hazard.timer > 0) continue;
+      for (const id of PLAYER_IDS) {
+        const player = this.state.players[id];
+        if (
+          !player.disabled &&
+          Math.hypot(player.ship.x - hazard.x, player.ship.y - hazard.y) <= hazard.radius
+        )
+          this.damagePlayer(player, hazard.damage * COOP_CONFIG.difficulty.enemyDamage);
+      }
+      this.state.hazards.splice(index, 1);
+    }
+  }
+
   private updateRocks(dt: number) {
-    for (const rock of this.state.rocks) {
+    for (const rock of [...this.state.rocks]) {
+      const target = this.nearestPlayer(rock.x, rock.y);
+      const sizeName = rock.size === 3 ? "large" : rock.size === 2 ? "medium" : "small";
+      if (target && rock.trait === "homing") {
+        const speed =
+          rock.size === 1
+            ? GAME_CONFIG.asteroids.traits.homing.smallSpeed
+            : rock.size === 2
+              ? 88
+              : 95;
+        const turn = GAME_CONFIG.asteroids.traits.homing.turnRates[sizeName];
+        const current = Math.atan2(rock.vy, rock.vx);
+        const desired = Math.atan2(target.ship.y - rock.y, target.ship.x - rock.x);
+        const angle = current + clamp(wrapAngle(desired - current), -turn * dt, turn * dt);
+        rock.vx = Math.cos(angle) * speed;
+        rock.vy = Math.sin(angle) * speed;
+      } else if (target && rock.trait === "boom") {
+        const distance = Math.hypot(target.ship.x - rock.x, target.ship.y - rock.y);
+        if (distance <= GAME_CONFIG.asteroids.traits.boom.homeRange) {
+          const current = Math.atan2(rock.vy, rock.vx);
+          const desired = Math.atan2(target.ship.y - rock.y, target.ship.x - rock.x);
+          const angle =
+            current +
+            clamp(
+              wrapAngle(desired - current),
+              -GAME_CONFIG.asteroids.traits.boom.homeTurn * dt,
+              GAME_CONFIG.asteroids.traits.boom.homeTurn * dt,
+            );
+          const speed = Math.hypot(rock.vx, rock.vy);
+          rock.vx = Math.cos(angle) * speed;
+          rock.vy = Math.sin(angle) * speed;
+        }
+        const trigger = Math.max(
+          rock.radius + GAME_CONFIG.asteroids.traits.boom.triggerPad,
+          GAME_CONFIG.asteroids.traits.boom.blastRadii[sizeName] *
+            GAME_CONFIG.asteroids.traits.boom.triggerRadiusFraction,
+        );
+        if (distance < trigger) {
+          if (rock.fuse < 0) rock.fuse = GAME_CONFIG.asteroids.traits.boom.fuse;
+          rock.fuse -= dt;
+          if (rock.fuse <= 0) {
+            this.explodeBoomRock(rock);
+            continue;
+          }
+        } else if (rock.fuse >= 0) {
+          rock.fuse = Math.min(GAME_CONFIG.asteroids.traits.boom.fuse, rock.fuse + dt * 0.5);
+        }
+      } else if (rock.trait === "fast") {
+        const healthLost = 1 - clamp(rock.hp / rock.maxHp, 0, 1);
+        const speed = GAME_CONFIG.asteroids.traits.fast.speeds[sizeName] * (1 + healthLost * 0.5);
+        const angle = Math.atan2(rock.vy, rock.vx);
+        rock.vx = Math.cos(angle) * speed;
+        rock.vy = Math.sin(angle) * speed;
+      }
       rock.x += rock.vx * dt;
       rock.y += rock.vy * dt;
       const margin = rock.radius;
-      if (rock.x < -margin) rock.x += this.width + margin * 2;
-      if (rock.x > this.width + margin) rock.x -= this.width + margin * 2;
-      if (rock.y < -margin) rock.y += this.height + margin * 2;
-      if (rock.y > this.height + margin) rock.y -= this.height + margin * 2;
+      if (rock.trait === "bounce") {
+        if (rock.x < margin || rock.x > this.width - margin) rock.vx *= -1.05;
+        if (rock.y < margin || rock.y > this.height - margin) rock.vy *= -1.05;
+        rock.x = clamp(rock.x, margin, this.width - margin);
+        rock.y = clamp(rock.y, margin, this.height - margin);
+      } else {
+        if (rock.x < -margin) rock.x += this.width + margin * 2;
+        if (rock.x > this.width + margin) rock.x -= this.width + margin * 2;
+        if (rock.y < -margin) rock.y += this.height + margin * 2;
+        if (rock.y > this.height + margin) rock.y -= this.height + margin * 2;
+      }
+    }
+  }
+
+  private explodeBoomRock(rock: CoopRockState) {
+    const index = this.state.rocks.findIndex((candidate) => candidate.id === rock.id);
+    if (index < 0) return;
+    this.state.rocks.splice(index, 1);
+    this.damageBoomArea(rock);
+  }
+
+  private damageBoomArea(rock: CoopRockState) {
+    const sizeName = rock.size === 3 ? "large" : rock.size === 2 ? "medium" : "small";
+    const radius = GAME_CONFIG.asteroids.traits.boom.blastRadii[sizeName];
+    const damage = GAME_CONFIG.asteroids.traits.boom.playerDamage[sizeName];
+    for (const id of PLAYER_IDS) {
+      const player = this.state.players[id];
+      if (!player.disabled && Math.hypot(player.ship.x - rock.x, player.ship.y - rock.y) <= radius)
+        this.damagePlayer(player, damage * COOP_CONFIG.difficulty.enemyDamage);
     }
   }
 
@@ -501,6 +1172,34 @@ export class LocalCoopSimulation {
     for (const id of PLAYER_IDS) {
       const player = this.state.players[id];
       if (player.disabled || player.ship.invuln > 0) continue;
+      const enemy = this.state.enemies.find(
+        (candidate) =>
+          Math.hypot(candidate.x - player.ship.x, candidate.y - player.ship.y) <
+          candidate.radius + GAME_CONFIG.player.shipRadius,
+      );
+      if (enemy) {
+        const damage =
+          enemy.kind === "spiker"
+            ? GAME_CONFIG.enemies.spikers.playerContactDamage
+            : enemy.kind === "warden" || enemy.kind === "wardenTurret"
+              ? GAME_CONFIG.enemies.wardens.playerContactDamage
+              : GAME_CONFIG.enemies.sentinels.playerContactDamage;
+        this.damagePlayer(player, damage * COOP_CONFIG.difficulty.enemyDamage);
+        player.ship.invuln = GAME_CONFIG.player.collisionInvulnerability;
+        continue;
+      }
+      if (
+        this.state.boss &&
+        Math.hypot(this.state.boss.x - player.ship.x, this.state.boss.y - player.ship.y) <
+          this.state.boss.radius + GAME_CONFIG.player.shipRadius
+      ) {
+        this.damagePlayer(
+          player,
+          GAME_CONFIG.bosses.contactDamage * COOP_CONFIG.difficulty.enemyDamage,
+        );
+        player.ship.invuln = GAME_CONFIG.player.collisionInvulnerability;
+        continue;
+      }
       const rock = this.state.rocks.find(
         (candidate) =>
           Math.hypot(candidate.x - player.ship.x, candidate.y - player.ship.y) <
@@ -510,6 +1209,12 @@ export class LocalCoopSimulation {
       const base = rock.size === 3 ? 14 : rock.size === 2 ? 9 : 5;
       const trait = rock.trait === "fast" ? GAME_CONFIG.asteroids.traits.fast.damageMultiplier : 1;
       this.damagePlayer(player, base * trait * COOP_CONFIG.difficulty.enemyDamage);
+      if (rock.trait === "fast") {
+        const distance = Math.hypot(player.ship.x - rock.x, player.ship.y - rock.y) || 1;
+        const knockback = 150 * GAME_CONFIG.asteroids.traits.fast.knockbackMultiplier;
+        player.ship.vx += ((player.ship.x - rock.x) / distance) * knockback;
+        player.ship.vy += ((player.ship.y - rock.y) / distance) * knockback;
+      }
       player.ship.invuln = GAME_CONFIG.asteroids.collision.invulnerability;
     }
   }
@@ -528,6 +1233,14 @@ export class LocalCoopSimulation {
       if (drone.hp <= 0) drone.active = false;
     }
     player.ship.hull -= incoming - redirected;
+    player.supportQuietTimer = GAME_CONFIG.salvage.repairQuietSeconds;
+    player.drone.hitTimer = GAME_CONFIG.salvage.repairQuietSeconds;
+    this.events.push({
+      type: "playerDamaged",
+      tick: this.state.tick,
+      playerId: player.id,
+      amount: incoming - redirected,
+    });
     if (player.ship.hull > 0) return;
     player.ship.hull = 0;
     player.disabled = true;
@@ -566,12 +1279,46 @@ export class LocalCoopSimulation {
     }
   }
 
+  private damageEnemy(enemy: CoopEnemyState, amount: number, player: CoopPlayerState) {
+    const dealt = Math.min(enemy.hp, amount);
+    enemy.hp -= amount;
+    player.stats.damage += dealt;
+    this.chargeOverdrive(dealt);
+    if (enemy.hp > 0) return;
+    const index = this.state.enemies.findIndex((candidate) => candidate.id === enemy.id);
+    if (index < 0) return;
+    this.state.enemies.splice(index, 1);
+    player.stats.kills++;
+    const reward = enemy.kind === "warden" ? 260 : enemy.kind === "spiker" ? 220 : 130;
+    this.state.team.score += reward;
+    this.gainXp(player, reward * 0.22);
+    this.state.pickups.push({
+      id: this.nextId(),
+      x: enemy.x,
+      y: enemy.y,
+      vx: randomBetween(this.random, -35, 35),
+      vy: randomBetween(this.random, -35, 35),
+      kind: "credit",
+      value: Math.round(reward * 0.18 * player.ship.creditValue),
+      life: GAME_CONFIG.pickups.lifetime,
+    });
+    this.events.push({
+      type: "enemyDestroyed",
+      tick: this.state.tick,
+      playerId: player.id,
+      entityId: enemy.id,
+    });
+  }
+
   private damageRock(rock: CoopRockState, amount: number, player: CoopPlayerState) {
     const dealt = Math.min(rock.hp, amount);
     rock.hp -= amount;
     player.stats.damage += dealt;
     this.chargeOverdrive(dealt);
-    if (rock.hp <= 0) this.destroyRock(rock, player);
+    if (rock.hp <= 0) {
+      this.destroyRock(rock, player);
+      if (rock.trait === "boom") this.damageBoomArea(rock);
+    }
   }
 
   private destroyRock(rock: CoopRockState, player: CoopPlayerState) {
@@ -668,6 +1415,12 @@ export class LocalCoopSimulation {
           );
         }
         this.state.pickups.splice(index, 1);
+        this.events.push({
+          type: "pickupCollected",
+          tick: this.state.tick,
+          playerId: collector.player.id,
+          kind: pickup.kind,
+        });
       } else if (pickup.life <= 0) {
         this.state.pickups.splice(index, 1);
       }
@@ -700,7 +1453,10 @@ export class LocalCoopSimulation {
     });
     this.state.boss = null;
     this.state.rocks = [];
+    this.state.enemies = [];
     this.state.projectiles = [];
+    this.state.hostileProjectiles = [];
+    this.state.hazards = [];
     if (this.state.team.wave >= RUN_PACING.finalWave) this.endMatch("victory");
   }
 
@@ -736,6 +1492,8 @@ export class LocalCoopSimulation {
     this.state.team.wave++;
     this.state.team.sector = sectorForWave(this.state.team.wave) + 1;
     this.state.projectiles = [];
+    this.state.hostileProjectiles = [];
+    this.state.hazards = [];
     for (const id of PLAYER_IDS) {
       const player = this.state.players[id];
       player.credits +=
@@ -745,6 +1503,18 @@ export class LocalCoopSimulation {
 
     if (isBossWave(this.state.team.wave)) {
       this.state.boss = this.makeBoss(this.state.team.wave);
+      this.spawnEnemy("sentinel");
+      this.spawnEnemy("sentinel");
+      if (this.state.team.wave >= 20) this.spawnEnemy("warden");
+      if (this.state.team.wave >= GAME_CONFIG.enemies.spikers.unlockWave) this.spawnEnemy("spiker");
+      this.state.rocks.push(
+        this.makeRock(
+          randomBetween(this.random, 80, this.width - 80),
+          randomBetween(this.random, 80, this.height * 0.4),
+          2,
+          BOSS_SPECS[bossMkForWave(this.state.team.wave)].trait,
+        ),
+      );
     } else {
       const tuningWave = scaledWave(this.state.team.wave);
       const base = Math.min(
@@ -766,6 +1536,26 @@ export class LocalCoopSimulation {
             this.rollTrait(),
           ),
         );
+      }
+      const sentinels = Math.min(
+        maxSentinels(this.state.team.wave),
+        sentinelWaveCount(this.state.team.wave),
+      );
+      for (let index = 0; index < sentinels; index++) this.spawnEnemy("sentinel");
+      if (
+        this.state.team.wave >= RUN_PACING.lateWardenFromWave &&
+        this.state.team.wave <= RUN_PACING.lateWardenToWave &&
+        randomChance(this.random, 0.55)
+      )
+        this.spawnEnemy("warden");
+      if (this.state.team.wave >= GAME_CONFIG.enemies.spikers.unlockWave) {
+        this.spawnEnemy("spiker");
+        if (
+          this.state.team.wave >= GAME_CONFIG.enemies.spikers.latePairFromWave &&
+          this.state.team.wave <= GAME_CONFIG.enemies.spikers.latePairToWave &&
+          randomChance(this.random, GAME_CONFIG.enemies.spikers.secondSpawnChance)
+        )
+          this.spawnEnemy("spiker");
       }
     }
     this.events.push({
@@ -794,7 +1584,77 @@ export class LocalCoopSimulation {
       radius: mk === 5 ? GAME_CONFIG.bosses.finalRadius : GAME_CONFIG.bosses.baseRadius,
       hp,
       maxHp: hp,
+      vx: 0,
+      vy: 0,
+      phase: 1,
+      attackTimer: GAME_CONFIG.bosses.baseAttackTimer,
+      abilityTimer: GAME_CONFIG.bosses.baseAttackTimer * 2,
     };
+  }
+
+  private spawnEnemy(kind: CoopEnemyKind) {
+    const wave = this.state.team.wave;
+    const tuningWave = scaledWave(wave);
+    let hp: number;
+    let radius: number;
+    let fireTimer: number;
+    if (kind === "spiker") {
+      hp = GAME_CONFIG.enemies.spikers.hpBase + wave * GAME_CONFIG.enemies.spikers.hpPerWave;
+      radius = GAME_CONFIG.enemies.spikers.radius;
+      fireTimer = GAME_CONFIG.enemies.spikers.fireInterval;
+    } else if (kind === "warden" || kind === "wardenTurret") {
+      hp =
+        kind === "wardenTurret"
+          ? GAME_CONFIG.enemies.wardens.turretHp
+          : GAME_CONFIG.enemies.wardens.ordinaryHpBase +
+            tuningWave * GAME_CONFIG.enemies.wardens.ordinaryHpPerWave;
+      radius = kind === "wardenTurret" ? 16 : GAME_CONFIG.enemies.wardens.radius;
+      fireTimer = randomBetween(
+        this.random,
+        GAME_CONFIG.enemies.wardens.shotDelayMin,
+        GAME_CONFIG.enemies.wardens.shotDelayMax,
+      );
+    } else {
+      hp =
+        GAME_CONFIG.enemies.sentinels.hpBase + tuningWave * GAME_CONFIG.enemies.sentinels.hpPerWave;
+      radius = GAME_CONFIG.enemies.sentinels.radius;
+      fireTimer = randomBetween(
+        this.random,
+        GAME_CONFIG.enemies.sentinels.fireIntervalMin,
+        GAME_CONFIG.enemies.sentinels.fireIntervalMax,
+      );
+    }
+    const angle = this.random.next() * TAU;
+    const speed =
+      kind === "spiker"
+        ? randomBetween(
+            this.random,
+            GAME_CONFIG.enemies.spikers.speedMin,
+            GAME_CONFIG.enemies.spikers.speedMax,
+          )
+        : 0;
+    const enemy: CoopEnemyState = {
+      id: this.nextId(),
+      kind,
+      x: randomBetween(this.random, radius + 20, this.width - radius - 20),
+      y: randomBetween(this.random, radius + 20, this.height * 0.42),
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      angle,
+      radius,
+      hp,
+      maxHp: hp,
+      fireTimer,
+      behaviorTimer: randomBetween(this.random, 1.5, 3.5),
+      warningTimer: 0,
+      burst: 0,
+      targetPlayerId: null,
+      aimX: 0,
+      aimY: 0,
+    };
+    this.state.enemies.push(enemy);
+    this.events.push({ type: "enemySpawned", tick: this.state.tick, entityId: enemy.id, kind });
+    return enemy;
   }
 
   private makeRock(
@@ -827,8 +1687,16 @@ export class LocalCoopSimulation {
       const angle = Math.atan2(vy, vx) + randomBetween(this.random, -0.2, 0.2);
       vx = Math.cos(angle) * speed;
       vy = Math.sin(angle) * speed;
+    } else if (trait === "boom" || trait === "bounce") {
+      const speed =
+        trait === "boom"
+          ? GAME_CONFIG.asteroids.traits.boom.speeds[sizeName]
+          : GAME_CONFIG.asteroids.traits.bounce.speeds[sizeName];
+      const angle = Math.atan2(vy, vx);
+      vx = Math.cos(angle) * speed;
+      vy = Math.sin(angle) * speed;
     }
-    return { id: this.nextId(), x, y, vx, vy, radius, size, hp, maxHp: hp, trait };
+    return { id: this.nextId(), x, y, vx, vy, radius, size, hp, maxHp: hp, trait, fuse: -1 };
   }
 
   private rollTrait(): RockTrait {
@@ -850,17 +1718,28 @@ export class LocalCoopSimulation {
       : pool[randomInteger(this.random, 0, pool.length - 1)];
   }
 
-  private nearestRock(x: number, y: number) {
-    let nearest: CoopRockState | undefined;
-    let distance = Number.POSITIVE_INFINITY;
-    for (const rock of this.state.rocks) {
-      const candidate = Math.hypot(rock.x - x, rock.y - y);
-      if (candidate < distance) {
-        nearest = rock;
-        distance = candidate;
-      }
-    }
-    return nearest;
+  private nearestPlayer(x: number, y: number) {
+    return PLAYER_IDS.map((id) => this.state.players[id])
+      .filter((player) => !player.disabled)
+      .map((player) => ({ player, distance: Math.hypot(player.ship.x - x, player.ship.y - y) }))
+      .sort(
+        (left, right) =>
+          left.distance - right.distance || left.player.id.localeCompare(right.player.id),
+      )[0]?.player;
+  }
+
+  private nearestTarget(x: number, y: number) {
+    const targets = [
+      ...this.state.enemies.map((entity) => ({ entity, type: "enemy" as const })),
+      ...this.state.rocks.map((entity) => ({ entity, type: "rock" as const })),
+      ...(this.state.boss ? [{ entity: this.state.boss, type: "boss" as const }] : []),
+    ];
+    return targets
+      .map((target) => ({
+        ...target,
+        distance: Math.hypot(target.entity.x - x, target.entity.y - y),
+      }))
+      .sort((left, right) => left.distance - right.distance || left.entity.id - right.entity.id)[0];
   }
 
   private nextId() {

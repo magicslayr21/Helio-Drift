@@ -1,7 +1,7 @@
 # Online co-op progress
 
 Branch: `feature/online-coop`  
-Current milestone: **3 — private room networking (awaiting approval)**
+Current milestone: **4 — authoritative multiplayer combat (awaiting approval)**
 Production deployment: **not started**
 
 This document is the implementation record for the two-player online survival expansion. Each
@@ -278,14 +278,40 @@ nothing has been deployed.
 Public room discovery, Quick Join, multiplayer menus, and production deployment remain reserved for
 later milestones. Specialized authoritative combat remains Milestone 4 work.
 
+## Milestone 4 implementation
+
+The fourth milestone moves the campaign's multiplayer combat mutations into the persisted room
+simulation. It does not enable the multiplayer menu, public rooms, matchmaking, co-op leaderboard,
+or production deployment.
+
+- Player firing now covers standard projectiles, direct laser/arc damage, flak shrapnel, homing
+  missiles, critical damage, piercing, ricochets, and server-enforced cadence and ammunition.
+- Sentinels, Wardens, Warden turrets, and Spikers select the nearest active player, move, telegraph,
+  and produce authoritative hostile shots. Late Spikers use their eight-direction volley.
+- MK1–MK5 bosses own movement, health phases, radial attacks, signature meteor, ignition-strike,
+  and shockwave abilities. Boss defeat clears the authoritative battlefield before victory or the
+  next wave.
+- Enemy and asteroid damage, player damage, collision damage, kills, XP, drops, credits, pickups,
+  salvage-drone fire/support, purchases, weapon selection, drone equipment, and upgrades are all
+  applied by the room simulation and attributed to a stable player/entity ID.
+- WebSocket economy and loadout commands are rebound to the authenticated socket player. The room
+  rejects stale sequences, malformed IDs, unknown weapons/upgrades, impossible input values, and
+  commands outside a running match; balance rules enforce credits, ownership, cadence, and caps.
+- The public wire DTO excludes the seed, random state, clock accumulator, and entity allocator.
+  Snapshots contain only render/gameplay state and semantic cosmetic events, while Durable Object
+  storage retains the complete deterministic state for reconnects.
+- Six additional local combat tests and expanded room integration assertions cover targeting,
+  hostile fire, Spiker volleys, missiles, rewards, boss phases/cleanup, snapshot privacy and size,
+  and socket ownership spoofing.
+
 ## Milestone status
 
 | Milestone                               | Status                      | Merge gate  |
 | --------------------------------------- | --------------------------- | ----------- |
 | 1. Audit and shared simulation refactor | Complete and approved       | Passed      |
 | 2. Two-player local simulation          | Complete and approved       | Passed      |
-| 3. Private room networking              | Complete; awaiting approval | Passed      |
-| 4. Authoritative multiplayer combat     | Waiting                     | Not started |
+| 3. Private room networking              | Complete and approved       | Passed      |
+| 4. Authoritative multiplayer combat     | Complete; awaiting approval | Passed      |
 | 5. Complete co-op campaign              | Waiting                     | Not started |
 | 6. Public lobbies and matchmaking       | Waiting                     | Not started |
 | 7. Multiplayer UI and leaderboard       | Waiting                     | Not started |
@@ -385,3 +411,32 @@ Milestone 3 is safe to review without deployment: the configuration declares a n
 command in this milestone publishes it. The existing single-player game, save schema, leaderboard
 Worker, D1 database, and production bindings remain unchanged. Milestone 4 must not begin until the
 private-room boundary is approved.
+
+## Milestone 4 verification
+
+Milestone 4 passed on 12 October 2026:
+
+- `npm run typecheck`
+- `npm run game:test`: 80/80 tests, including six new authoritative combat/DTO checks
+- `npm run leaderboard:test`: 12/12 tests
+- `XDG_CONFIG_HOME=/tmp/helio-coop-m4-wrangler npm run cf:test`: dry-run bundle plus 18/18
+  Worker/D1 tests
+- `XDG_CONFIG_HOME=/tmp/helio-coop-m4-wrangler npm run multiplayer:test`: separate Worker dry-run
+  bundle plus 10/10 Durable Object and WebSocket tests
+- `npm run build`
+- `npm run format:check`, explicit multiplayer/docs formatting, and `git diff --check`
+
+Changed areas:
+
+- `src/game/simulation/coop-types.ts` and `local-coop.ts` — authoritative combat entities, AI,
+  attacks, damage, rewards, boss phases, economy, upgrades, missiles, and drones
+- `src/game/network/` — compact public match DTO and expanded command protocol/interpolation
+- `multiplayer/worker.mjs` — authenticated combat/economy command validation and compact snapshots
+- `test/local-coop.test.mjs` and `multiplayer/test/rooms.test.mjs` — authority, privacy, combat, and
+  hostile-command regression coverage
+- `package.json`, `package-lock.json`, and `src/game/update-log.ts` — `0.4.2-alpha.3` release record
+
+Milestone 4 is safe to review without deployment. It changes only the unshipped multiplayer room
+path and shared headless modules; the single-player engine, local save schema, leaderboard Worker,
+D1 data, and production bindings remain unchanged. Milestone 5 remains behind the next approval
+gate.

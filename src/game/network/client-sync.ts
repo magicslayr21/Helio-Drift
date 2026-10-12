@@ -1,15 +1,17 @@
 import { clamp, wrapAngle } from "../math";
 import { COOP_FIXED_DT } from "../simulation/coop-config";
-import type { CoopMatchState, CoopPlayerId } from "../simulation/coop-types";
+import type { CoopPlayerId } from "../simulation/coop-types";
 import { stepPlayerMovement } from "../simulation/movement";
 import type { Player } from "../types";
 import type { AuthoritativeSnapshot, ClientInputMessage } from "./protocol";
+import type { CoopWireState } from "./wire-state";
 
 export interface ClientFlightSample {
   moveX: number;
   moveY: number;
   aimAngle: number;
   fire?: boolean;
+  missile?: boolean;
   interact?: boolean;
 }
 
@@ -69,6 +71,7 @@ export class ClientPrediction {
       moveY: clamp(Number.isFinite(input.moveY) ? input.moveY : 0, -1, 1),
       aimAngle: wrapAngle(Number.isFinite(input.aimAngle) ? input.aimAngle : 0),
       fire: Boolean(input.fire),
+      missile: Boolean(input.missile),
       interact: Boolean(input.interact),
     };
     const safeDt = clamp(Number.isFinite(dt) ? dt : COOP_FIXED_DT, 0, 0.1);
@@ -94,7 +97,7 @@ export class ClientPrediction {
 const interpolateAngle = (from: number, to: number, alpha: number) =>
   from + wrapAngle(to - from) * alpha;
 
-function interpolatePositions(from: CoopMatchState, to: CoopMatchState, alpha: number) {
+function interpolatePositions(from: CoopWireState, to: CoopWireState, alpha: number) {
   const state = structuredClone(from);
   for (const id of ["p1", "p2"] as const) {
     const left = from.players[id].ship;
@@ -103,7 +106,14 @@ function interpolatePositions(from: CoopMatchState, to: CoopMatchState, alpha: n
     state.players[id].ship.y = left.y + (right.y - left.y) * alpha;
     state.players[id].ship.angle = interpolateAngle(left.angle, right.angle, alpha);
   }
-  for (const key of ["rocks", "projectiles", "pickups"] as const) {
+  for (const key of [
+    "rocks",
+    "enemies",
+    "projectiles",
+    "hostileProjectiles",
+    "hazards",
+    "pickups",
+  ] as const) {
     const rightById = new Map(to[key].map((entity) => [entity.id, entity]));
     for (const entity of state[key]) {
       const right = rightById.get(entity.id);
@@ -140,7 +150,7 @@ export class SnapshotInterpolator {
     }
   }
 
-  sample(renderTick: number): CoopMatchState | null {
+  sample(renderTick: number): CoopWireState | null {
     if (this.snapshots.length === 0) return null;
     const rightIndex = this.snapshots.findIndex((snapshot) => snapshot.serverTick >= renderTick);
     if (rightIndex <= 0) {

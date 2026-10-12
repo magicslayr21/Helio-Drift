@@ -29,6 +29,7 @@ registerHooks({
 const { COOP_CONFIG, COOP_FIXED_DT } = await import("../src/game/simulation/coop-config.ts");
 const { FixedStepRunner } = await import("../src/game/simulation/fixed-step.ts");
 const { LocalCoopSimulation } = await import("../src/game/simulation/local-coop.ts");
+const { createWireState } = await import("../src/game/network/wire-state.ts");
 
 const input = (playerId, sequence, values = {}) => ({
   type: "input",
@@ -54,6 +55,7 @@ function stationaryRock(simulation, overrides = {}) {
     hp: 10,
     maxHp: 10,
     trait: "none",
+    fuse: -1,
     ...overrides,
   };
 }
@@ -255,4 +257,222 @@ test("snapshots are JSON-safe and preserve all authoritative fields", () => {
   assert.equal(snapshot.players.p1.ship.weapons.pulse, 1);
   assert.equal(snapshot.players.p2.ship.weapons.pulse, 1);
   assert.equal(snapshot.tick, 10);
+});
+
+test("enemy AI targets the nearest active player and owns hostile fire", () => {
+  const simulation = combatFixture(991);
+  simulation.state.rocks.push(stationaryRock(simulation, { x: 950, y: 50, hp: 999 }));
+  simulation.state.players.p1.ship.x = 80;
+  simulation.state.players.p2.ship.x = 700;
+  simulation.state.players.p2.ship.y = 300;
+  simulation.state.enemies.push({
+    id: simulation.state.nextEntityId++,
+    kind: "sentinel",
+    x: 650,
+    y: 300,
+    vx: 0,
+    vy: 0,
+    angle: 0,
+    radius: 21,
+    hp: 100,
+    maxHp: 100,
+    fireTimer: 0,
+    behaviorTimer: 1,
+    warningTimer: 0,
+    burst: 0,
+    targetPlayerId: null,
+    aimX: 0,
+    aimY: 0,
+  });
+  simulation.stepTicks();
+  assert.equal(simulation.state.enemies[0].targetPlayerId, "p2");
+  assert.equal(simulation.state.hostileProjectiles.length, 1);
+  assert.equal(simulation.state.hostileProjectiles[0].source, "sentinel");
+});
+
+test("late Spikers create one authoritative eight-way radial volley", () => {
+  const simulation = combatFixture(992);
+  simulation.state.team.wave = 20;
+  simulation.state.rocks.push(stationaryRock(simulation, { x: 950, y: 50, hp: 999 }));
+  simulation.state.enemies.push({
+    id: simulation.state.nextEntityId++,
+    kind: "spiker",
+    x: 500,
+    y: 250,
+    vx: 0,
+    vy: 0,
+    angle: 0,
+    radius: 31,
+    hp: 100,
+    maxHp: 100,
+    fireTimer: 2,
+    behaviorTimer: 2,
+    warningTimer: 0.001,
+    burst: 0,
+    targetPlayerId: null,
+    aimX: 0,
+    aimY: 0,
+  });
+  simulation.stepTicks();
+  assert.equal(simulation.state.hostileProjectiles.length, 8);
+  assert.equal(
+    new Set(
+      simulation.state.hostileProjectiles.map(
+        (shot) => `${Math.sign(shot.vx)},${Math.sign(shot.vy)}`,
+      ),
+    ).size >= 4,
+    true,
+  );
+});
+
+test("missiles, enemy damage and rewards are server-owned", () => {
+  const simulation = combatFixture(993);
+  simulation.state.rocks.push(stationaryRock(simulation, { x: 950, y: 50, hp: 999 }));
+  const player = simulation.state.players.p1;
+  const missiles = player.ship.missiles;
+  simulation.state.enemies.push({
+    id: simulation.state.nextEntityId++,
+    kind: "sentinel",
+    x: 170,
+    y: 350,
+    vx: 0,
+    vy: 0,
+    angle: 0,
+    radius: 21,
+    hp: 20,
+    maxHp: 20,
+    fireTimer: 99,
+    behaviorTimer: 99,
+    warningTimer: 0,
+    burst: 0,
+    targetPlayerId: null,
+    aimX: 0,
+    aimY: 0,
+  });
+  simulation.submit(input("p1", 1, { missile: true }));
+  simulation.stepTicks(20);
+  assert.equal(player.ship.missiles, missiles - 1);
+  assert.equal(simulation.state.enemies.length, 0);
+  assert.equal(player.stats.kills, 1);
+  assert.ok(simulation.drainEvents().some((event) => event.type === "missileFired"));
+});
+
+test("boss phases, hazards and battlefield cleanup stay authoritative", () => {
+  const simulation = combatFixture(994);
+  simulation.state.team.wave = 25;
+  simulation.state.boss = {
+    id: simulation.state.nextEntityId++,
+    mk: 4,
+    x: 500,
+    y: 180,
+    radius: 104,
+    hp: 100,
+    maxHp: 1000,
+    vx: 0,
+    vy: 0,
+    phase: 1,
+    attackTimer: 99,
+    abilityTimer: 0,
+  };
+  simulation.state.enemies.push({
+    id: simulation.state.nextEntityId++,
+    kind: "sentinel",
+    x: 800,
+    y: 200,
+    vx: 0,
+    vy: 0,
+    angle: 0,
+    radius: 21,
+    hp: 100,
+    maxHp: 100,
+    fireTimer: 99,
+    behaviorTimer: 99,
+    warningTimer: 0,
+    burst: 0,
+    targetPlayerId: null,
+    aimX: 0,
+    aimY: 0,
+  });
+  simulation.stepTicks();
+  assert.equal(simulation.state.boss.phase, 3);
+  assert.equal(simulation.state.hazards[0]?.kind, "strike");
+  simulation.state.boss.hp = 1;
+  simulation.state.boss.x = 150;
+  simulation.state.boss.y = 350;
+  simulation.submit(input("p1", 1, { fire: true }));
+  simulation.stepTicks(5);
+  assert.equal(simulation.state.boss, null);
+  assert.equal(simulation.state.enemies.length, 0);
+  assert.equal(simulation.state.hostileProjectiles.length, 0);
+  assert.equal(simulation.state.hazards.length, 0);
+});
+
+test("wire snapshots omit deterministic persistence internals", () => {
+  const simulation = new LocalCoopSimulation({ seed: 995 });
+  simulation.stepTicks(2);
+  const wire = createWireState(simulation.snapshot());
+  assert.equal("seed" in wire, false);
+  assert.equal("randomState" in wire, false);
+  assert.equal("clockAccumulator" in wire, false);
+  assert.equal("nextEntityId" in wire, false);
+  assert.equal(wire.players.p1.ship.x, simulation.state.players.p1.ship.x);
+  assert.ok(Buffer.byteLength(JSON.stringify(wire)) < 65_536);
+});
+
+test("mutated asteroids steer, accelerate, bounce and detonate on the server", () => {
+  const simulation = combatFixture(996);
+  const first = simulation.state.players.p1;
+  const second = simulation.state.players.p2;
+  first.ship.x = 80;
+  first.ship.y = 650;
+  second.ship.x = 550;
+  second.ship.y = 200;
+  const homing = stationaryRock(simulation, {
+    x: 500,
+    y: 200,
+    vx: 0,
+    vy: -95,
+    trait: "homing",
+  });
+  const fast = stationaryRock(simulation, {
+    x: 800,
+    y: 500,
+    vx: 1,
+    vy: 0,
+    trait: "fast",
+    hp: 5,
+    maxHp: 10,
+  });
+  const bounce = stationaryRock(simulation, {
+    x: 995,
+    y: 100,
+    vx: 185,
+    vy: 0,
+    trait: "bounce",
+  });
+  simulation.state.rocks.push(homing, fast, bounce);
+  simulation.stepTicks();
+  assert.ok(homing.vx > 0);
+  assert.ok(Math.hypot(fast.vx, fast.vy) > 260);
+  assert.ok(bounce.vx < 0);
+
+  first.ship.x = 300;
+  first.ship.y = 300;
+  const before = first.ship.hull;
+  simulation.state.rocks.push(
+    stationaryRock(simulation, {
+      x: 350,
+      y: 300,
+      vx: 0,
+      vy: 0,
+      trait: "boom",
+      size: 1,
+    }),
+  );
+  simulation.stepTicks(14);
+  assert.ok(first.ship.hull < before);
+  assert.equal(
+    simulation.state.rocks.some((rock) => rock.trait === "boom"),
+    false,
+  );
 });

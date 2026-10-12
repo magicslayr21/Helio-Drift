@@ -1,5 +1,6 @@
 import { COOP_FIXED_DT } from "../src/game/simulation/coop-config.ts";
 import { LocalCoopSimulation } from "../src/game/simulation/local-coop.ts";
+import { createWireState } from "../src/game/network/wire-state.ts";
 import {
   NETWORK_CONFIG,
   ROOM_CODE_ALPHABET,
@@ -11,6 +12,18 @@ import {
 
 const encoder = new TextEncoder();
 const requestBuckets = new Map();
+const WEAPONS = new Set(["pulse", "spread", "seeker", "ricochet", "flak", "arc", "laser", "rail"]);
+const DRONE_UPGRADES = new Set([
+  "twinCannons",
+  "overcharge",
+  "piercing",
+  "armor",
+  "shield",
+  "repairPulse",
+  "magnet",
+  "scan",
+  "speed",
+]);
 
 class RequestError extends Error {
   constructor(status, message) {
@@ -465,6 +478,14 @@ export class MatchRoom {
         return this.startMatch(socket);
       case "input":
         return this.applyInput(socket, playerId, message);
+      case "buyWeapon":
+      case "selectWeapon":
+      case "buyDrone":
+      case "buyDroneUpgrade":
+      case "equipDroneWeapon":
+      case "chooseUpgrade":
+      case "activateOverdrive":
+        return this.applyCombatCommand(socket, playerId, message);
       case "leave":
         return this.leave(socket, playerId);
       default:
@@ -555,9 +576,42 @@ export class MatchRoom {
       moveY: message.moveY,
       aimAngle: message.aimAngle,
       fire: Boolean(message.fire),
+      missile: Boolean(message.missile),
       interact: Boolean(message.interact),
     });
     if (!accepted) this.sendError(socket, "stale_input", "Input sequence was already processed.");
+  }
+
+  applyCombatCommand(socket, playerId, message) {
+    if (this.room.phase !== "running" || !this.simulation) {
+      return this.sendError(socket, "not_running", "Match has not started.");
+    }
+    if (!Number.isSafeInteger(message.sequence))
+      return this.sendError(socket, "invalid_command", "Command sequence is invalid.");
+    const command = { type: message.type, playerId, sequence: message.sequence };
+    if (message.type === "buyWeapon" || message.type === "selectWeapon") {
+      if (!WEAPONS.has(message.weapon))
+        return this.sendError(socket, "invalid_command", "Weapon is invalid.");
+      command.weapon = message.weapon;
+    } else if (message.type === "buyDroneUpgrade") {
+      if (!DRONE_UPGRADES.has(message.upgrade))
+        return this.sendError(socket, "invalid_command", "Drone upgrade is invalid.");
+      command.upgrade = message.upgrade;
+    } else if (message.type === "equipDroneWeapon") {
+      if (message.weapon !== null && !WEAPONS.has(message.weapon))
+        return this.sendError(socket, "invalid_command", "Drone weapon is invalid.");
+      command.weapon = message.weapon;
+    } else if (message.type === "chooseUpgrade") {
+      if (
+        typeof message.upgrade !== "string" ||
+        message.upgrade.length < 1 ||
+        message.upgrade.length > 48
+      )
+        return this.sendError(socket, "invalid_command", "Upgrade is invalid.");
+      command.upgrade = message.upgrade;
+    }
+    if (!this.simulation.submit(command))
+      this.sendError(socket, "rejected_command", "Command was stale or not permitted.");
   }
 
   async leave(socket, playerId) {
@@ -771,7 +825,7 @@ export class MatchRoom {
         p1: state.players.p1.lastInputSequence,
         p2: state.players.p2.lastInputSequence,
       },
-      state,
+      state: createWireState(state),
       events: [],
     });
   }
@@ -787,7 +841,7 @@ export class MatchRoom {
         p1: state.players.p1.lastInputSequence,
         p2: state.players.p2.lastInputSequence,
       },
-      state,
+      state: createWireState(state),
       events: this.simulation.drainEvents(),
     });
   }

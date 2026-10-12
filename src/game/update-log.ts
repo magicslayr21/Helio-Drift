@@ -1,5 +1,14 @@
 export const UPDATE_LOG = [
   {
+    version: "0.4.2-alpha.3",
+    date: "2026-10-12",
+    title: "Authoritative co-op combat",
+    items: [
+      "Room servers now own combat, enemies, bosses, drops, and progression.",
+      "Co-op commands are ownership-checked and snapshots hide room internals.",
+    ],
+  },
+  {
     version: "0.4.2-alpha.2",
     date: "2026-10-12",
     title: "Private co-op foundation",

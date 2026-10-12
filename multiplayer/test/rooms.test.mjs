@@ -136,6 +136,9 @@ test("either ready player can start and receive 15 Hz authoritative snapshots", 
   );
   assert.equal(initial.state.phase, "running");
   assert.ok(Buffer.byteLength(JSON.stringify(initial)) < 65_536);
+  assert.equal("seed" in initial.state, false);
+  assert.equal("randomState" in initial.state, false);
+  assert.equal("nextEntityId" in initial.state, false);
   send(firstConnection.socket, {
     type: "input",
     sequence: 1,
@@ -186,6 +189,24 @@ test("malformed and stale client messages cannot mutate another player", async (
   assert.equal(error.code, "stale_input");
   const snapshot = await app.nextMessage(a.socket, (message) => message.type === "snapshot");
   assert.equal(snapshot.acknowledgements.p2, -1);
+  send(a.socket, { type: "buyWeapon", sequence: 2, weapon: "spread", playerId: "p2" });
+  const rejectedPurchase = await app.nextMessage(
+    a.socket,
+    (message) =>
+      message.type === "snapshot" &&
+      message.acknowledgements.p1 === 1 &&
+      message.events.some((event) => event.type === "purchaseRejected"),
+  );
+  assert.equal(rejectedPurchase.acknowledgements.p2, -1);
+  assert.equal(
+    rejectedPurchase.events.find((event) => event.type === "purchaseRejected").playerId,
+    "p1",
+  );
+  send(a.socket, { type: "buyWeapon", sequence: 3, weapon: "invalid" });
+  assert.equal(
+    (await app.nextMessage(a.socket, (message) => message.type === "error")).code,
+    "invalid_command",
+  );
   a.socket.send("not json");
   assert.equal(
     (await app.nextMessage(a.socket, (message) => message.type === "error")).code,

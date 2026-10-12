@@ -1,4 +1,6 @@
-import type { CoopMatchState, CoopPlayerId } from "../simulation/coop-types";
+import type { SalvageUpgradeId, WeaponId } from "../types";
+import type { CoopPlayerId } from "../simulation/coop-types";
+import type { CoopWireState } from "./wire-state";
 
 export interface MultiplayerRoomPlayer {
   id: CoopPlayerId;
@@ -23,11 +25,19 @@ export interface ClientInputMessage {
   moveY: number;
   aimAngle: number;
   fire: boolean;
+  missile: boolean;
   interact: boolean;
 }
 
 export type MultiplayerClientMessage =
   | ClientInputMessage
+  | { type: "buyWeapon"; sequence: number; weapon: WeaponId }
+  | { type: "selectWeapon"; sequence: number; weapon: WeaponId }
+  | { type: "buyDrone"; sequence: number }
+  | { type: "buyDroneUpgrade"; sequence: number; upgrade: SalvageUpgradeId }
+  | { type: "equipDroneWeapon"; sequence: number; weapon: WeaponId | null }
+  | { type: "chooseUpgrade"; sequence: number; upgrade: string }
+  | { type: "activateOverdrive"; sequence: number }
   | { type: "heartbeat" }
   | { type: "ready"; ready: boolean }
   | { type: "start" }
@@ -38,7 +48,7 @@ export interface AuthoritativeSnapshot {
   serverTime: number;
   serverTick: number;
   acknowledgements: Record<CoopPlayerId, number>;
-  state: CoopMatchState;
+  state: CoopWireState;
   events: unknown[];
 }
 
