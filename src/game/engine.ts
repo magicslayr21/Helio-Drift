@@ -73,6 +73,7 @@ import type {
   SectorTheme,
 } from "./types";
 import { GAME_CONFIG } from "./game-config";
+import { stepPlayerMovement, type FlightIntent } from "./simulation/movement";
 import { RunSave, type SavedLeaderboardRun } from "./run-save";
 import type { RunReport, RunStatus } from "../leaderboard/types";
 
@@ -81,6 +82,7 @@ import type { RunReport, RunStatus } from "../leaderboard/types";
 export * from "./types";
 export * from "./math";
 export * from "./balance";
+export * from "./simulation/index";
 
 /* ------------------------------------------------------------ game */
 
@@ -1100,18 +1102,22 @@ export class Game {
     const k = this.keys;
 
     // ---- flight ----
-    p.thrusting = false;
+    let flight: FlightIntent;
     if (this.stick.on) {
       const dx = this.stick.x - this.stick.ox,
         dy = this.stick.y - this.stick.oy;
       const dist = Math.hypot(dx, dy);
       if (dist > 12) {
         const desired = Math.atan2(dy, dx);
-        p.angle += clamp(wrapAngle(desired - p.angle), -p.turn * 1.9 * dt, p.turn * 1.9 * dt);
         const mag = clamp(dist / 90, 0, 1);
-        p.vx += Math.cos(p.angle) * p.thrust * mag * dt * 1.15;
-        p.vy += Math.sin(p.angle) * p.thrust * mag * dt * 1.15;
-        p.thrusting = true;
+        flight = {
+          aimAngle: desired,
+          aimTurnMultiplier: 1.9,
+          forward: mag,
+          thrustMultiplier: 1.15,
+        };
+      } else {
+        flight = {};
       }
     } else if (
       this.settings.legacyMovement ||
@@ -1120,49 +1126,22 @@ export class Game {
       // Legacy Movement: the classic cabinet scheme. Rotate with A/D or the
       // arrows, thrust with W. No mouse aiming whatsoever.
       const turn = (k["arrowleft"] || k["a"] ? -1 : 0) + (k["arrowright"] || k["d"] ? 1 : 0);
-      p.angle += turn * p.turn * dt;
-      if (k["arrowup"] || k["w"]) {
-        p.vx += Math.cos(p.angle) * p.thrust * dt;
-        p.vy += Math.sin(p.angle) * p.thrust * dt;
-        p.thrusting = true;
-      }
+      flight = { turn, forward: k["arrowup"] || k["w"] ? 1 : 0 };
     } else if (this.settings.hybridAim || this.settings.trackpad) {
       // twin-stick hybrid: the hull always tracks the cursor while WASD /
       // arrows push the ship in world space, decoupling aim from movement
       const desired = Math.atan2(this.mouse.y - p.y, this.mouse.x - p.x);
-      p.angle += clamp(wrapAngle(desired - p.angle), -p.turn * 3.2 * dt, p.turn * 3.2 * dt);
       const mx = (k["arrowleft"] || k["a"] ? -1 : 0) + (k["arrowright"] || k["d"] ? 1 : 0);
       const my = (k["arrowup"] || k["w"] ? -1 : 0) + (k["arrowdown"] || k["s"] ? 1 : 0);
-      if (mx !== 0 || my !== 0) {
-        const len = Math.hypot(mx, my) || 1;
-        p.vx += (mx / len) * p.thrust * dt;
-        p.vy += (my / len) * p.thrust * dt;
-        p.thrusting = true;
-      }
+      flight = { aimAngle: desired, aimTurnMultiplier: 3.2, moveX: mx, moveY: my };
     } else {
       // Mouse Control: the veteran scheme. The ship faces the cursor and holds
       // the left button to thrust.
       const desired = Math.atan2(this.mouse.y - p.y, this.mouse.x - p.x);
-      p.angle += clamp(wrapAngle(desired - p.angle), -p.turn * 1.9 * dt, p.turn * 1.9 * dt);
-      if (this.mouseDown) {
-        p.vx += Math.cos(p.angle) * p.thrust * dt;
-        p.vy += Math.sin(p.angle) * p.thrust * dt;
-        p.thrusting = true;
-      }
+      flight = { aimAngle: desired, aimTurnMultiplier: 1.9, forward: this.mouseDown ? 1 : 0 };
     }
+    stepPlayerMovement(p, flight, dt, { width: this.w, height: this.h });
     if (p.thrusting && this.frame % 3 === 0) this.thrustParticle();
-
-    const drag = Math.pow(GAME_CONFIG.player.movementDragPerFrame, dt * 60);
-    p.vx *= drag;
-    p.vy *= drag;
-    const sp = Math.hypot(p.vx, p.vy);
-    if (sp > p.maxSpeed) {
-      p.vx = (p.vx / sp) * p.maxSpeed;
-      p.vy = (p.vy / sp) * p.maxSpeed;
-    }
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
-    this.wrap(p);
 
     // ---- firing ----
     p.fireTimer -= dt;

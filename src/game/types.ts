@@ -1,8 +1,6 @@
 /* Shared types for HELIOS DRIFT. Pure type definitions — no runtime code.
    New entities and HUD fields are declared here first. */
 
-import type { Game } from "./engine";
-
 /* ------------------------------------------------------------ core unions */
 
 export type Mode = "menu" | "playing" | "paused" | "levelup" | "gameover" | "victory";
@@ -552,7 +550,12 @@ export interface StatUpgrade {
   rarity: Rarity;
   weight: number;
   max: number;
-  apply: (g: Game) => void;
+  apply: (state: StatUpgradeTarget) => void;
+}
+
+/** Small structural contract keeps upgrade rules independent of the browser Game class. */
+export interface StatUpgradeTarget {
+  p: Player;
 }
 
 /* ------------------------------------------------------------ persistence */
