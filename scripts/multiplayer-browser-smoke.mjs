@@ -141,19 +141,34 @@ class CdpClient {
   }
 }
 
-async function connectCdp(port) {
+async function connectCdp(port, chromeProcess, diagnostics, launchError) {
   let metadata;
-  for (let attempt = 0; attempt < 100; attempt++) {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (launchError()) throw new Error(`Chromium failed to launch: ${launchError().message}`);
+    if (chromeProcess.exitCode !== null) {
+      const detail = diagnostics().trim();
+      throw new Error(
+        `Chromium exited with code ${chromeProcess.exitCode} before DevTools became ready.${detail ? `\n${detail}` : ""}`,
+      );
+    }
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/json/version`);
+      const response = await fetch(`http://127.0.0.1:${port}/json/version`, {
+        signal: AbortSignal.timeout(1_000),
+      });
       if (response.ok) {
         metadata = await response.json();
         break;
       }
     } catch {}
-    await delay(50);
+    await delay(100);
   }
-  if (!metadata) throw new Error("Chromium DevTools endpoint did not become ready.");
+  if (!metadata) {
+    const detail = diagnostics().trim();
+    throw new Error(
+      `Chromium DevTools endpoint did not become ready within 30 seconds.${detail ? `\n${detail}` : ""}`,
+    );
+  }
   const socket = new WebSocket(metadata.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {
     socket.addEventListener("open", resolve, { once: true });
@@ -219,23 +234,12 @@ const clickText = (text, selector = "button") =>
   `(() => { const target = [...document.querySelectorAll(${JSON.stringify(selector)})].find((element) => element.textContent.trim().includes(${JSON.stringify(text)})); if (!target) return false; target.click(); return true; })()`;
 
 async function enterMultiplayer(client, page) {
+  await waitFor(client, page, clickText("Deploy"), "main menu Deploy action");
   await waitFor(
     client,
     page,
-    "[...document.querySelectorAll('button')].some((button) => button.textContent.trim().includes('Deploy'))",
-    "main menu",
-  );
-  assert.equal(await evaluate(client, page, clickText("Deploy")), true);
-  await waitFor(
-    client,
-    page,
-    "document.querySelector('button[aria-label=" + '"Multiplayer"' + "]')",
-    "mode selector",
-  );
-  await evaluate(
-    client,
-    page,
-    "document.querySelector('button[aria-label=\"Multiplayer\"]').click(); true",
+    "(() => { const target = document.querySelector('button[aria-label=\"Multiplayer\"]'); if (!target) return false; target.click(); return true; })()",
+    "Multiplayer mode action",
   );
   await waitFor(
     client,
@@ -271,6 +275,8 @@ try {
     .run();
   await vite.listen();
 
+  let chromeDiagnostics = "";
+  let chromeLaunchError = null;
   chrome = spawn(
     chromePath,
     [
@@ -279,13 +285,28 @@ try {
       "--disable-dev-shm-usage",
       "--disable-gpu",
       "--mute-audio",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--remote-debugging-address=127.0.0.1",
       `--remote-debugging-port=${cdpPort}`,
       `--user-data-dir=${join(scratch, "chromium")}`,
       "about:blank",
     ],
-    { stdio: "ignore" },
+    { stdio: ["ignore", "ignore", "pipe"] },
   );
-  cdp = await connectCdp(cdpPort);
+  chrome.stderr.setEncoding("utf8");
+  chrome.stderr.on("data", (chunk) => {
+    chromeDiagnostics = `${chromeDiagnostics}${chunk}`.slice(-8_000);
+  });
+  chrome.once("error", (error) => {
+    chromeLaunchError = error;
+  });
+  cdp = await connectCdp(
+    cdpPort,
+    chrome,
+    () => chromeDiagnostics,
+    () => chromeLaunchError,
+  );
   const alpha = await makePage(cdp, "Smoke Alpha");
   const bravo = await makePage(cdp, "Smoke Bravo");
   await Promise.all([enterMultiplayer(cdp, alpha), enterMultiplayer(cdp, bravo)]);
@@ -370,7 +391,14 @@ try {
     ),
   ]);
 
+  await evaluate(cdp, alpha, "window.__helioSmokeReloadPending = true");
   await cdp.send("Page.reload", { ignoreCache: true }, alpha.sessionId);
+  await waitFor(
+    cdp,
+    alpha,
+    "window.__helioSmokeReloadPending !== true && document.readyState === 'complete'",
+    "fresh document after reload",
+  );
   await enterMultiplayer(cdp, alpha);
   await waitFor(
     cdp,
