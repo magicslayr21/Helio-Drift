@@ -13,7 +13,10 @@ export async function multiplayerFixture(t) {
     compatibilityDate: "2026-10-12",
     compatibilityFlags: ["nodejs_compat"],
     bindings: { MULTIPLAYER_ORIGINS: "http://localhost:5173" },
-    durableObjects: { MATCH_ROOMS: { className: "MatchRoom", useSQLite: true } },
+    durableObjects: {
+      MATCH_ROOMS: { className: "MatchRoom", useSQLite: true },
+      LOBBY_INDEX: { className: "LobbyIndex", useSQLite: true },
+    },
     resourcePersistencePath: directory,
     telemetry: { enabled: false },
   });
@@ -62,6 +65,15 @@ export async function multiplayerFixture(t) {
 
   async function joinRoom(roomCode, callsign = "Comet Two") {
     return request(`/rooms/${roomCode}/join`, { method: "POST", body: { callsign } });
+  }
+
+  async function createPublic(name = "Open Patrol", callsign = "Comet One") {
+    const response = await request("/rooms/public", {
+      method: "POST",
+      body: { name, callsign },
+    });
+    assert.equal(response.status, 201, JSON.stringify(response.data));
+    return response.data;
   }
 
   async function connect(identity) {
@@ -129,6 +141,7 @@ export async function multiplayerFixture(t) {
   return {
     request,
     create,
+    createPublic,
     joinRoom,
     connect,
     nextMessage,

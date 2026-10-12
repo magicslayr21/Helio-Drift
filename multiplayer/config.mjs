@@ -13,6 +13,9 @@ export const NETWORK_CONFIG = Object.freeze({
   reconnectGraceMs: 90_000,
   heartbeatTimeoutMs: 30_000,
   completedRoomLifetimeMs: 5 * 60_000,
+  publicListMaximum: 50,
+  publicListDefault: 20,
+  publicRoomNameMaximum: 32,
 });
 
 export function normalizeCallsign(value) {
@@ -27,4 +30,12 @@ export function normalizeRoomCode(value) {
   if (typeof value !== "string") return null;
   const code = value.trim().toUpperCase();
   return ROOM_CODE_PATTERN.test(code) ? code : null;
+}
+
+export function normalizeRoomName(value) {
+  if (typeof value !== "string") return null;
+  const name = value.trim().replace(/\s+/g, " ");
+  if (name.length < 3 || name.length > NETWORK_CONFIG.publicRoomNameMaximum) return null;
+  if (!/^[A-Za-z0-9][A-Za-z0-9 _.'-]*$/.test(name)) return null;
+  return name;
 }

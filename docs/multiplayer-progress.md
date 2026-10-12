@@ -1,7 +1,7 @@
 # Online co-op progress
 
 Branch: `feature/online-coop`  
-Current milestone: **5 — complete co-op campaign (awaiting approval)**
+Current milestone: **6 — public lobbies and matchmaking (awaiting approval)**
 Production deployment: **not started**
 
 This document is the implementation record for the two-player online survival expansion. Each
@@ -329,6 +329,27 @@ It does not enable multiplayer UI, public matchmaking, or production deployment.
 - Five new deterministic tests cover directives/scaling, unlock and boss schedules, tether rules,
   destructible mine caps, revive interruption, and the full MK5-to-MK6 transition.
 
+## Milestone 6 implementation
+
+The sixth milestone adds server-side public room discovery and matchmaking. It does not enable the
+multiplayer menu, change the leaderboard, or deploy either Worker.
+
+- A new SQLite-backed `LobbyIndex` Durable Object serializes public room creation and Quick Join
+  across Worker instances. Match rooms remain the authority for slot ownership and reconnects.
+- Public creation validates a display name, allocates an unambiguous code, creates the underlying
+  Match Durable Object, and stores only a safe discovery summary.
+- Public listings expose room name, player count, capacity, waiting status, joinability, creation
+  time, and a stable bounded pagination cursor. Callsigns, reconnect tokens, tickets, and private
+  room codes never enter the index response.
+- Quick Join chooses the oldest joinable public room and claims its remaining slot through the
+  Match Durable Object. Concurrent requests are serialized so one final slot cannot be assigned
+  twice; stale/full entries are removed and the search continues.
+- Direct code joins, waiting-room leaves, match starts, room closure, expiry, and process restart
+  keep public capacity synchronized. Full waiting rooms remain visible as non-joinable, while
+  started, closed, expired, and all private rooms are absent.
+- Six Miniflare tests cover privacy, validation, pagination, concurrent Quick Join, join/leave/start
+  synchronization, empty-room cleanup, concurrent creation, and Durable Object restart recovery.
+
 ## Milestone status
 
 | Milestone                               | Status                      | Merge gate  |
@@ -337,8 +358,8 @@ It does not enable multiplayer UI, public matchmaking, or production deployment.
 | 2. Two-player local simulation          | Complete and approved       | Passed      |
 | 3. Private room networking              | Complete and approved       | Passed      |
 | 4. Authoritative multiplayer combat     | Complete and approved       | Passed      |
-| 5. Complete co-op campaign              | Complete; awaiting approval | Passed      |
-| 6. Public lobbies and matchmaking       | Waiting                     | Not started |
+| 5. Complete co-op campaign              | Complete and approved       | Passed      |
+| 6. Public lobbies and matchmaking       | Complete; awaiting approval | Passed      |
 | 7. Multiplayer UI and leaderboard       | Waiting                     | Not started |
 | 8. Integration and release readiness    | Waiting                     | Not started |
 
@@ -492,3 +513,31 @@ Changed areas:
 Milestone 5 is safe to review without deployment. Multiplayer UI and public lobby work remain in
 later milestones; the single-player campaign, save schema, leaderboard Worker, D1 data, and
 production bindings remain unchanged. Milestone 6 remains behind the next approval gate.
+
+## Milestone 6 verification
+
+Milestone 6 passed on 12 October 2026:
+
+- `npm run typecheck`
+- `npm run game:test`: 85/85 tests
+- `npm run leaderboard:test`: 12/12 tests
+- `XDG_CONFIG_HOME=/tmp/helio-coop-m6-wrangler npm run cf:test`: dry-run bundle plus 18/18
+  Worker/D1 tests
+- `XDG_CONFIG_HOME=/tmp/helio-coop-m6-wrangler npm run multiplayer:test`: separate Worker dry-run
+  bundle plus 16/16 Durable Object, public-lobby, and WebSocket tests
+- `npm run build`
+- `npm run format:check`, explicit multiplayer/docs formatting, and `git diff --check`
+
+Changed areas:
+
+- `wrangler.multiplayer.jsonc` — additive `LobbyIndex` namespace and `v2` SQLite migration
+- `multiplayer/config.mjs` and `worker.mjs` — public naming/list limits, index coordination,
+  creation, pagination, synchronization, and Quick Join
+- `multiplayer/test/fixture.mjs` and `public-lobbies.test.mjs` — two-DO Miniflare setup and public
+  lobby concurrency/privacy coverage
+- `src/game/network/protocol.ts` — typed public room metadata
+- `package.json`, `package-lock.json`, and `src/game/update-log.ts` — `0.4.2-alpha.5` release record
+
+Milestone 6 is safe to review without deployment. The additive migration is declared but has not
+been published. Multiplayer UI and co-op leaderboard work remain in Milestone 7; the single-player
+campaign, saves, existing leaderboard Worker, D1 data, and production bindings remain unchanged.

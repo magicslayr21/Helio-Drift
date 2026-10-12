@@ -8,6 +8,7 @@ import {
   TOKEN_PATTERN,
   normalizeCallsign,
   normalizeRoomCode,
+  normalizeRoomName,
 } from "./config.mjs";
 
 const encoder = new TextEncoder();
@@ -91,6 +92,18 @@ function newRoomCode() {
   return Array.from(bytes, (byte) => ROOM_CODE_ALPHABET[byte % ROOM_CODE_ALPHABET.length]).join("");
 }
 
+function encodeLobbyCursor(room) {
+  return `${room.createdAt}.${room.code}`;
+}
+
+function parseLobbyCursor(value) {
+  if (!value) return null;
+  const match = value.match(/^(\d{10,16})\.([23456789ABCDEFGHJKMNPQRSTUVWXYZ]{6})$/);
+  if (!match) return null;
+  const createdAt = Number(match[1]);
+  return Number.isSafeInteger(createdAt) ? { createdAt, code: match[2] } : null;
+}
+
 function randomSeed() {
   const value = new Uint32Array(1);
   crypto.getRandomValues(value);
@@ -128,6 +141,11 @@ function rateLimit(key, maximum, windowMs) {
 async function roomRequest(env, code, path, init) {
   const id = env.MATCH_ROOMS.idFromName(code);
   return env.MATCH_ROOMS.get(id).fetch(`https://room.internal${path}`, init);
+}
+
+async function lobbyRequest(env, path, init) {
+  const id = env.LOBBY_INDEX.idFromName("global");
+  return env.LOBBY_INDEX.get(id).fetch(`https://lobby.internal${path}`, init);
 }
 
 function withCors(response, headers) {
@@ -180,12 +198,55 @@ export async function handleRequest(request, env) {
         const response = await roomRequest(env, code, "/internal/create", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ code, callsign }),
+          body: JSON.stringify({ code, callsign, visibility: "private" }),
         });
         if (response.status === 409) continue;
         return withCors(response, headers);
       }
       throw new RequestError(503, "Unable to allocate a room. Try again.");
+    }
+    if (request.method === "GET" && path === "/api/rooms/public") {
+      rateLimit(`public-list:${address}`, 120, 60_000);
+      const limit = url.searchParams.get("limit") ?? "";
+      const cursor = url.searchParams.get("cursor") ?? "";
+      return withCors(
+        await lobbyRequest(
+          env,
+          `/internal/list?limit=${encodeURIComponent(limit)}&cursor=${encodeURIComponent(cursor)}`,
+          { method: "GET" },
+        ),
+        headers,
+      );
+    }
+    if (request.method === "POST" && path === "/api/rooms/public") {
+      rateLimit(`public-create:${address}`, 20, 60_000);
+      const body = await readJson(request);
+      const callsign = normalizeCallsign(body.callsign);
+      const name = normalizeRoomName(body.name);
+      if (!callsign) throw new RequestError(400, "Callsign must be 2–20 safe characters.");
+      if (!name) throw new RequestError(400, "Room name must be 3–32 safe characters.");
+      return withCors(
+        await lobbyRequest(env, "/internal/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ callsign, name }),
+        }),
+        headers,
+      );
+    }
+    if (request.method === "POST" && path === "/api/rooms/quick") {
+      rateLimit(`quick:${address}`, 40, 60_000);
+      const body = await readJson(request);
+      const callsign = normalizeCallsign(body.callsign);
+      if (!callsign) throw new RequestError(400, "Callsign must be 2–20 safe characters.");
+      return withCors(
+        await lobbyRequest(env, "/internal/quick", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ callsign }),
+        }),
+        headers,
+      );
     }
 
     const route = path.match(/^\/api\/rooms\/([^/]+)(?:\/(join|tickets|socket))?$/);
@@ -246,8 +307,9 @@ export async function handleRequest(request, env) {
 }
 
 export class MatchRoom {
-  constructor(state) {
+  constructor(state, env) {
     this.state = state;
+    this.env = env;
     this.room = null;
     this.simulation = null;
     this.clock = null;
@@ -292,12 +354,17 @@ export class MatchRoom {
         const body = await readJson(request);
         const code = normalizeRoomCode(body.code);
         const callsign = normalizeCallsign(body.callsign);
-        if (!code || !callsign) throw new RequestError(400, "Room details are invalid.");
+        const visibility = body.visibility === "public" ? "public" : "private";
+        const name = visibility === "public" ? normalizeRoomName(body.name) : null;
+        if (!code || !callsign || (visibility === "public" && !name))
+          throw new RequestError(400, "Room details are invalid.");
         const reconnectToken = newToken();
         const now = Date.now();
         this.room = {
           version: 1,
           code,
+          visibility,
+          name,
           seed: randomSeed(),
           phase: "waiting",
           createdAt: now,
@@ -335,6 +402,7 @@ export class MatchRoom {
         );
         this.touch();
         await this.persist();
+        if (this.room.visibility === "public" && !body.managedByLobby) await this.syncLobby();
         this.broadcastRoom();
         return json(200, {
           roomCode: this.room.code,
@@ -557,6 +625,7 @@ export class MatchRoom {
     this.lastPersistedTick = this.room.match.tick;
     this.touch();
     await this.persist();
+    await this.syncLobby();
     this.broadcastRoom();
     this.broadcastSnapshot();
     this.ensureClock();
@@ -644,6 +713,7 @@ export class MatchRoom {
       this.room.expiresAt = Date.now() + NETWORK_CONFIG.completedRoomLifetimeMs;
       this.stopClock();
     }
+    await this.syncLobby();
     await this.persist();
     await this.scheduleAlarm(1000);
   }
@@ -694,6 +764,7 @@ export class MatchRoom {
     const now = Date.now();
     if (this.room.expiresAt <= now) {
       this.stopClock();
+      await this.syncLobby(true);
       await this.state.storage.deleteAll();
       this.room = null;
       this.simulation = null;
@@ -738,9 +809,17 @@ export class MatchRoom {
 
   view() {
     if (!this.room) return null;
+    const playerCount = Object.values(this.room.players).filter(
+      (player) => player && !player.left,
+    ).length;
     return {
       code: this.room.code,
+      visibility: this.room.visibility ?? "private",
+      name: this.room.name ?? null,
       phase: this.room.phase,
+      playerCount,
+      capacity: NETWORK_CONFIG.maximumPlayers,
+      joinable: this.room.phase === "waiting" && playerCount < NETWORK_CONFIG.maximumPlayers,
       createdAt: this.room.createdAt,
       expiresAt: this.room.expiresAt,
       players: Object.fromEntries(
@@ -758,6 +837,19 @@ export class MatchRoom {
         ]),
       ),
     };
+  }
+
+  async syncLobby(remove = false) {
+    if (!this.room || (this.room.visibility ?? "private") !== "public") return;
+    try {
+      await lobbyRequest(this.env, remove ? "/internal/delete" : "/internal/upsert", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(remove ? { code: this.room.code } : { room: this.view() }),
+      });
+    } catch (error) {
+      console.error("lobby synchronization failed", error);
+    }
   }
 
   touch() {
@@ -846,6 +938,187 @@ export class MatchRoom {
       state: createWireState(state),
       events: this.simulation.drainEvents(),
     });
+  }
+}
+
+export class LobbyIndex {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+    this.rooms = {};
+    this.operationTail = Promise.resolve();
+    this.ready = state.blockConcurrencyWhile(async () => {
+      this.rooms = (await state.storage.get("rooms")) ?? {};
+      await this.pruneAndPersist();
+    });
+  }
+
+  async fetch(request) {
+    await this.ready;
+    return this.exclusive(() => this.handleFetch(request));
+  }
+
+  async handleFetch(request) {
+    const url = new URL(request.url);
+    try {
+      if (request.method === "GET" && url.pathname === "/internal/list") {
+        await this.pruneAndPersist();
+        const requested = Number(url.searchParams.get("limit") || NETWORK_CONFIG.publicListDefault);
+        if (!Number.isSafeInteger(requested) || requested < 1)
+          throw new RequestError(400, "List limit is invalid.");
+        const limit = Math.min(requested, NETWORK_CONFIG.publicListMaximum);
+        const rawCursor = url.searchParams.get("cursor") || "";
+        const cursor = parseLobbyCursor(rawCursor);
+        if (rawCursor && !cursor) throw new RequestError(400, "List cursor is invalid.");
+        const rooms = this.sortedRooms().filter(
+          (room) =>
+            !cursor ||
+            room.createdAt > cursor.createdAt ||
+            (room.createdAt === cursor.createdAt && room.code > cursor.code),
+        );
+        const page = rooms.slice(0, limit);
+        const nextCursor = rooms.length > limit ? encodeLobbyCursor(page.at(-1)) : null;
+        return json(200, { rooms: page, nextCursor });
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/create") {
+        const body = await readJson(request);
+        const callsign = normalizeCallsign(body.callsign);
+        const name = normalizeRoomName(body.name);
+        if (!callsign || !name) throw new RequestError(400, "Public room details are invalid.");
+        for (let attempt = 0; attempt < 20; attempt++) {
+          const code = newRoomCode();
+          const response = await roomRequest(this.env, code, "/internal/create", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              code,
+              callsign,
+              name,
+              visibility: "public",
+              managedByLobby: true,
+            }),
+          });
+          if (response.status === 409) continue;
+          const data = await response.json();
+          if (!response.ok) return json(response.status, data);
+          this.upsert(data.room);
+          await this.persist();
+          return json(201, data);
+        }
+        throw new RequestError(503, "Unable to allocate a public room. Try again.");
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/quick") {
+        const body = await readJson(request);
+        const callsign = normalizeCallsign(body.callsign);
+        if (!callsign) throw new RequestError(400, "Callsign is invalid.");
+        await this.pruneAndPersist();
+        for (const room of this.sortedRooms().filter((candidate) => candidate.joinable)) {
+          const response = await roomRequest(this.env, room.code, "/internal/join", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ callsign, managedByLobby: true }),
+          });
+          const data = await response.json();
+          if (response.ok) {
+            this.upsert(data.room);
+            await this.persist();
+            return json(200, data);
+          }
+          if (response.status === 404 || response.status === 409) {
+            delete this.rooms[room.code];
+            await this.persist();
+            continue;
+          }
+          return json(response.status, data);
+        }
+        return json(404, { error: "No joinable public rooms are available." });
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/upsert") {
+        const body = await readJson(request);
+        this.upsert(body.room);
+        await this.persist();
+        return new Response(null, { status: 204 });
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/delete") {
+        const body = await readJson(request);
+        const code = normalizeRoomCode(body.code);
+        if (!code) throw new RequestError(400, "Room code is invalid.");
+        delete this.rooms[code];
+        await this.persist();
+        return new Response(null, { status: 204 });
+      }
+      return json(404, { error: "Lobby route not found." });
+    } catch (error) {
+      if (error instanceof RequestError) return json(error.status, { error: error.message });
+      console.error("lobby index request failed", error);
+      return json(500, { error: "Lobby index failed." });
+    }
+  }
+
+  upsert(room) {
+    const code = normalizeRoomCode(room?.code);
+    const name = normalizeRoomName(room?.name);
+    if (!code || !name || room.visibility !== "public" || room.phase !== "waiting") {
+      if (code) delete this.rooms[code];
+      return;
+    }
+    const playerCount = Math.max(
+      0,
+      Math.min(NETWORK_CONFIG.maximumPlayers, Math.floor(Number(room.playerCount) || 0)),
+    );
+    this.rooms[code] = {
+      code,
+      name,
+      phase: "waiting",
+      playerCount,
+      capacity: NETWORK_CONFIG.maximumPlayers,
+      joinable: playerCount < NETWORK_CONFIG.maximumPlayers,
+      createdAt: Number.isFinite(room.createdAt) ? room.createdAt : Date.now(),
+      expiresAt: Number.isFinite(room.expiresAt)
+        ? room.expiresAt
+        : Date.now() + NETWORK_CONFIG.waitingRoomLifetimeMs,
+    };
+  }
+
+  sortedRooms() {
+    return Object.values(this.rooms)
+      .sort(
+        (left, right) => left.createdAt - right.createdAt || left.code.localeCompare(right.code),
+      )
+      .map(({ expiresAt: _expiresAt, ...room }) => room);
+  }
+
+  async pruneAndPersist() {
+    const now = Date.now();
+    let changed = false;
+    for (const [code, room] of Object.entries(this.rooms)) {
+      if (room.expiresAt > now) continue;
+      delete this.rooms[code];
+      changed = true;
+    }
+    if (changed) await this.persist();
+  }
+
+  async persist() {
+    await this.state.storage.put("rooms", this.rooms);
+  }
+
+  async exclusive(operation) {
+    let release;
+    const previous = this.operationTail;
+    this.operationTail = new Promise((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   }
 }
 

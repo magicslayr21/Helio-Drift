@@ -1,5 +1,14 @@
 export const UPDATE_LOG = [
   {
+    version: "0.4.2-alpha.5",
+    date: "2026-10-12",
+    title: "Public co-op lobbies",
+    items: [
+      "Public room discovery and safe lobby summaries added.",
+      "Quick Join now allocates open room slots atomically.",
+    ],
+  },
+  {
     version: "0.4.2-alpha.4",
     date: "2026-10-12",
     title: "Complete co-op campaign",

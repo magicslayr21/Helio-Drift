@@ -15,12 +15,20 @@
         "name": "MATCH_ROOMS",
         "class_name": "MatchRoom",
       },
+      {
+        "name": "LOBBY_INDEX",
+        "class_name": "LobbyIndex",
+      },
     ],
   },
   "migrations": [
     {
       "tag": "v1",
       "new_sqlite_classes": ["MatchRoom"],
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["LobbyIndex"],
     },
   ],
 }

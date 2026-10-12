@@ -12,10 +12,25 @@ export interface MultiplayerRoomPlayer {
 
 export interface MultiplayerRoomView {
   code: string;
+  visibility: "private" | "public";
+  name: string | null;
   phase: "waiting" | "running" | "finished" | "closed";
+  playerCount: number;
+  capacity: 2;
+  joinable: boolean;
   createdAt: number;
   expiresAt: number;
   players: Record<CoopPlayerId, MultiplayerRoomPlayer | null>;
+}
+
+export interface PublicRoomSummary {
+  code: string;
+  name: string;
+  phase: "waiting";
+  playerCount: number;
+  capacity: 2;
+  joinable: boolean;
+  createdAt: number;
 }
 
 export interface ClientInputMessage {
