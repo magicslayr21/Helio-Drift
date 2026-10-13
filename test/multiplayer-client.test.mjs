@@ -70,7 +70,7 @@ test("snapshot interpolation orders out-of-order frames and blends entity positi
   const simulation = new LocalCoopSimulation({ seed: 21 });
   const first = snapshot(simulation);
   simulation.state.players.p1.ship.x += 100;
-  simulation.state.rocks[0].x += 40;
+  simulation.game.rocks[0].x += 40;
   simulation.stepTicks(2);
   const second = snapshot(simulation);
   const buffer = new SnapshotInterpolator(2);
@@ -84,11 +84,35 @@ test("snapshot interpolation orders out-of-order frames and blends entity positi
     (first.state.players.p1.ship.x + second.state.players.p1.ship.x) / 2,
   );
   assert.equal(middle.rocks[0].x, (first.state.rocks[0].x + second.state.rocks[0].x) / 2);
+  assert.equal(
+    middle.campaign.rocks[0].x,
+    (first.state.campaign.rocks[0].x + second.state.campaign.rocks[0].x) / 2,
+  );
 
   simulation.stepTicks(2);
   buffer.push(snapshot(simulation));
   assert.equal(buffer.size, 2);
   assert.equal(buffer.sample(-10).tick, second.state.tick);
+});
+
+test("prediction matches the campaign substeps during slow motion and stops when disabled", () => {
+  const simulation = new LocalCoopSimulation({ seed: 77 });
+  simulation.game.rocks = [];
+  simulation.game.drones = [];
+  simulation.game.waveHold = 100;
+  simulation.game.timeScale = 0.35;
+  const prediction = new ClientPrediction("p1", 1000, 700);
+  prediction.reconcile(snapshot(simulation));
+  const command = prediction.sample({ moveX: 1, moveY: -1, aimAngle: 0.5 });
+  simulation.submit({ ...command, playerId: "p1" });
+  simulation.stepTicks();
+  for (const key of ["x", "y", "vx", "vy", "angle"])
+    assert.ok(Math.abs(prediction.ship[key] - simulation.state.players.p1.ship[key]) < 1e-9, key);
+  simulation.state.players.p1.disabled = true;
+  prediction.reconcile(snapshot(simulation));
+  const before = prediction.ship;
+  prediction.sample({ moveX: 1, moveY: 0, aimAngle: 1 });
+  assert.deepEqual(prediction.ship, before);
 });
 
 test("invalid local samples are normalized before they reach the network", () => {

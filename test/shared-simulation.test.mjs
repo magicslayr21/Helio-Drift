@@ -160,7 +160,7 @@ test("shared movement is numerically identical to the previous campaign movement
   }
 });
 
-test("shared simulation modules remain free of browser and engine dependencies", () => {
+test("shared simulation entry points do not access browser APIs", () => {
   const simulationDirectory = new URL("../src/game/simulation/", import.meta.url);
   const files = readdirSync(simulationDirectory).filter((file) => file.endsWith(".ts"));
   for (const file of files) {

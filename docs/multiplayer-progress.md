@@ -671,3 +671,28 @@ The `0.5.0-alpha.1` release requires a valid leaderboard developer session to cr
 public rooms. The multiplayer Worker validates the session against shared D1 storage, while public
 browsing, Quick Join, room-code joining, and reconnecting remain open to every player. No production
 Worker, migration, or Pages deployment was performed as part of this change.
+
+## Shared campaign implementation — 0.5.1-alpha.1
+
+The separate multiplayer combat implementation and polygon renderer have been replaced with
+adapters around the campaign `Game` class. The Worker executes the same flight, weapons, enemies,
+boss attacks, mutations, salvage drone, upgrade rolls, meteor showers, and effects methods. The
+browser calls the same `Game.render()`; it never executes authoritative combat.
+
+The campaign gained optional runtime dependencies (seeded randomness, silent/event audio, and
+headless construction) and pilot-selection hooks. Normal campaign construction retains its
+existing browser lifecycle and save handling. `CoopCampaign` owns only pilot contexts, targeting,
+damage attribution, personal progression, and co-op rules. Tether Sentinels and Mine Wardens attach
+their special abilities to native Sentinel/Warden chassis rather than replacing their AI.
+
+Checkpoints serialize the native world, including boss movement and attacks, projectile hit
+history, individual repair/anomaly timers, and queued upgrade racks. Durable Object writes use
+atomic bounded chunks and can still read older room records. Wire snapshots omit duplicate legacy
+entity arrays and round presentation coordinates; authoritative checkpoints retain full precision.
+
+Regression coverage compares all eight weapons to `Game`, tests both pilot ownership paths and
+revives, traverses waves 1–25 and MK6, restores active boss encounters, exercises oversized
+checkpoint writes and retries, and drives two browser contexts through the original renderer.
+
+Deploy the updated multiplayer Worker and frontend together. This update does not require a D1
+migration or a leaderboard Worker deployment. See the runbook's shared-campaign update steps.

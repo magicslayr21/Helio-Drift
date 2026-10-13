@@ -1,44 +1,18 @@
+import { CoopCampaign, PILOTS, freshPilotCampaign, isHostileShot } from "../coop-campaign";
+import { captureCampaignWorld, restoreCampaignWorld } from "../campaign-state";
+import { freshPlayer, freshSalvageDrone, THEMES, STAT_UPGRADES } from "../balance";
 import { GAME_CONFIG } from "../game-config";
-import { TAU, clamp, wrapAngle } from "../math";
-import type { RockTrait, WeaponId } from "../types";
-import {
-  BOSS_SPECS,
-  EARLY_BOSS_HP_CEILING,
-  SALVAGE_BASE_PRICE,
-  STAT_UPGRADES,
-  freshPlayer,
-  freshSalvageDrone,
-  weaponMaxLevel,
-} from "../balance";
-import {
-  bossMkForWave,
-  isBossWave,
-  maxSentinels,
-  RUN_PACING,
-  scaledWave,
-  sentinelWaveCount,
-  sectorForWave,
-} from "./campaign";
+import { clamp, wrapAngle } from "../math";
 import { COOP_CONFIG, COOP_FIXED_DT } from "./coop-config";
 import type {
-  CoopBossState,
   CoopCommand,
-  CoopDirectiveId,
   CoopEvent,
-  CoopEnemyKind,
-  CoopEnemyState,
   CoopMatchState,
   CoopPlayerId,
   CoopPlayerState,
-  CoopProjectileState,
-  CoopRockState,
 } from "./coop-types";
 import { FixedStepRunner } from "./fixed-step";
-import { stepPlayerMovement } from "./movement";
-import { randomBetween, randomChance, randomInteger, SeededRandom } from "./random";
-import { salvageUpgradePrice, weaponPrice, weaponSimulationStats } from "./weapons";
-
-const PLAYER_IDS: readonly CoopPlayerId[] = ["p1", "p2"];
+import { SeededRandom } from "./random";
 
 export interface LocalCoopOptions {
   seed: number;
@@ -47,14 +21,12 @@ export interface LocalCoopOptions {
   height?: number;
 }
 
-/**
- * Headless two-player simulation used to establish the authoritative state and command boundary.
- * It intentionally has no room, WebSocket, DOM, audio, rendering or persistence dependency.
- */
+/** Room clock and commands around the ORIGINAL campaign, not a second combat engine. */
 export class LocalCoopSimulation {
   state: CoopMatchState;
   readonly width: number;
   readonly height: number;
+  game: CoopCampaign;
   private readonly random: SeededRandom;
   private readonly runner = new FixedStepRunner();
   private commands: CoopCommand[] = [];
@@ -73,8 +45,8 @@ export class LocalCoopSimulation {
       phase: "running",
       nextEntityId: 1,
       players: {
-        p1: this.makePlayer("p1", options.callsigns?.[0] ?? "Pilot One", this.width * 0.36),
-        p2: this.makePlayer("p2", options.callsigns?.[1] ?? "Pilot Two", this.width * 0.64),
+        p1: this.makePlayer("p1", options.callsigns?.[0] ?? "Pilot One", 0.36),
+        p2: this.makePlayer("p2", options.callsigns?.[1] ?? "Pilot Two", 0.64),
       },
       team: {
         score: 0,
@@ -99,7 +71,22 @@ export class LocalCoopSimulation {
       pickups: [],
       boss: null,
     };
-    this.startNextWave();
+    this.game = this.createGame();
+    this.game.nextWave();
+    this.sync();
+  }
+
+  private createGame() {
+    return new CoopCampaign(
+      this.state,
+      () => this.random.next(),
+      (event) => {
+        if (event.type !== "sound" || this.events.filter((e) => e.type === "sound").length < 32)
+          this.events.push(event);
+      },
+      this.width,
+      this.height,
+    );
   }
 
   static restore(
@@ -107,52 +94,176 @@ export class LocalCoopSimulation {
     width = COOP_CONFIG.arena.width,
     height = COOP_CONFIG.arena.height,
   ) {
-    const simulation = new LocalCoopSimulation({ seed: snapshot.seed, width, height });
-    simulation.state = structuredClone(snapshot);
-    simulation.state.enemies ??= [];
-    simulation.state.hostileProjectiles ??= [];
-    simulation.state.hazards ??= [];
-    simulation.state.tethers ??= [];
-    simulation.state.mines ??= [];
-    simulation.state.team.directive ??= null;
-    simulation.state.team.bonusAvailable ??= false;
-    simulation.state.team.bonusActive ??= false;
-    simulation.state.team.bonusDefeated ??= false;
-    for (const player of Object.values(simulation.state.players)) player.input.missile ??= false;
-    for (const player of Object.values(simulation.state.players)) player.supportQuietTimer ??= 0;
-    for (const player of Object.values(simulation.state.players)) player.lastCommandSequence ??= -1;
-    for (const player of Object.values(simulation.state.players)) player.reviveLockout ??= 0;
-    for (const rock of simulation.state.rocks) rock.fuse ??= -1;
-    for (const projectile of simulation.state.projectiles) {
-      projectile.kind ??= "shot";
-      projectile.fuse ??= 0;
-      projectile.blastRadius ??= 0;
-      projectile.blastDamage ??= 0;
-      projectile.extra ??= 0;
-      projectile.extraDamage ??= 0;
+    const sim = new LocalCoopSimulation({ seed: snapshot.seed, width, height });
+    sim.state = structuredClone(snapshot);
+    for (const p of Object.values(sim.state.players)) {
+      p.campaign ??= freshPilotCampaign();
+      p.input.missile ??= false;
+      p.supportQuietTimer ??= 0;
+      p.lastCommandSequence ??= -1;
+      p.reviveLockout ??= 0;
     }
-    if (simulation.state.boss) {
-      simulation.state.boss.vx ??= 0;
-      simulation.state.boss.vy ??= 0;
-      simulation.state.boss.phase ??= 1;
-      simulation.state.boss.attackTimer ??= GAME_CONFIG.bosses.baseAttackTimer;
-      simulation.state.boss.abilityTimer ??= GAME_CONFIG.bosses.baseAttackTimer * 2;
-    }
-    simulation.enforceEntityCaps();
-    simulation.random.restore(snapshot.randomState);
-    simulation.runner.restore({ tick: snapshot.tick, accumulator: snapshot.clockAccumulator });
-    simulation.events = [];
-    simulation.commands = [];
-    return simulation;
+    sim.game = sim.createGame();
+    if (snapshot.campaign) restoreCampaignWorld(sim.game, snapshot.campaign);
+    else sim.migrateLegacyWorld(snapshot);
+    sim.game.restorePilotContext();
+    sim.random.restore(snapshot.randomState);
+    sim.runner.restore({ tick: snapshot.tick, accumulator: snapshot.clockAccumulator });
+    sim.events = [];
+    sim.enforceEntityCaps();
+    sim.sync();
+    return sim;
   }
 
-  private makePlayer(id: CoopPlayerId, callsign: string, x: number): CoopPlayerState {
+  private migrateLegacyWorld(saved: CoopMatchState) {
+    const g = this.game;
+    g.wave = saved.team.wave;
+    g.score = saved.team.score;
+    g.themeIdx = Math.max(0, saved.team.sector - 1);
+    g.theme = THEMES[g.themeIdx] ?? THEMES[0];
+    g.nextId = saved.nextEntityId;
+    g.rocks = saved.rocks.map((r) =>
+      Object.assign(g.makeRock(r.x, r.y, r.size, undefined, undefined, r.trait), {
+        id: r.id,
+        hp: r.hp,
+        maxHp: r.maxHp,
+        r: r.radius,
+        vx: r.vx,
+        vy: r.vy,
+        fuse: r.fuse ?? -1,
+      }),
+    );
+    g.drones = [];
+    for (const d of saved.enemies ?? []) {
+      g.drones.push(
+        g.spawnDrone(
+          d.x,
+          d.y,
+          d.maxHp,
+          d.kind === "warden" || d.kind === "mineWarden"
+            ? "warden"
+            : d.kind === "spiker"
+              ? "spiker"
+              : "sentinel",
+        ),
+      );
+      Object.assign(g.drones[g.drones.length - 1], {
+        id: d.id,
+        hp: d.hp,
+        maxHp: d.maxHp,
+        vx: d.vx,
+        vy: d.vy,
+        angle: d.angle,
+      });
+      if (d.kind === "tetherSentinel" || d.kind === "mineWarden")
+        g.drones[g.drones.length - 1].coop = {
+          kind: d.kind,
+          timer: d.fireTimer,
+          warning: d.warningTimer,
+          target: d.targetPlayerId,
+        };
+    }
+    if (saved.boss) {
+      g.boss = g.makeBoss(saved.boss.mk === 5, saved.boss.mk);
+      Object.assign(g.boss, {
+        id: saved.boss.id,
+        x: saved.boss.x,
+        y: saved.boss.y,
+        hp: saved.boss.hp,
+        maxHp: saved.boss.maxHp,
+      });
+      if (g.boss.mk6 && g.boss.hp < g.boss.maxHp * 0.5) g.boss.movement.mk6RaidDone = true;
+    }
+    g.pickups = saved.pickups.map((p) => ({ ...p, pulse: 0 }));
+    g.bullets = (saved.projectiles ?? []).map((b) => ({
+      id: b.id,
+      ownerId: b.ownerId,
+      weapon: b.weapon,
+      x: b.x,
+      y: b.y,
+      vx: b.vx,
+      vy: b.vy,
+      r: b.radius,
+      dmg: b.damage,
+      life: b.life,
+      pierce: b.pierce,
+      bounces: b.bounces,
+      turn: b.homing,
+      hitIds: new Set(b.hitIds),
+      color: "#ffe0a3",
+      fuse: b.fuse ?? 0,
+      extra: b.extra ?? 0,
+      extraDmg: b.extraDamage ?? 0,
+      kind:
+        b.kind === "missile"
+          ? "missile"
+          : b.kind === "shrapnel"
+            ? "shrap"
+            : b.weapon === "rail"
+              ? "rail"
+              : b.weapon === "seeker"
+                ? "seeker"
+                : b.weapon === "ricochet"
+                  ? "ricochet"
+                  : b.weapon === "flak"
+                    ? "flak"
+                    : "plasma",
+    }));
+    for (const b of saved.hostileProjectiles ?? []) {
+      g.enemyBullet(b.x, b.y, Math.atan2(b.vy, b.vx), Math.hypot(b.vx, b.vy), b.damage, b.radius);
+      Object.assign(g.bullets[g.bullets.length - 1], { id: b.id, life: b.life });
+    }
+    for (const mine of saved.mines ?? []) {
+      const r = g.makeRock(mine.x, mine.y, 1, 0, 0, "boom");
+      Object.assign(r, {
+        id: mine.id,
+        r: mine.radius,
+        hp: mine.hp,
+        maxHp: mine.maxHp,
+        coopMine: {
+          ownerId: mine.ownerId,
+          armTimer: mine.armTimer,
+          triggerTimer: mine.triggerTimer,
+          life: mine.life,
+        },
+      });
+      g.rocks.push(r);
+    }
+    for (const hazard of saved.hazards ?? []) {
+      if (!g.boss) break;
+      if (hazard.kind === "strike")
+        g.boss.strikes.push({ x: hazard.x, y: hazard.y, t: hazard.timer, t0: hazard.timer });
+      else if (hazard.kind === "shockwave") {
+        g.boss.shockT = hazard.timer;
+        g.boss.shockDur = hazard.timer;
+        g.boss.shockRadius = hazard.radius;
+      } else {
+        g.mkHole(g.boss, 200, hazard.timer, hazard.radius);
+        if (g.boss.hole) Object.assign(g.boss.hole, { x: hazard.x, y: hazard.y });
+      }
+    }
+    g.bonusAvailable = saved.team.bonusAvailable ?? false;
+    g.bonusActive = saved.team.bonusActive ?? false;
+    g.bonusDefeated = saved.team.bonusDefeated ?? false;
+    for (const id of PILOTS) {
+      const points = saved.players[id].upgradePoints;
+      g.bindPilot(id);
+      for (let i = 0; i < points; i++) {
+        const choices = g.rollChoices();
+        if (i === 0) g.choices = choices;
+        else this.state.players[id].campaign?.queuedChoices.push(choices);
+      }
+    }
+    g.releasePilot();
+  }
+
+  private makePlayer(id: CoopPlayerId, callsign: string, fraction: number): CoopPlayerState {
     const ship = freshPlayer();
-    ship.x = x;
+    ship.x = this.width * fraction;
     ship.y = this.height * 0.72;
     return {
       id,
-      callsign: callsign.trim().slice(0, 24) || (id === "p1" ? "Pilot One" : "Pilot Two"),
+      callsign: callsign.trim().slice(0, 24) || id,
       ship,
       credits: 0,
       level: 1,
@@ -184,19 +295,19 @@ export class LocalCoopSimulation {
         revives: 0,
         creditsCollected: 0,
       },
+      campaign: freshPilotCampaign(),
     };
   }
 
   submit(command: CoopCommand) {
-    const player = this.state.players[command.playerId];
-    const bonusCommand = command.type === "startBonusBoss" || command.type === "declineBonusBoss";
+    const p = this.state.players[command.playerId];
+    const bonus = command.type === "startBonusBoss" || command.type === "declineBonusBoss";
     if (
-      !player ||
-      (bonusCommand && this.state.phase !== "bonusOffer") ||
-      (this.state.phase !== "running" && !(this.state.phase === "bonusOffer" && bonusCommand)) ||
+      !p ||
+      (bonus && this.state.phase !== "bonusOffer") ||
+      (this.state.phase !== "running" && !(this.state.phase === "bonusOffer" && bonus)) ||
       !Number.isSafeInteger(command.sequence) ||
-      command.sequence <=
-        (command.type === "input" ? player.lastInputSequence : player.lastCommandSequence)
+      command.sequence <= (command.type === "input" ? p.lastInputSequence : p.lastCommandSequence)
     )
       return false;
     if (command.type === "input") {
@@ -212,13 +323,13 @@ export class LocalCoopSimulation {
       };
     }
     if (
-      command.type === "buyWeapon" &&
-      !Object.prototype.hasOwnProperty.call(player.ship.weapons, command.weapon)
+      (command.type === "buyWeapon" || command.type === "selectWeapon") &&
+      !Object.prototype.hasOwnProperty.call(p.ship.weapons, command.weapon)
     )
       return false;
     if (
       command.type === "buyDroneUpgrade" &&
-      !Object.prototype.hasOwnProperty.call(player.drone.upgrades, command.upgrade)
+      !Object.prototype.hasOwnProperty.call(p.drone.upgrades, command.upgrade)
     )
       return false;
     if (
@@ -233,11 +344,12 @@ export class LocalCoopSimulation {
         "activateOverdrive",
         "startBonusBoss",
         "declineBonusBoss",
+        "rerollUpgrades",
       ].includes(command.type)
     )
       return false;
-    if (command.type === "input") player.lastInputSequence = command.sequence;
-    else player.lastCommandSequence = command.sequence;
+    if (command.type === "input") p.lastInputSequence = command.sequence;
+    else p.lastCommandSequence = command.sequence;
     this.commands.push(command);
     return true;
   }
@@ -249,20 +361,14 @@ export class LocalCoopSimulation {
     this.state.clockAccumulator = clock.accumulator;
     return steps;
   }
-
   stepTicks(ticks = 1) {
-    for (let index = 0; index < Math.max(0, Math.floor(ticks)); index++)
-      this.advance(COOP_FIXED_DT);
+    for (let i = 0; i < Math.max(0, Math.floor(ticks)); i++) this.advance(COOP_FIXED_DT);
   }
-
   snapshot(): CoopMatchState {
-    const clock = this.runner.snapshot();
-    this.state.tick = clock.tick;
-    this.state.clockAccumulator = clock.accumulator;
-    this.state.randomState = this.random.snapshot();
-    return structuredClone(this.state);
+    this.sync();
+    const { campaign: _previous, ...state } = this.state;
+    return { ...structuredClone(state), campaign: captureCampaignWorld(this.game) };
   }
-
   drainEvents() {
     const events = this.events;
     this.events = [];
@@ -272,94 +378,92 @@ export class LocalCoopSimulation {
   private fixedStep(dt: number, tick: number) {
     this.state.tick = tick;
     this.applyCommands();
-    if (this.state.phase !== "running") return;
+    if (this.state.phase !== "running") {
+      this.sync();
+      return;
+    }
     this.state.team.elapsedSeconds += dt;
     this.state.team.overdriveRemaining = Math.max(0, this.state.team.overdriveRemaining - dt);
-
-    for (const id of PLAYER_IDS) {
-      const player = this.state.players[id];
-      player.ship.invuln = Math.max(0, player.ship.invuln - dt);
-      player.reviveCooldown = Math.max(0, player.reviveCooldown - dt);
-      player.reviveLockout = Math.max(0, player.reviveLockout - dt);
-      player.supportQuietTimer = Math.max(0, player.supportQuietTimer - dt);
-      if (player.disabled) continue;
-      stepPlayerMovement(player.ship, player.input, dt, { width: this.width, height: this.height });
-      player.ship.fireTimer -= dt;
-      player.ship.missileTimer = Math.max(0, player.ship.missileTimer - dt);
-      player.ship.missileCharge += dt;
-      if (
-        player.ship.missiles < player.ship.maxMissiles &&
-        player.ship.missileCharge >= player.ship.missileRegen
-      ) {
-        player.ship.missiles++;
-        player.ship.missileCharge -= player.ship.missileRegen;
-      }
-      if (player.input.fire && player.ship.fireTimer <= 0) this.fire(player);
-      if (player.input.missile && !player.ship.missileHeld) this.fireMissile(player);
-      player.ship.missileHeld = player.input.missile;
-      this.updateDrone(player, dt);
+    for (const p of Object.values(this.state.players)) {
+      p.reviveCooldown = Math.max(0, p.reviveCooldown - dt);
+      p.reviveLockout = Math.max(0, p.reviveLockout - dt);
     }
-
-    this.updateRocks(dt);
-    this.updateEnemies(dt);
-    this.updateBoss(dt);
-    this.updateProjectiles(dt);
-    this.updateHostileProjectiles(dt);
-    this.updateHazards(dt);
-    this.updateTethers(dt);
-    this.updateMines(dt);
-    this.updatePickups(dt);
-    this.updatePlayerCollisions();
+    const active = PILOTS.find((id) => !this.state.players[id].disabled);
+    if (active) this.game.bindPilot(active);
+    // The campaign's original effects/movement run at their usual 60 Hz.
+    for (let i = 0; i < 2 && this.state.phase === "running"; i++) {
+      this.game.frame++;
+      this.game.decayShake(dt / 2);
+      this.game.timeScale += (1 - this.game.timeScale) * Math.min(1, (dt / 2) * 7);
+      this.game.update((dt / 2) * this.game.timeScale);
+      this.game.updateTethers((dt / 2) * this.game.timeScale);
+      if (this.game.mode === "victory")
+        this.state.phase = this.game.bonusAvailable ? "bonusOffer" : "victory";
+    }
+    this.game.releasePilot();
     this.updateRevives(dt);
     this.enforceEntityCaps();
-    if (this.state.phase !== "running") return;
-
-    if (!this.state.boss && this.state.rocks.length === 0 && this.state.enemies.length === 0)
-      this.startNextWave();
-    this.state.randomState = this.random.snapshot();
+    this.sync();
   }
 
   private applyCommands() {
     const commands = this.commands;
     this.commands = [];
-    for (const command of commands) {
-      const player = this.state.players[command.playerId];
-      switch (command.type) {
-        case "input":
-          player.input = {
-            moveX: command.moveX,
-            moveY: command.moveY,
-            aimAngle: command.aimAngle,
-            aimTurnMultiplier: 3.2,
-            fire: command.fire,
-            missile: command.missile,
-            interact: command.interact,
-          };
-          break;
+    for (const c of commands) {
+      const p = this.state.players[c.playerId],
+        g = this.game;
+      if (c.type === "input") {
+        p.input = {
+          moveX: c.moveX,
+          moveY: c.moveY,
+          aimAngle: c.aimAngle,
+          aimTurnMultiplier: 3.2,
+          fire: c.fire,
+          missile: c.missile,
+          interact: c.interact,
+        };
+        continue;
+      }
+      if (p.disabled && c.type !== "startBonusBoss" && c.type !== "declineBonusBoss") continue;
+      g.bindPilot(p.id);
+      const before = g.credits;
+      let accepted = false;
+      let item: string = c.type;
+      switch (c.type) {
         case "buyWeapon":
-          this.buyWeapon(player, command.weapon);
+          item = c.weapon;
+          accepted = g.buyWeapon(c.weapon);
           break;
         case "selectWeapon":
-          if (player.ship.weapons[command.weapon] > 0) player.ship.primary = command.weapon;
-          else this.reject(player, command.weapon);
+          item = c.weapon;
+          accepted = p.ship.weapons[c.weapon] > 0;
+          if (accepted) g.selectWeapon(c.weapon);
           break;
         case "buyDrone":
-          this.buyDrone(player);
+          accepted = g.buySalvageDrone();
           break;
         case "buyDroneUpgrade":
-          this.buyDroneUpgrade(player, command.upgrade);
-          break;
-        case "chooseUpgrade":
-          this.chooseUpgrade(player, command.upgrade);
+          item = c.upgrade;
+          accepted = g.buySalvageUpgrade(c.upgrade);
           break;
         case "equipDroneWeapon":
-          if (
-            player.drone.purchased &&
-            (command.weapon === null ||
-              (player.ship.weapons[command.weapon] > 0 && command.weapon !== player.ship.primary))
-          )
-            player.drone.weapon = command.weapon;
-          else this.reject(player, command.weapon ?? "droneWeapon");
+          accepted = g.equipSalvageWeapon(c.weapon);
+          break;
+        case "chooseUpgrade":
+          item = c.upgrade;
+          accepted =
+            g.choices.some((card) => card.id === c.upgrade) &&
+            (p.upgrades[c.upgrade] ?? 0) <
+              (STAT_UPGRADES.find((u) => u.id === c.upgrade)?.max ?? 0);
+          if (accepted) {
+            g.chooseUpgrade(c.upgrade);
+            const next = p.campaign!.queuedChoices.shift();
+            g.choices = next ? g.rollChoices() : [];
+            g.rerollCost = GAME_CONFIG.progression.levelUpRerollStartingCost;
+          }
+          break;
+        case "rerollUpgrades":
+          accepted = g.choices.length > 0 && g.rerollChoices() !== null;
           break;
         case "activateOverdrive":
           if (
@@ -368,1170 +472,187 @@ export class LocalCoopSimulation {
           ) {
             this.state.team.overdrive = 0;
             this.state.team.overdriveRemaining = COOP_CONFIG.overdrive.durationSeconds;
-            this.events.push({
-              type: "overdriveActivated",
-              tick: this.state.tick,
-              playerId: player.id,
-            });
+            this.events.push({ type: "overdriveActivated", tick: this.state.tick, playerId: p.id });
+            accepted = true;
           }
           break;
         case "startBonusBoss":
-          if (this.state.phase === "bonusOffer" && this.state.team.bonusAvailable)
-            this.startBonusBoss(player.id);
+          if (this.state.phase === "bonusOffer" && g.bonusAvailable) {
+            g.startBonusBoss();
+            this.state.phase = "running";
+            for (const id of PILOTS) {
+              const pilot = this.state.players[id];
+              pilot.disabled = false;
+              pilot.ship.hull = pilot.ship.maxHull;
+              pilot.ship.missiles = pilot.ship.maxMissiles;
+            }
+            this.events.push({ type: "bonusBossStarted", tick: this.state.tick, playerId: p.id });
+            accepted = true;
+          }
           break;
         case "declineBonusBoss":
-          if (this.state.phase === "bonusOffer") this.endMatch("victory");
+          if (this.state.phase === "bonusOffer") {
+            this.state.phase = "victory";
+            g.bonusAvailable = false;
+            accepted = true;
+          }
           break;
       }
-    }
-  }
-
-  private buyWeapon(player: CoopPlayerState, weapon: WeaponId) {
-    const price = weaponPrice(player.ship, weapon);
-    if (price == null || player.credits < price) return this.reject(player, weapon);
-    const locked = player.ship.weapons[weapon] === 0;
-    player.credits -= price;
-    player.ship.weapons[weapon] = Math.min(weaponMaxLevel(weapon), player.ship.weapons[weapon] + 1);
-    if (locked) player.ship.primary = weapon;
-    this.events.push({
-      type: "purchaseAccepted",
-      tick: this.state.tick,
-      playerId: player.id,
-      item: weapon,
-      cost: price,
-    });
-  }
-
-  private buyDrone(player: CoopPlayerState) {
-    if (player.drone.purchased || player.credits < SALVAGE_BASE_PRICE)
-      return this.reject(player, "drone");
-    player.credits -= SALVAGE_BASE_PRICE;
-    player.drone.purchased = true;
-    player.drone.active = true;
-    player.drone.hp = player.drone.maxHp;
-    player.drone.x = player.ship.x + 30;
-    player.drone.y = player.ship.y + 15;
-    this.events.push({
-      type: "purchaseAccepted",
-      tick: this.state.tick,
-      playerId: player.id,
-      item: "drone",
-      cost: SALVAGE_BASE_PRICE,
-    });
-  }
-
-  private buyDroneUpgrade(player: CoopPlayerState, id: keyof CoopPlayerState["drone"]["upgrades"]) {
-    const price = salvageUpgradePrice(player.drone, id);
-    if (!player.drone.purchased || price == null || player.credits < price)
-      return this.reject(player, id);
-    player.credits -= price;
-    player.drone.upgrades[id]++;
-    if (id === "armor") {
-      player.drone.maxHp += GAME_CONFIG.salvage.armorHpPerLevel;
-      player.drone.hp = Math.min(
-        player.drone.maxHp,
-        player.drone.hp + GAME_CONFIG.salvage.armorHpPerLevel,
+      this.events.push(
+        accepted
+          ? {
+              type: "purchaseAccepted",
+              tick: this.state.tick,
+              playerId: p.id,
+              item,
+              cost: before - g.credits,
+            }
+          : { type: "purchaseRejected", tick: this.state.tick, playerId: p.id, item },
       );
-    }
-    this.events.push({
-      type: "purchaseAccepted",
-      tick: this.state.tick,
-      playerId: player.id,
-      item: id,
-      cost: price,
-    });
-  }
-
-  private chooseUpgrade(player: CoopPlayerState, id: string) {
-    const upgrade = STAT_UPGRADES.find((entry) => entry.id === id);
-    const level = player.upgrades[id] ?? 0;
-    if (!upgrade || player.upgradePoints < 1 || level >= upgrade.max)
-      return this.reject(player, id);
-    player.upgradePoints--;
-    upgrade.apply({ p: player.ship });
-    player.upgrades[id] = level + 1;
-    this.events.push({
-      type: "purchaseAccepted",
-      tick: this.state.tick,
-      playerId: player.id,
-      item: id,
-      cost: 0,
-    });
-  }
-
-  private reject(player: CoopPlayerState, item: string) {
-    this.events.push({
-      type: "purchaseRejected",
-      tick: this.state.tick,
-      playerId: player.id,
-      item,
-    });
-  }
-
-  private fire(player: CoopPlayerState) {
-    const weapon = player.ship.primary;
-    if (player.ship.weapons[weapon] <= 0) return;
-    const stats = weaponSimulationStats(player.ship, player.drone, weapon);
-    const overdrive =
-      this.state.team.overdriveRemaining > 0 ? COOP_CONFIG.overdrive.fireRateMultiplier : 1;
-    player.ship.fireTimer = 1 / (stats.rate * overdrive);
-    if (weapon === "laser" || weapon === "arc") {
-      this.fireInstantWeapon(
-        player,
-        stats.damage,
-        weapon === "arc" ? 2 + player.ship.weapons.arc : 1,
-      );
-      this.events.push({ type: "weaponFired", tick: this.state.tick, playerId: player.id, weapon });
-      return;
-    }
-    const startX = player.ship.x + Math.cos(player.ship.angle) * 18;
-    const startY = player.ship.y + Math.sin(player.ship.angle) * 18;
-    for (let shot = 0; shot < stats.shots; shot++) {
-      const spread = (shot - (stats.shots - 1) / 2) * stats.arc;
-      const angle =
-        player.ship.angle + spread + randomBetween(this.random, -0.5, 0.5) * player.ship.inaccuracy;
-      const critical = randomChance(this.random, player.ship.crit);
-      const damage =
-        stats.damage *
-        (critical ? player.ship.critMult : 1) *
-        (this.state.team.overdriveRemaining > 0 ? COOP_CONFIG.overdrive.damageMultiplier : 1);
-      this.state.projectiles.push({
-        id: this.nextId(),
-        ownerId: player.id,
-        x: startX,
-        y: startY,
-        vx: Math.cos(angle) * stats.speed + player.ship.vx * 0.35,
-        vy: Math.sin(angle) * stats.speed + player.ship.vy * 0.35,
-        radius: stats.radius,
-        damage,
-        life: stats.life,
-        pierce: stats.pierce,
-        bounces: stats.bounces,
-        homing: stats.homing,
-        hitIds: [],
-        weapon,
-        kind: "shot",
-        fuse: stats.fuse,
-        blastRadius: 0,
-        blastDamage: 0,
-        extra: stats.extra,
-        extraDamage: stats.extraDamage,
-      });
-    }
-    this.events.push({ type: "weaponFired", tick: this.state.tick, playerId: player.id, weapon });
-  }
-
-  private fireInstantWeapon(player: CoopPlayerState, damage: number, maximumTargets: number) {
-    const candidates = [
-      ...this.state.enemies.map((entity) => ({ entity, type: "enemy" as const })),
-      ...this.state.mines.map((entity) => ({ entity, type: "mine" as const })),
-      ...this.state.rocks.map((entity) => ({ entity, type: "rock" as const })),
-      ...(this.state.boss ? [{ entity: this.state.boss, type: "boss" as const }] : []),
-    ]
-      .map((entry) => ({
-        ...entry,
-        distance: Math.hypot(entry.entity.x - player.ship.x, entry.entity.y - player.ship.y),
-        angle: Math.abs(
-          wrapAngle(
-            Math.atan2(entry.entity.y - player.ship.y, entry.entity.x - player.ship.x) -
-              player.ship.angle,
-          ),
-        ),
-      }))
-      .filter((entry) => entry.distance <= 760 && entry.angle <= 0.16)
-      .sort((left, right) => left.distance - right.distance || left.entity.id - right.entity.id)
-      .slice(0, maximumTargets);
-    for (const target of candidates) {
-      if (target.type === "boss") this.damageBoss(damage, player);
-      else if (target.type === "enemy") this.damageEnemy(target.entity, damage, player);
-      else if (target.type === "mine") this.damageMine(target.entity, damage, player);
-      else this.damageRock(target.entity, damage, player);
+      g.releasePilot();
     }
   }
 
-  private fireMissile(player: CoopPlayerState) {
-    if (player.ship.missiles <= 0 || player.ship.missileTimer > 0) return;
-    player.ship.missiles--;
-    player.ship.missileTimer = 0.45;
-    player.ship.missileCharge = 0;
-    const angle = player.ship.angle;
-    this.state.projectiles.push({
-      id: this.nextId(),
-      ownerId: player.id,
-      x: player.ship.x + Math.cos(angle) * 20,
-      y: player.ship.y + Math.sin(angle) * 20,
-      vx: Math.cos(angle) * GAME_CONFIG.simulation.missileSpeed,
-      vy: Math.sin(angle) * GAME_CONFIG.simulation.missileSpeed,
-      radius: 7,
-      damage: player.ship.blastDmg,
-      life: 3.2,
-      pierce: 0,
-      bounces: 0,
-      homing: 3.5,
-      hitIds: [],
-      weapon: player.ship.primary,
-      kind: "missile",
-      fuse: 0,
-      blastRadius: player.ship.blastR,
-      blastDamage: player.ship.blastDmg,
-      extra: 0,
-      extraDamage: 0,
-    });
-    this.events.push({ type: "missileFired", tick: this.state.tick, playerId: player.id });
-  }
-
-  private updateDrone(player: CoopPlayerState, dt: number) {
-    const drone = player.drone;
-    if (!drone.purchased || !drone.active) return;
-    const targetX = player.ship.x + (player.id === "p1" ? -34 : 34);
-    const targetY = player.ship.y + 24;
-    drone.x += (targetX - drone.x) * Math.min(1, dt * 5);
-    drone.y += (targetY - drone.y) * Math.min(1, dt * 5);
-    drone.fireTimer -= dt;
-    drone.pulseTimer -= dt;
-    const repairLevel = drone.upgrades.repairPulse;
-    const supportRange =
-      GAME_CONFIG.salvage.repairPulseRange +
-      drone.upgrades.scan * GAME_CONFIG.salvage.repairPulseRangePerScan;
-    if (
-      repairLevel > 0 &&
-      player.supportQuietTimer <= 0 &&
-      Math.hypot(drone.x - player.ship.x, drone.y - player.ship.y) <= supportRange &&
-      drone.pulseTimer <= 0
-    ) {
-      player.ship.hull = Math.min(
-        player.ship.maxHull,
-        player.ship.hull +
-          (repairLevel >= 3
-            ? GAME_CONFIG.salvage.repairPulseLevel3Heal
-            : GAME_CONFIG.salvage.repairPulseHeal),
-      );
-      drone.pulseTimer =
-        GAME_CONFIG.salvage.repairPulseIntervals[
-          Math.min(repairLevel, GAME_CONFIG.salvage.repairPulseIntervals.length) - 1
-        ];
-    }
-    const target = this.nearestTarget(drone.x, drone.y);
-    if (!target || drone.fireTimer > 0) return;
-    const mounted = drone.weapon
-      ? weaponSimulationStats(player.ship, drone, drone.weapon, player.ship.weapons[drone.weapon])
-      : null;
-    const damage =
-      GAME_CONFIG.salvage.baseShotDamage +
-      drone.upgrades.overcharge * GAME_CONFIG.salvage.overchargeDamagePerLevel +
-      (mounted?.damage ?? 0) * GAME_CONFIG.salvage.weaponDamageScale;
-    if (target.type === "boss") this.damageBoss(damage, player);
-    else if (target.type === "enemy") this.damageEnemy(target.entity, damage, player);
-    else if (target.type === "mine") this.damageMine(target.entity, damage, player);
-    else this.damageRock(target.entity, damage, player);
-    drone.fireTimer = Math.max(
-      GAME_CONFIG.salvage.minFireInterval,
-      (mounted
-        ? GAME_CONFIG.salvage.attachedFireInterval
-        : GAME_CONFIG.salvage.starterFireInterval) -
-        drone.upgrades.overcharge * GAME_CONFIG.salvage.overchargeFireReduction -
-        drone.upgrades.twinCannons * GAME_CONFIG.salvage.twinCadenceReduction,
+  private enforceEntityCaps() {
+    const g = this.game,
+      caps = COOP_CONFIG.entityCaps;
+    g.rocks.length = Math.min(g.rocks.length, caps.rocks);
+    g.drones.length = Math.min(g.drones.length, caps.enemies);
+    let friendly = 0,
+      hostile = 0;
+    g.bullets = g.bullets.filter((b) =>
+      isHostileShot(b) ? ++hostile <= caps.hostileProjectiles : ++friendly <= caps.projectiles,
     );
+    g.pickups.length = Math.min(g.pickups.length, caps.pickups);
+    g.particles.length = Math.min(g.particles.length, 180);
+    this.state.tethers.length = Math.min(this.state.tethers.length, caps.tethers);
   }
 
-  private updateProjectiles(dt: number) {
-    for (let index = this.state.projectiles.length - 1; index >= 0; index--) {
-      const projectile = this.state.projectiles[index];
-      // Boss death clears the projectile collection immediately. A second projectile from the
-      // same tick may therefore no longer exist even though this reverse loop began with it.
-      if (!projectile) continue;
-      projectile.life -= dt;
-      projectile.fuse -= dt;
-      if (projectile.homing > 0) this.guideProjectile(projectile, dt);
-      projectile.x += projectile.vx * dt;
-      projectile.y += projectile.vy * dt;
-
-      if (projectile.bounces > 0) {
-        if (projectile.x < 0 || projectile.x > this.width) {
-          projectile.vx *= -1;
-          projectile.x = clamp(projectile.x, 0, this.width);
-          projectile.bounces--;
-        }
-        if (projectile.y < 0 || projectile.y > this.height) {
-          projectile.vy *= -1;
-          projectile.y = clamp(projectile.y, 0, this.height);
-          projectile.bounces--;
-        }
-      }
-
-      let consumed =
-        projectile.life <= 0 ||
-        projectile.x < -80 ||
-        projectile.x > this.width + 80 ||
-        projectile.y < -80 ||
-        projectile.y > this.height + 80;
-      if (projectile.kind === "shot" && projectile.extra > 0 && projectile.fuse <= 0) {
-        this.spawnShrapnel(projectile);
-        consumed = true;
-      }
-      if (!consumed) {
-        for (const mine of [...this.state.mines]) {
-          if (projectile.hitIds.includes(mine.id)) continue;
-          if (
-            Math.hypot(projectile.x - mine.x, projectile.y - mine.y) >
-            projectile.radius + mine.radius
-          )
-            continue;
-          projectile.hitIds.push(mine.id);
-          this.damageMine(mine, projectile.damage, this.state.players[projectile.ownerId]);
-          consumed = projectile.kind === "missile" || projectile.pierce-- <= 0;
-          if (consumed) break;
-        }
-      }
-      if (!consumed) {
-        for (const enemy of [...this.state.enemies]) {
-          if (projectile.hitIds.includes(enemy.id)) continue;
-          if (
-            Math.hypot(projectile.x - enemy.x, projectile.y - enemy.y) >
-            projectile.radius + enemy.radius
-          )
-            continue;
-          projectile.hitIds.push(enemy.id);
-          this.damageEnemy(enemy, projectile.damage, this.state.players[projectile.ownerId]);
-          consumed = projectile.kind === "missile" || projectile.pierce-- <= 0;
-          if (consumed) break;
-        }
-      }
-      if (!consumed && this.state.boss && !projectile.hitIds.includes(this.state.boss.id)) {
-        if (
-          Math.hypot(projectile.x - this.state.boss.x, projectile.y - this.state.boss.y) <=
-          projectile.radius + this.state.boss.radius
-        ) {
-          projectile.hitIds.push(this.state.boss.id);
-          this.damageBoss(projectile.damage, this.state.players[projectile.ownerId]);
-          consumed = projectile.kind === "missile" || projectile.pierce-- <= 0;
-        }
-      }
-      if (!consumed) {
-        for (const rock of [...this.state.rocks]) {
-          if (projectile.hitIds.includes(rock.id)) continue;
-          if (
-            Math.hypot(projectile.x - rock.x, projectile.y - rock.y) >
-            projectile.radius + rock.radius
-          )
-            continue;
-          projectile.hitIds.push(rock.id);
-          this.damageRock(rock, projectile.damage, this.state.players[projectile.ownerId]);
-          consumed = projectile.kind === "missile" || projectile.pierce-- <= 0;
-          if (consumed) break;
-        }
-      }
-      if (consumed) {
-        if (projectile.kind === "missile") this.explodeMissile(projectile);
-        this.state.projectiles.splice(index, 1);
-      }
-    }
-  }
-
-  private spawnShrapnel(projectile: CoopProjectileState) {
-    for (let index = 0; index < projectile.extra; index++) {
-      const angle = (index / projectile.extra) * TAU + this.random.next() * 0.2;
-      this.state.projectiles.push({
-        id: this.nextId(),
-        ownerId: projectile.ownerId,
-        x: projectile.x,
-        y: projectile.y,
-        vx: Math.cos(angle) * 520,
-        vy: Math.sin(angle) * 520,
-        radius: 2.8,
-        damage: projectile.extraDamage,
-        life: 0.55,
-        pierce: 0,
-        bounces: 0,
-        homing: 0,
-        hitIds: [],
-        weapon: "flak",
-        kind: "shrapnel",
-        fuse: 0,
-        blastRadius: 0,
-        blastDamage: 0,
-        extra: 0,
-        extraDamage: 0,
-      });
-    }
-  }
-
-  private explodeMissile(projectile: CoopProjectileState) {
-    const player = this.state.players[projectile.ownerId];
-    for (const enemy of [...this.state.enemies])
-      if (Math.hypot(enemy.x - projectile.x, enemy.y - projectile.y) <= projectile.blastRadius)
-        this.damageEnemy(enemy, projectile.blastDamage, player);
-    for (const mine of [...this.state.mines])
-      if (Math.hypot(mine.x - projectile.x, mine.y - projectile.y) <= projectile.blastRadius)
-        this.damageMine(mine, projectile.blastDamage, player);
-    for (const rock of [...this.state.rocks])
-      if (Math.hypot(rock.x - projectile.x, rock.y - projectile.y) <= projectile.blastRadius)
-        this.damageRock(rock, projectile.blastDamage, player);
-    if (
-      this.state.boss &&
-      Math.hypot(this.state.boss.x - projectile.x, this.state.boss.y - projectile.y) <=
-        projectile.blastRadius + this.state.boss.radius
-    )
-      this.damageBoss(projectile.blastDamage, player);
-  }
-
-  private guideProjectile(projectile: CoopProjectileState, dt: number) {
-    const target = this.nearestTarget(projectile.x, projectile.y)?.entity;
-    if (!target) return;
-    const speed = Math.hypot(projectile.vx, projectile.vy) || 1;
-    const current = Math.atan2(projectile.vy, projectile.vx);
-    const desired = Math.atan2(target.y - projectile.y, target.x - projectile.x);
-    const angle =
-      current +
-      clamp(wrapAngle(desired - current), -projectile.homing * dt, projectile.homing * dt);
-    projectile.vx = Math.cos(angle) * speed;
-    projectile.vy = Math.sin(angle) * speed;
-  }
-
-  private updateEnemies(dt: number) {
-    for (const enemy of this.state.enemies) {
-      const target = this.nearestPlayer(enemy.x, enemy.y);
-      if (!target) continue;
-      enemy.targetPlayerId = target.id;
-      enemy.fireTimer -= dt;
-      enemy.behaviorTimer -= dt;
-      if (enemy.warningTimer > 0) {
-        enemy.warningTimer -= dt;
-        if (enemy.warningTimer <= 0) this.completeEnemyAttack(enemy);
-      }
-
-      if (enemy.kind === "spiker") {
-        if (enemy.behaviorTimer <= 0) {
-          const turn = randomBetween(
-            this.random,
-            -GAME_CONFIG.enemies.spikers.turnAngle,
-            GAME_CONFIG.enemies.spikers.turnAngle,
-          );
-          const speed = Math.hypot(enemy.vx, enemy.vy);
-          const angle = Math.atan2(enemy.vy, enemy.vx) + turn;
-          enemy.vx = Math.cos(angle) * speed;
-          enemy.vy = Math.sin(angle) * speed;
-          enemy.behaviorTimer = randomBetween(
-            this.random,
-            GAME_CONFIG.enemies.spikers.turnIntervalMin,
-            GAME_CONFIG.enemies.spikers.turnIntervalMax,
-          );
-        }
-        enemy.angle += GAME_CONFIG.enemies.spikers.spinRate * dt;
-        if (enemy.fireTimer <= 0 && enemy.warningTimer <= 0) {
-          enemy.warningTimer = GAME_CONFIG.enemies.spikers.fireWarning;
-          enemy.aimX = target.ship.x;
-          enemy.aimY = target.ship.y;
-        }
-      } else if (enemy.kind === "wardenTurret") {
-        enemy.vx = 0;
-        enemy.vy = 0;
-        if (enemy.fireTimer <= 0 && enemy.warningTimer <= 0) {
-          enemy.warningTimer = 0.35;
-          enemy.aimX = target.ship.x;
-          enemy.aimY = target.ship.y;
-        }
-      } else if (enemy.kind === "tetherSentinel") {
-        const dx = target.ship.x - enemy.x;
-        const dy = target.ship.y - enemy.y;
-        const distance = Math.hypot(dx, dy) || 1;
-        const direction =
-          distance > COOP_CONFIG.tetherSentinel.preferredDistance + 60
-            ? 1
-            : distance < COOP_CONFIG.tetherSentinel.preferredDistance - 60
-              ? -1
-              : 0;
-        enemy.vx = (dx / distance) * COOP_CONFIG.tetherSentinel.speed * direction;
-        enemy.vy = (dy / distance) * COOP_CONFIG.tetherSentinel.speed * direction;
-        enemy.angle = Math.atan2(dy, dx);
-        const hasTether = this.state.tethers.some((tether) => tether.sourceId === enemy.id);
-        if (!hasTether && enemy.fireTimer <= 0 && enemy.warningTimer <= 0) {
-          enemy.warningTimer = COOP_CONFIG.tetherSentinel.telegraphSeconds;
-          enemy.aimX = target.ship.x;
-          enemy.aimY = target.ship.y;
-        }
-      } else if (enemy.kind === "mineWarden") {
-        const dx = target.ship.x - enemy.x;
-        const dy = target.ship.y - enemy.y;
-        const distance = Math.hypot(dx, dy) || 1;
-        const direction =
-          distance > COOP_CONFIG.mineWarden.preferredDistance + 80
-            ? 1
-            : distance < COOP_CONFIG.mineWarden.preferredDistance - 80
-              ? -1
-              : 0;
-        enemy.vx = (dx / distance) * COOP_CONFIG.mineWarden.speed * direction;
-        enemy.vy = (dy / distance) * COOP_CONFIG.mineWarden.speed * direction;
-        enemy.angle = Math.atan2(dy, dx);
-        if (enemy.fireTimer <= 0 && this.state.mines.length < COOP_CONFIG.mineWarden.mineCap) {
-          this.deployMine(enemy);
-          enemy.fireTimer = randomBetween(
-            this.random,
-            COOP_CONFIG.mineWarden.deploymentMin,
-            COOP_CONFIG.mineWarden.deploymentMax,
-          );
-        }
-      } else {
-        const preferred =
-          enemy.kind === "warden"
-            ? GAME_CONFIG.enemies.wardens.preferredDistance
-            : GAME_CONFIG.enemies.sentinels.preferredDistance;
-        const speed =
-          enemy.kind === "warden"
-            ? GAME_CONFIG.enemies.wardens.speed
-            : GAME_CONFIG.enemies.sentinels.speed;
-        const dx = target.ship.x - enemy.x;
-        const dy = target.ship.y - enemy.y;
-        const distance = Math.hypot(dx, dy) || 1;
-        const direction = distance > preferred + 80 ? 1 : distance < preferred - 80 ? -1 : 0;
-        enemy.vx = (dx / distance) * speed * direction + (-dy / distance) * speed * 0.18;
-        enemy.vy = (dy / distance) * speed * direction + (dx / distance) * speed * 0.18;
-        enemy.angle = Math.atan2(dy, dx);
-        if (
-          enemy.kind === "warden" &&
-          enemy.behaviorTimer <= 0 &&
-          this.state.enemies.filter((candidate) => candidate.kind === "wardenTurret").length <
-            GAME_CONFIG.enemies.wardens.turretCap
-        ) {
-          const turret = this.spawnEnemy("wardenTurret");
-          turret.x = clamp(
-            enemy.x + randomBetween(this.random, -90, 90),
-            turret.radius,
-            this.width - turret.radius,
-          );
-          turret.y = clamp(
-            enemy.y + randomBetween(this.random, -90, 90),
-            turret.radius,
-            this.height - turret.radius,
-          );
-          enemy.behaviorTimer = randomBetween(
-            this.random,
-            GAME_CONFIG.enemies.wardens.turretIntervalMin,
-            GAME_CONFIG.enemies.wardens.turretIntervalMax,
-          );
-        }
-        if (enemy.fireTimer <= 0 && enemy.warningTimer <= 0) {
-          if (enemy.kind === "warden") {
-            enemy.warningTimer = GAME_CONFIG.enemies.wardens.aimWarning;
-            enemy.aimX = target.ship.x + target.ship.vx * 0.45;
-            enemy.aimY = target.ship.y + target.ship.vy * 0.45;
-          } else {
-            this.fireEnemyShot(enemy, target.ship.x, target.ship.y);
-            enemy.fireTimer = randomBetween(
-              this.random,
-              GAME_CONFIG.enemies.sentinels.fireIntervalMin,
-              GAME_CONFIG.enemies.sentinels.fireIntervalMax,
-            );
-            if (this.state.team.wave >= GAME_CONFIG.enemies.sentinels.burstFromWave)
-              enemy.burst = 1;
-          }
-        } else if (enemy.kind === "sentinel" && enemy.burst > 0 && enemy.fireTimer <= -0.22) {
-          this.fireEnemyShot(enemy, target.ship.x, target.ship.y);
-          enemy.burst = 0;
-        }
-      }
-
-      enemy.x += enemy.vx * dt;
-      enemy.y += enemy.vy * dt;
-      if (enemy.kind === "spiker") {
-        if (enemy.x < enemy.radius || enemy.x > this.width - enemy.radius) enemy.vx *= -1;
-        if (enemy.y < enemy.radius || enemy.y > this.height - enemy.radius) enemy.vy *= -1;
-      }
-      enemy.x = clamp(enemy.x, enemy.radius, this.width - enemy.radius);
-      enemy.y = clamp(enemy.y, enemy.radius, this.height - enemy.radius);
-    }
-  }
-
-  private completeEnemyAttack(enemy: CoopEnemyState) {
-    if (enemy.kind === "spiker") {
-      const count = this.state.team.wave >= GAME_CONFIG.enemies.spikers.eightShotWave ? 8 : 4;
-      for (let shot = 0; shot < count; shot++) {
-        const angle = (shot / count) * TAU;
-        this.spawnHostile(
-          enemy,
-          angle,
-          GAME_CONFIG.enemies.spikers.boltSpeed,
-          GAME_CONFIG.enemies.spikers.boltDamage,
-          GAME_CONFIG.enemies.spikers.boltRadius,
-          GAME_CONFIG.enemies.spikers.boltLifetime,
-        );
-      }
-      enemy.fireTimer =
-        this.state.team.wave >= GAME_CONFIG.enemies.spikers.eightShotWave
-          ? GAME_CONFIG.enemies.spikers.lateFireInterval
-          : GAME_CONFIG.enemies.spikers.fireInterval;
-      return;
-    }
-    if (enemy.kind === "tetherSentinel") {
-      const target = enemy.targetPlayerId && this.state.players[enemy.targetPlayerId];
-      if (target && !target.disabled) {
-        this.state.tethers.push({
-          id: this.nextId(),
-          sourceId: enemy.id,
-          targetPlayerId: target.id,
-          strength: COOP_CONFIG.tetherSentinel.strength,
-          minimumDistance: COOP_CONFIG.tetherSentinel.minimumDistance,
-          maximumDistance: COOP_CONFIG.tetherSentinel.maximumDistance,
-        });
-        this.events.push({
-          type: "tetherStarted",
-          tick: this.state.tick,
-          entityId: enemy.id,
-          playerId: target.id,
-        });
-      }
-      enemy.fireTimer = COOP_CONFIG.tetherSentinel.cooldownSeconds;
-      return;
-    }
-    this.fireEnemyShot(enemy, enemy.aimX, enemy.aimY);
-    enemy.fireTimer =
-      enemy.kind === "warden"
-        ? randomBetween(
-            this.random,
-            GAME_CONFIG.enemies.wardens.shotDelayMin,
-            GAME_CONFIG.enemies.wardens.shotDelayMax,
-          )
-        : 2.2;
-  }
-
-  private fireEnemyShot(enemy: CoopEnemyState, targetX: number, targetY: number) {
-    const angle = Math.atan2(targetY - enemy.y, targetX - enemy.x);
-    if (enemy.kind === "warden" || enemy.kind === "wardenTurret")
-      this.spawnHostile(
-        enemy,
-        angle,
-        GAME_CONFIG.enemies.wardens.boltSpeed,
-        GAME_CONFIG.enemies.wardens.boltDamage,
-        GAME_CONFIG.enemies.wardens.boltRadius,
-        GAME_CONFIG.enemies.wardens.boltLifetime,
-      );
-    else
-      this.spawnHostile(
-        enemy,
-        angle,
-        GAME_CONFIG.enemies.sentinels.boltSpeed,
-        GAME_CONFIG.enemies.sentinels.boltDamage,
-        GAME_CONFIG.enemies.sentinels.boltRadius,
-        GAME_CONFIG.enemies.sentinels.boltLifetime,
-      );
-  }
-
-  private spawnHostile(
-    source: CoopEnemyState | CoopBossState,
-    angle: number,
-    speed: number,
-    damage: number,
-    radius: number,
-    life: number,
-  ) {
-    this.state.hostileProjectiles.push({
-      id: this.nextId(),
-      sourceId: source.id,
-      source: "kind" in source ? source.kind : "boss",
-      x: source.x + Math.cos(angle) * source.radius,
-      y: source.y + Math.sin(angle) * source.radius,
-      vx: Math.cos(angle) * speed,
-      vy: Math.sin(angle) * speed,
-      radius,
-      damage,
-      life,
+  private sync() {
+    const g = this.game,
+      s = this.state;
+    g.releasePilot();
+    for (const p of g.pickups) p.id ??= g.nextId++;
+    s.randomState = this.random.snapshot();
+    s.nextEntityId = g.nextId;
+    Object.assign(s.team, {
+      score: g.score,
+      wave: g.wave,
+      sector: g.themeIdx + 1,
+      bonusAvailable: g.bonusAvailable,
+      bonusActive: g.bonusActive,
+      bonusDefeated: g.bonusDefeated,
+    });
+    s.rocks = g.rocks.map((r) => ({
+      id: r.id,
+      x: r.x,
+      y: r.y,
+      vx: r.vx,
+      vy: r.vy,
+      radius: r.r,
+      size: r.size,
+      hp: r.hp,
+      maxHp: r.maxHp,
+      trait: r.trait,
+      fuse: r.fuse ?? -1,
+    }));
+    s.enemies = g.drones.map((d) => ({
+      id: d.id,
+      kind: d.coop?.kind ?? d.kind,
+      x: d.x,
+      y: d.y,
+      vx: d.vx,
+      vy: d.vy,
+      angle: d.angle,
+      radius: d.r,
+      hp: d.hp,
+      maxHp: d.maxHp,
+      fireTimer: d.fire,
+      behaviorTimer: 0,
+      warningTimer: d.pulseCharge ?? 0,
+      burst: 0,
+      targetPlayerId: null,
+      aimX: d.sniperAimX ?? d.x,
+      aimY: d.sniperAimY ?? d.y,
+    }));
+    s.projectiles = g.bullets
+      .filter((b) => !isHostileShot(b))
+      .map((b) => ({
+        id: b.id!,
+        ownerId: b.ownerId ?? "p1",
+        x: b.x,
+        y: b.y,
+        vx: b.vx,
+        vy: b.vy,
+        radius: b.r,
+        damage: b.dmg,
+        life: b.life,
+        pierce: b.pierce,
+        bounces: b.bounces,
+        homing: b.turn,
+        hitIds: [...b.hitIds],
+        weapon: b.weapon ?? "pulse",
+        kind: b.kind === "missile" ? "missile" : "shot",
+        fuse: b.fuse ?? 0,
+        blastRadius: b.blast ?? 0,
+        blastDamage: b.dmg,
+        extra: b.extra ?? 0,
+        extraDamage: b.extraDmg ?? 0,
+      }));
+    s.hostileProjectiles = g.bullets.filter(isHostileShot).map((b) => ({
+      id: b.id!,
+      sourceId: 0,
+      source: "boss",
+      x: b.x,
+      y: b.y,
+      vx: b.vx,
+      vy: b.vy,
+      radius: b.r,
+      damage: b.dmg,
+      life: b.life,
       hitPlayerIds: [],
-    });
-  }
-
-  private updateBoss(dt: number) {
-    const boss = this.state.boss;
-    if (!boss) return;
-    const fraction = boss.hp / boss.maxHp;
-    boss.phase =
-      fraction <= GAME_CONFIG.bosses.attackPhaseThresholds[1]
-        ? 3
-        : fraction <= GAME_CONFIG.bosses.attackPhaseThresholds[0]
-          ? 2
-          : 1;
-    boss.attackTimer -= dt;
-    boss.abilityTimer -= dt;
-    const targetX =
-      this.width / 2 +
-      Math.sin(this.state.team.elapsedSeconds * 0.45 + boss.mk) * this.width * 0.28;
-    const targetY = this.height * (0.2 + 0.08 * Math.cos(this.state.team.elapsedSeconds * 0.3));
-    boss.vx = (targetX - boss.x) * 0.7;
-    boss.vy = (targetY - boss.y) * 0.7;
-    boss.x = clamp(boss.x + boss.vx * dt, boss.radius, this.width - boss.radius);
-    boss.y = clamp(boss.y + boss.vy * dt, boss.radius, this.height * 0.55);
-    if (boss.attackTimer <= 0) {
-      const shots = 4 + boss.mk + boss.phase * 2;
-      const offset = this.random.next() * TAU;
-      for (let shot = 0; shot < shots; shot++)
-        this.spawnHostile(
-          boss,
-          offset + (shot / shots) * TAU,
-          180 + boss.mk * 22,
-          6 + boss.mk * 1.4,
-          6,
-          5,
-        );
-      boss.attackTimer = Math.max(0.65, GAME_CONFIG.bosses.baseAttackTimer - boss.phase * 0.35);
-    }
-    if (boss.abilityTimer <= 0) {
-      this.triggerBossAbility(boss);
-      boss.abilityTimer = Math.max(2.4, 6.2 - boss.phase * 0.7 - boss.mk * 0.2);
-    }
-  }
-
-  private triggerBossAbility(boss: CoopBossState) {
-    const target = this.nearestPlayer(boss.x, boss.y);
-    if (!target) return;
-    if (boss.mk === 6) {
-      if (randomChance(this.random, 0.5)) {
-        this.state.hazards.push({
-          id: this.nextId(),
-          sourceId: boss.id,
-          kind: "singularity",
-          x: this.width / 2,
-          y: this.height / 2,
-          radius: GAME_CONFIG.bosses.mk6.regenesisRadius,
-          timer: GAME_CONFIG.bosses.mk6.singularityDuration,
-          damage: GAME_CONFIG.bosses.mk6.regenesisDamage,
-        });
-        this.events.push({
-          type: "bossAbility",
-          tick: this.state.tick,
-          mk: boss.mk,
-          ability: "singularity",
-        });
-      } else {
-        for (let index = 0; index < GAME_CONFIG.bosses.mk6.strikeCount; index++)
-          this.state.hazards.push({
-            id: this.nextId(),
-            sourceId: boss.id,
-            kind: "strike",
-            x: randomBetween(this.random, 80, this.width - 80),
-            y: randomBetween(this.random, 100, this.height - 80),
-            radius: randomBetween(
-              this.random,
-              GAME_CONFIG.bosses.mk6.strikeRadiusMin,
-              GAME_CONFIG.bosses.mk6.strikeRadiusMax,
-            ),
-            timer:
-              GAME_CONFIG.bosses.mk6.strikeFirstWarning +
-              index * GAME_CONFIG.bosses.mk6.strikeWarningStep,
-            damage: GAME_CONFIG.bosses.mk6.strikePlayerDamage,
-          });
-        this.events.push({
-          type: "bossAbility",
-          tick: this.state.tick,
-          mk: boss.mk,
-          ability: "solarStrikes",
-        });
-      }
-    } else if (boss.mk === 4) {
-      this.state.hazards.push({
-        id: this.nextId(),
-        sourceId: boss.id,
-        kind: "strike",
-        x: target.ship.x,
-        y: target.ship.y,
-        radius: GAME_CONFIG.bosses.mk4.strikeRadius,
-        timer: GAME_CONFIG.bosses.mk4.strikeWarning,
-        damage: GAME_CONFIG.bosses.mk4.strikeDamage,
-      });
-      this.events.push({
-        type: "bossAbility",
-        tick: this.state.tick,
-        mk: boss.mk,
-        ability: "ignitionStrike",
-      });
-    } else if (boss.mk === 5) {
-      this.state.hazards.push({
-        id: this.nextId(),
-        sourceId: boss.id,
-        kind: "shockwave",
-        x: boss.x,
-        y: boss.y,
-        radius: 190 + boss.phase * 45,
-        timer: 0.8,
-        damage: 15 + boss.phase * 3,
-      });
-      this.events.push({
-        type: "bossAbility",
-        tick: this.state.tick,
-        mk: boss.mk,
-        ability: "shockwave",
-      });
-    } else {
-      const trait: RockTrait = boss.mk === 1 ? "none" : boss.mk === 2 ? "homing" : "bounce";
-      const count = boss.mk === 3 ? 3 : 2;
-      for (let index = 0; index < count; index++)
-        this.state.rocks.push(
-          this.makeRock(
-            randomBetween(this.random, 40, this.width - 40),
-            -30,
-            2,
-            trait,
-            randomBetween(this.random, -30, 30),
-            randomBetween(this.random, 100, 180),
-          ),
-        );
-      this.events.push({
-        type: "bossAbility",
-        tick: this.state.tick,
-        mk: boss.mk,
-        ability: "meteorCall",
-      });
-    }
-    if (randomChance(this.random, GAME_CONFIG.bosses.abilityRockChance)) {
-      const trait = BOSS_SPECS[boss.mk].trait;
-      this.state.rocks.push(
-        this.makeRock(boss.x, boss.y, randomInteger(this.random, 1, 3) as 1 | 2 | 3, trait),
-      );
-    }
-  }
-
-  private updateHostileProjectiles(dt: number) {
-    for (let index = this.state.hostileProjectiles.length - 1; index >= 0; index--) {
-      const shot = this.state.hostileProjectiles[index];
-      shot.life -= dt;
-      shot.x += shot.vx * dt;
-      shot.y += shot.vy * dt;
-      let consumed =
-        shot.life <= 0 ||
-        shot.x < -50 ||
-        shot.x > this.width + 50 ||
-        shot.y < -50 ||
-        shot.y > this.height + 50;
-      if (!consumed)
-        for (const id of PLAYER_IDS) {
-          const player = this.state.players[id];
-          if (player.disabled || shot.hitPlayerIds.includes(id)) continue;
-          if (
-            Math.hypot(player.ship.x - shot.x, player.ship.y - shot.y) >
-            GAME_CONFIG.player.shipRadius + shot.radius
-          )
-            continue;
-          shot.hitPlayerIds.push(id);
-          this.damagePlayer(player, shot.damage * COOP_CONFIG.difficulty.enemyDamage);
-          player.ship.invuln = 0.18;
-          consumed = true;
-          break;
+    }));
+    s.pickups = g.pickups.map((p) => ({ ...p, id: p.id! }));
+    s.hazards = [];
+    s.mines = g.rocks
+      .filter((r) => r.coopMine)
+      .map((r) => ({
+        id: r.id,
+        ownerId: r.coopMine!.ownerId,
+        x: r.x,
+        y: r.y,
+        radius: r.r,
+        hp: r.hp,
+        maxHp: r.maxHp,
+        armTimer: r.coopMine!.armTimer,
+        triggerTimer: r.coopMine!.triggerTimer,
+        blastRadius: COOP_CONFIG.mineWarden.mineBlastRadius,
+        damage: COOP_CONFIG.mineWarden.mineDamage,
+        life: r.coopMine!.life,
+      }));
+    s.boss = g.boss
+      ? {
+          id: g.boss.id,
+          mk: g.boss.mk,
+          x: g.boss.x,
+          y: g.boss.y,
+          radius: g.boss.r,
+          hp: g.boss.hp,
+          maxHp: g.boss.maxHp,
+          vx: g.boss.vx,
+          vy: g.boss.vy,
+          phase: g.boss.phase as 1 | 2 | 3,
+          attackTimer: g.boss.attackTimer,
+          abilityTimer: g.boss.attackTimer,
         }
-      if (consumed) this.state.hostileProjectiles.splice(index, 1);
-    }
-  }
-
-  private updateHazards(dt: number) {
-    for (let index = this.state.hazards.length - 1; index >= 0; index--) {
-      const hazard = this.state.hazards[index];
-      hazard.timer -= dt;
-      if (hazard.kind === "singularity" && hazard.timer > 0) {
-        for (const id of PLAYER_IDS) {
-          const player = this.state.players[id];
-          if (player.disabled) continue;
-          const distance = Math.hypot(hazard.x - player.ship.x, hazard.y - player.ship.y) || 1;
-          if (distance > hazard.radius) continue;
-          const pull = GAME_CONFIG.bosses.mk6.singularityPull * (1 - distance / hazard.radius);
-          player.ship.vx += ((hazard.x - player.ship.x) / distance) * pull * dt;
-          player.ship.vy += ((hazard.y - player.ship.y) / distance) * pull * dt;
-        }
-      }
-      if (hazard.timer > 0) continue;
-      for (const id of PLAYER_IDS) {
-        const player = this.state.players[id];
-        if (
-          !player.disabled &&
-          Math.hypot(player.ship.x - hazard.x, player.ship.y - hazard.y) <= hazard.radius
-        )
-          this.damagePlayer(player, hazard.damage * COOP_CONFIG.difficulty.enemyDamage);
-      }
-      this.state.hazards.splice(index, 1);
-    }
-  }
-
-  private updateTethers(dt: number) {
-    for (let index = this.state.tethers.length - 1; index >= 0; index--) {
-      const tether = this.state.tethers[index];
-      const source = this.state.enemies.find((enemy) => enemy.id === tether.sourceId);
-      const player = this.state.players[tether.targetPlayerId];
-      const distance = source
-        ? Math.hypot(source.x - player.ship.x, source.y - player.ship.y)
-        : Number.POSITIVE_INFINITY;
-      if (!source || player.disabled || distance > tether.maximumDistance) {
-        this.state.tethers.splice(index, 1);
-        this.events.push({
-          type: "tetherBroken",
-          tick: this.state.tick,
-          entityId: tether.sourceId,
-          playerId: player.id,
-        });
-        continue;
-      }
-      if (distance <= tether.minimumDistance) continue;
-      player.ship.vx += ((source.x - player.ship.x) / distance) * tether.strength * dt;
-      player.ship.vy += ((source.y - player.ship.y) / distance) * tether.strength * dt;
-    }
-  }
-
-  private deployMine(enemy: CoopEnemyState) {
-    const mine = {
-      id: this.nextId(),
-      ownerId: enemy.id,
-      x: enemy.x,
-      y: enemy.y,
-      radius: COOP_CONFIG.mineWarden.mineRadius,
-      hp: COOP_CONFIG.mineWarden.mineHp,
-      maxHp: COOP_CONFIG.mineWarden.mineHp,
-      armTimer: COOP_CONFIG.mineWarden.mineArmSeconds,
-      triggerTimer: -1,
-      blastRadius: COOP_CONFIG.mineWarden.mineBlastRadius,
-      damage: COOP_CONFIG.mineWarden.mineDamage,
-      life: COOP_CONFIG.mineWarden.mineLifetime,
-    };
-    this.state.mines.push(mine);
-    this.events.push({ type: "mineDeployed", tick: this.state.tick, entityId: mine.id });
-  }
-
-  private updateMines(dt: number) {
-    for (let index = this.state.mines.length - 1; index >= 0; index--) {
-      const mine = this.state.mines[index];
-      mine.armTimer -= dt;
-      mine.life -= dt;
-      if (mine.life <= 0) {
-        this.state.mines.splice(index, 1);
-        continue;
-      }
-      if (mine.armTimer > 0) continue;
-      const close = PLAYER_IDS.some((id) => {
-        const player = this.state.players[id];
-        return (
-          !player.disabled &&
-          Math.hypot(player.ship.x - mine.x, player.ship.y - mine.y) <= mine.blastRadius * 0.8
-        );
-      });
-      if (close && mine.triggerTimer < 0)
-        mine.triggerTimer = COOP_CONFIG.mineWarden.mineWarningSeconds;
-      if (mine.triggerTimer < 0) continue;
-      mine.triggerTimer -= dt;
-      if (mine.triggerTimer <= 0) this.explodeMine(mine);
-    }
-  }
-
-  private explodeMine(mine: CoopMatchState["mines"][number]) {
-    const index = this.state.mines.findIndex((candidate) => candidate.id === mine.id);
-    if (index < 0) return;
-    this.state.mines.splice(index, 1);
-    for (const id of PLAYER_IDS) {
-      const player = this.state.players[id];
-      if (
-        !player.disabled &&
-        Math.hypot(player.ship.x - mine.x, player.ship.y - mine.y) <= mine.blastRadius
-      )
-        this.damagePlayer(player, mine.damage * COOP_CONFIG.difficulty.enemyDamage);
-    }
-  }
-
-  private damageMine(
-    mine: CoopMatchState["mines"][number],
-    amount: number,
-    player: CoopPlayerState,
-  ) {
-    const dealt = Math.min(mine.hp, amount);
-    mine.hp -= amount;
-    player.stats.damage += dealt;
-    this.chargeOverdrive(dealt);
-    if (mine.hp > 0) return;
-    const index = this.state.mines.findIndex((candidate) => candidate.id === mine.id);
-    if (index >= 0) this.state.mines.splice(index, 1);
-    this.state.team.score += 45;
-    this.events.push({
-      type: "mineDestroyed",
-      tick: this.state.tick,
-      entityId: mine.id,
-      playerId: player.id,
-    });
-  }
-
-  private updateRocks(dt: number) {
-    for (const rock of [...this.state.rocks]) {
-      const target = this.nearestPlayer(rock.x, rock.y);
-      const sizeName = rock.size === 3 ? "large" : rock.size === 2 ? "medium" : "small";
-      if (target && rock.trait === "homing") {
-        const speed =
-          rock.size === 1
-            ? GAME_CONFIG.asteroids.traits.homing.smallSpeed
-            : rock.size === 2
-              ? 88
-              : 95;
-        const turn = GAME_CONFIG.asteroids.traits.homing.turnRates[sizeName];
-        const current = Math.atan2(rock.vy, rock.vx);
-        const desired = Math.atan2(target.ship.y - rock.y, target.ship.x - rock.x);
-        const angle = current + clamp(wrapAngle(desired - current), -turn * dt, turn * dt);
-        rock.vx = Math.cos(angle) * speed;
-        rock.vy = Math.sin(angle) * speed;
-      } else if (target && rock.trait === "boom") {
-        const distance = Math.hypot(target.ship.x - rock.x, target.ship.y - rock.y);
-        if (distance <= GAME_CONFIG.asteroids.traits.boom.homeRange) {
-          const current = Math.atan2(rock.vy, rock.vx);
-          const desired = Math.atan2(target.ship.y - rock.y, target.ship.x - rock.x);
-          const angle =
-            current +
-            clamp(
-              wrapAngle(desired - current),
-              -GAME_CONFIG.asteroids.traits.boom.homeTurn * dt,
-              GAME_CONFIG.asteroids.traits.boom.homeTurn * dt,
-            );
-          const speed = Math.hypot(rock.vx, rock.vy);
-          rock.vx = Math.cos(angle) * speed;
-          rock.vy = Math.sin(angle) * speed;
-        }
-        const trigger = Math.max(
-          rock.radius + GAME_CONFIG.asteroids.traits.boom.triggerPad,
-          GAME_CONFIG.asteroids.traits.boom.blastRadii[sizeName] *
-            GAME_CONFIG.asteroids.traits.boom.triggerRadiusFraction,
-        );
-        if (distance < trigger) {
-          if (rock.fuse < 0) rock.fuse = GAME_CONFIG.asteroids.traits.boom.fuse;
-          rock.fuse -= dt;
-          if (rock.fuse <= 0) {
-            this.explodeBoomRock(rock);
-            continue;
-          }
-        } else if (rock.fuse >= 0) {
-          rock.fuse = Math.min(GAME_CONFIG.asteroids.traits.boom.fuse, rock.fuse + dt * 0.5);
-        }
-      } else if (rock.trait === "fast") {
-        const healthLost = 1 - clamp(rock.hp / rock.maxHp, 0, 1);
-        const speed = GAME_CONFIG.asteroids.traits.fast.speeds[sizeName] * (1 + healthLost * 0.5);
-        const angle = Math.atan2(rock.vy, rock.vx);
-        rock.vx = Math.cos(angle) * speed;
-        rock.vy = Math.sin(angle) * speed;
-      }
-      rock.x += rock.vx * dt;
-      rock.y += rock.vy * dt;
-      const margin = rock.radius;
-      if (rock.trait === "bounce") {
-        if (rock.x < margin || rock.x > this.width - margin) rock.vx *= -1.05;
-        if (rock.y < margin || rock.y > this.height - margin) rock.vy *= -1.05;
-        rock.x = clamp(rock.x, margin, this.width - margin);
-        rock.y = clamp(rock.y, margin, this.height - margin);
-      } else {
-        if (rock.x < -margin) rock.x += this.width + margin * 2;
-        if (rock.x > this.width + margin) rock.x -= this.width + margin * 2;
-        if (rock.y < -margin) rock.y += this.height + margin * 2;
-        if (rock.y > this.height + margin) rock.y -= this.height + margin * 2;
-      }
-    }
-  }
-
-  private explodeBoomRock(rock: CoopRockState) {
-    const index = this.state.rocks.findIndex((candidate) => candidate.id === rock.id);
-    if (index < 0) return;
-    this.state.rocks.splice(index, 1);
-    this.damageBoomArea(rock);
-  }
-
-  private damageBoomArea(rock: CoopRockState) {
-    const sizeName = rock.size === 3 ? "large" : rock.size === 2 ? "medium" : "small";
-    const radius = GAME_CONFIG.asteroids.traits.boom.blastRadii[sizeName];
-    const damage = GAME_CONFIG.asteroids.traits.boom.playerDamage[sizeName];
-    for (const id of PLAYER_IDS) {
-      const player = this.state.players[id];
-      if (!player.disabled && Math.hypot(player.ship.x - rock.x, player.ship.y - rock.y) <= radius)
-        this.damagePlayer(player, damage * COOP_CONFIG.difficulty.enemyDamage);
-    }
-  }
-
-  private updatePlayerCollisions() {
-    for (const id of PLAYER_IDS) {
-      const player = this.state.players[id];
-      if (player.disabled || player.ship.invuln > 0) continue;
-      const enemy = this.state.enemies.find(
-        (candidate) =>
-          Math.hypot(candidate.x - player.ship.x, candidate.y - player.ship.y) <
-          candidate.radius + GAME_CONFIG.player.shipRadius,
-      );
-      if (enemy) {
-        const damage =
-          enemy.kind === "spiker"
-            ? GAME_CONFIG.enemies.spikers.playerContactDamage
-            : enemy.kind === "tetherSentinel"
-              ? COOP_CONFIG.tetherSentinel.contactDamage
-              : enemy.kind === "mineWarden"
-                ? COOP_CONFIG.mineWarden.contactDamage
-                : enemy.kind === "warden" || enemy.kind === "wardenTurret"
-                  ? GAME_CONFIG.enemies.wardens.playerContactDamage
-                  : GAME_CONFIG.enemies.sentinels.playerContactDamage;
-        this.damagePlayer(player, damage * COOP_CONFIG.difficulty.enemyDamage);
-        player.ship.invuln = GAME_CONFIG.player.collisionInvulnerability;
-        continue;
-      }
-      if (
-        this.state.boss &&
-        Math.hypot(this.state.boss.x - player.ship.x, this.state.boss.y - player.ship.y) <
-          this.state.boss.radius + GAME_CONFIG.player.shipRadius
-      ) {
-        this.damagePlayer(
-          player,
-          GAME_CONFIG.bosses.contactDamage * COOP_CONFIG.difficulty.enemyDamage,
-        );
-        player.ship.invuln = GAME_CONFIG.player.collisionInvulnerability;
-        continue;
-      }
-      const rock = this.state.rocks.find(
-        (candidate) =>
-          Math.hypot(candidate.x - player.ship.x, candidate.y - player.ship.y) <
-          candidate.radius + GAME_CONFIG.player.shipRadius,
-      );
-      if (!rock) continue;
-      const base = rock.size === 3 ? 14 : rock.size === 2 ? 9 : 5;
-      const trait = rock.trait === "fast" ? GAME_CONFIG.asteroids.traits.fast.damageMultiplier : 1;
-      this.damagePlayer(player, base * trait * COOP_CONFIG.difficulty.enemyDamage);
-      if (rock.trait === "fast") {
-        const distance = Math.hypot(player.ship.x - rock.x, player.ship.y - rock.y) || 1;
-        const knockback = 150 * GAME_CONFIG.asteroids.traits.fast.knockbackMultiplier;
-        player.ship.vx += ((player.ship.x - rock.x) / distance) * knockback;
-        player.ship.vy += ((player.ship.y - rock.y) / distance) * knockback;
-      }
-      player.ship.invuln = GAME_CONFIG.asteroids.collision.invulnerability;
-    }
-  }
-
-  private damagePlayer(player: CoopPlayerState, rawDamage: number) {
-    if (player.disabled || player.ship.invuln > 0) return;
-    const incoming = rawDamage * (1 - player.ship.armor);
-    const drone = player.drone;
-    const share =
-      drone.purchased && drone.active
-        ? (GAME_CONFIG.salvage.shieldShares[Math.max(0, drone.upgrades.shield - 1)] ?? 0)
-        : 0;
-    const redirected = Math.min(drone.hp, incoming * share);
-    if (redirected > 0) {
-      drone.hp -= redirected;
-      if (drone.hp <= 0) drone.active = false;
-    }
-    player.ship.hull -= incoming - redirected;
-    player.supportQuietTimer = GAME_CONFIG.salvage.repairQuietSeconds;
-    player.drone.hitTimer = GAME_CONFIG.salvage.repairQuietSeconds;
-    player.reviveLockout = COOP_CONFIG.revive.interruptionSeconds;
-    this.events.push({
-      type: "playerDamaged",
-      tick: this.state.tick,
-      playerId: player.id,
-      amount: incoming - redirected,
-    });
-    if (player.ship.hull > 0) return;
-    player.ship.hull = 0;
-    player.disabled = true;
-    player.input.fire = false;
-    this.events.push({ type: "playerDisabled", tick: this.state.tick, playerId: player.id });
-    if (PLAYER_IDS.every((id) => this.state.players[id].disabled)) this.endMatch("defeat");
+      : null;
   }
 
   private updateRevives(dt: number) {
-    for (const targetId of PLAYER_IDS) {
-      const target = this.state.players[targetId];
+    for (const id of PILOTS) {
+      const target = this.state.players[id],
+        reviver = this.state.players[id === "p1" ? "p2" : "p1"];
       if (!target.disabled) continue;
-      const reviverId = targetId === "p1" ? "p2" : "p1";
-      const reviver = this.state.players[reviverId];
       const close =
         Math.hypot(target.ship.x - reviver.ship.x, target.ship.y - reviver.ship.y) <=
         COOP_CONFIG.revive.range;
@@ -1560,608 +681,5 @@ export class LocalCoopSimulation {
         by: reviver.id,
       });
     }
-  }
-
-  private damageEnemy(enemy: CoopEnemyState, amount: number, player: CoopPlayerState) {
-    const dealt = Math.min(enemy.hp, amount);
-    enemy.hp -= amount;
-    player.stats.damage += dealt;
-    this.chargeOverdrive(dealt);
-    if (enemy.hp > 0) return;
-    const index = this.state.enemies.findIndex((candidate) => candidate.id === enemy.id);
-    if (index < 0) return;
-    this.state.enemies.splice(index, 1);
-    for (let tetherIndex = this.state.tethers.length - 1; tetherIndex >= 0; tetherIndex--)
-      if (this.state.tethers[tetherIndex].sourceId === enemy.id) {
-        const tether = this.state.tethers[tetherIndex];
-        this.state.tethers.splice(tetherIndex, 1);
-        this.events.push({
-          type: "tetherBroken",
-          tick: this.state.tick,
-          entityId: enemy.id,
-          playerId: tether.targetPlayerId,
-        });
-      }
-    player.stats.kills++;
-    const reward =
-      enemy.kind === "warden" || enemy.kind === "mineWarden"
-        ? 260
-        : enemy.kind === "spiker" || enemy.kind === "tetherSentinel"
-          ? 220
-          : 130;
-    this.state.team.score += reward;
-    this.gainXp(player, reward * 0.22);
-    this.state.pickups.push({
-      id: this.nextId(),
-      x: enemy.x,
-      y: enemy.y,
-      vx: randomBetween(this.random, -35, 35),
-      vy: randomBetween(this.random, -35, 35),
-      kind: "credit",
-      value: Math.round(reward * 0.18 * player.ship.creditValue),
-      life: GAME_CONFIG.pickups.lifetime,
-    });
-    this.events.push({
-      type: "enemyDestroyed",
-      tick: this.state.tick,
-      playerId: player.id,
-      entityId: enemy.id,
-    });
-  }
-
-  private damageRock(rock: CoopRockState, amount: number, player: CoopPlayerState) {
-    const dealt = Math.min(rock.hp, amount);
-    rock.hp -= amount;
-    player.stats.damage += dealt;
-    this.chargeOverdrive(dealt);
-    if (rock.hp <= 0) {
-      this.destroyRock(rock, player);
-      if (rock.trait === "boom") this.damageBoomArea(rock);
-    }
-  }
-
-  private destroyRock(rock: CoopRockState, player: CoopPlayerState) {
-    const index = this.state.rocks.findIndex((candidate) => candidate.id === rock.id);
-    if (index < 0) return;
-    this.state.rocks.splice(index, 1);
-    player.stats.kills++;
-    player.stats.asteroidKills++;
-    const base = rock.size === 3 ? 120 : rock.size === 2 ? 70 : 40;
-    this.state.team.score += Math.round(base * (rock.trait === "none" ? 1 : 1.5));
-    this.gainXp(
-      player,
-      (rock.size === 3 ? 32 : rock.size === 2 ? 18 : 11) * (rock.trait === "none" ? 1 : 1.3),
-    );
-    this.events.push({
-      type: "asteroidDestroyed",
-      tick: this.state.tick,
-      playerId: player.id,
-      entityId: rock.id,
-    });
-
-    if (
-      randomChance(
-        this.random,
-        player.ship.creditChance + rock.size * GAME_CONFIG.player.creditChancePerRockSize,
-      )
-    ) {
-      const count =
-        GAME_CONFIG.pickups.rockDropCount[
-          rock.size === 3 ? "large" : rock.size === 2 ? "medium" : "small"
-        ];
-      const value =
-        GAME_CONFIG.pickups.rockCreditValue[
-          rock.size === 3 ? "large" : rock.size === 2 ? "medium" : "small"
-        ];
-      for (let drop = 0; drop < count; drop++) {
-        this.state.pickups.push({
-          id: this.nextId(),
-          x: rock.x,
-          y: rock.y,
-          vx: randomBetween(this.random, -60, 60),
-          vy: randomBetween(this.random, -60, 60),
-          kind: randomChance(this.random, GAME_CONFIG.pickups.repairChance) ? "repair" : "credit",
-          value: Math.round(value * player.ship.creditValue),
-          life: GAME_CONFIG.pickups.lifetime,
-        });
-      }
-    }
-
-    if (rock.size > 1 && !(rock.trait === "boom" && rock.size === 3)) {
-      for (let child = 0; child < 2; child++) {
-        const angle = this.random.next() * TAU;
-        this.state.rocks.push(
-          this.makeRock(
-            rock.x,
-            rock.y,
-            (rock.size - 1) as 1 | 2,
-            rock.trait,
-            Math.cos(angle) * 90 + rock.vx,
-            Math.sin(angle) * 90 + rock.vy,
-          ),
-        );
-      }
-    }
-  }
-
-  private updatePickups(dt: number) {
-    for (let index = this.state.pickups.length - 1; index >= 0; index--) {
-      const pickup = this.state.pickups[index];
-      pickup.x += pickup.vx * dt;
-      pickup.y += pickup.vy * dt;
-      pickup.vx *= Math.pow(GAME_CONFIG.simulation.pickupDragPerFrame, dt * 60);
-      pickup.vy *= Math.pow(GAME_CONFIG.simulation.pickupDragPerFrame, dt * 60);
-      pickup.life -= dt;
-      const collector = PLAYER_IDS.map((id) => this.state.players[id])
-        .filter((player) => !player.disabled)
-        .map((player) => ({
-          player,
-          distance: Math.hypot(player.ship.x - pickup.x, player.ship.y - pickup.y),
-        }))
-        .sort(
-          (left, right) =>
-            left.distance - right.distance || left.player.id.localeCompare(right.player.id),
-        )[0];
-      if (collector && collector.distance < GAME_CONFIG.pickups.pickupDistance) {
-        if (pickup.kind === "credit") {
-          collector.player.credits += pickup.value;
-          collector.player.stats.creditsCollected += pickup.value;
-          this.state.team.score += pickup.value * GAME_CONFIG.pickups.playerCreditScoreMultiplier;
-        } else {
-          collector.player.ship.hull = Math.min(
-            collector.player.ship.maxHull,
-            collector.player.ship.hull + pickup.value,
-          );
-        }
-        this.state.pickups.splice(index, 1);
-        this.events.push({
-          type: "pickupCollected",
-          tick: this.state.tick,
-          playerId: collector.player.id,
-          kind: pickup.kind,
-        });
-      } else if (pickup.life <= 0) {
-        this.state.pickups.splice(index, 1);
-      }
-    }
-  }
-
-  private damageBoss(amount: number, player: CoopPlayerState) {
-    const boss = this.state.boss;
-    if (!boss) return;
-    const dealt = Math.min(boss.hp, amount);
-    boss.hp -= amount;
-    player.stats.damage += dealt;
-    player.stats.bossDamage += dealt;
-    this.chargeOverdrive(dealt);
-    this.events.push({
-      type: "bossDamaged",
-      tick: this.state.tick,
-      playerId: player.id,
-      amount: dealt,
-    });
-    if (boss.hp > 0) return;
-    player.stats.kills++;
-    this.state.team.bossesDefeated++;
-    this.state.team.score += boss.mk === 5 ? 15000 : 2500 * boss.mk;
-    this.events.push({
-      type: "bossDefeated",
-      tick: this.state.tick,
-      playerId: player.id,
-      mk: boss.mk,
-    });
-    this.state.boss = null;
-    this.state.rocks = [];
-    this.state.enemies = [];
-    this.state.projectiles = [];
-    this.state.hostileProjectiles = [];
-    this.state.hazards = [];
-    this.state.tethers = [];
-    this.state.mines = [];
-    if (boss.mk === 6) {
-      this.state.team.bonusActive = false;
-      this.state.team.bonusAvailable = false;
-      this.state.team.bonusDefeated = true;
-      this.endMatch("victory");
-    } else if (this.state.team.wave >= RUN_PACING.finalWave) {
-      this.state.team.bonusAvailable = true;
-      this.state.phase = "bonusOffer";
-      this.events.push({ type: "bonusBossOffered", tick: this.state.tick });
-    }
-  }
-
-  private chargeOverdrive(damage: number) {
-    if (this.state.team.overdriveRemaining > 0) return;
-    const [first, second] = PLAYER_IDS.map((id) => this.state.players[id]);
-    const nearby =
-      Math.hypot(first.ship.x - second.ship.x, first.ship.y - second.ship.y) <=
-      COOP_CONFIG.overdrive.nearbyRange;
-    const multiplier = nearby ? COOP_CONFIG.overdrive.nearbyChargeMultiplier : 1;
-    this.state.team.overdrive = Math.min(
-      COOP_CONFIG.overdrive.maximum,
-      this.state.team.overdrive + damage * COOP_CONFIG.overdrive.damageChargeScale * multiplier,
-    );
-  }
-
-  private gainXp(player: CoopPlayerState, amount: number) {
-    player.xp +=
-      amount * (1 + scaledWave(this.state.team.wave) * GAME_CONFIG.progression.xpPerScaledWave);
-    while (player.xp >= player.xpNext) {
-      player.xp -= player.xpNext;
-      player.level++;
-      player.upgradePoints++;
-      player.xpNext = Math.round(
-        GAME_CONFIG.progression.nextLevelXpBase *
-          Math.pow(player.level, GAME_CONFIG.progression.nextLevelXpExponent),
-      );
-    }
-  }
-
-  private startNextWave() {
-    if (this.state.phase !== "running" || this.state.team.wave >= RUN_PACING.finalWave) return;
-    this.state.team.wave++;
-    this.state.team.sector = sectorForWave(this.state.team.wave) + 1;
-    if ((this.state.team.wave - 1) % RUN_PACING.sectorLength === 0) this.selectSectorDirective();
-    this.state.projectiles = [];
-    this.state.hostileProjectiles = [];
-    this.state.hazards = [];
-    this.state.tethers = [];
-    this.state.mines = [];
-    for (const id of PLAYER_IDS) {
-      const player = this.state.players[id];
-      player.credits +=
-        RUN_PACING.creditsPerWaveBase + this.state.team.wave * RUN_PACING.creditsPerWaveStep;
-      player.ship.missiles = Math.min(player.ship.maxMissiles, player.ship.missiles + 1);
-    }
-
-    if (isBossWave(this.state.team.wave)) {
-      this.state.boss = this.makeBoss(this.state.team.wave);
-      this.spawnEnemy("sentinel");
-      this.spawnEnemy("sentinel");
-      if (this.state.team.wave >= 20) this.spawnEnemy("warden");
-      if (this.state.team.wave >= GAME_CONFIG.enemies.spikers.unlockWave) this.spawnEnemy("spiker");
-      if (this.state.team.wave >= COOP_CONFIG.tetherSentinel.bossEscortFromWave)
-        this.spawnEnemy("tetherSentinel");
-      if (this.state.team.wave >= COOP_CONFIG.mineWarden.bossEscortFromWave)
-        this.spawnEnemy("mineWarden");
-      this.state.rocks.push(
-        this.makeRock(
-          randomBetween(this.random, 80, this.width - 80),
-          randomBetween(this.random, 80, this.height * 0.4),
-          2,
-          BOSS_SPECS[bossMkForWave(this.state.team.wave)].trait,
-        ),
-      );
-    } else {
-      const tuningWave = scaledWave(this.state.team.wave);
-      const base = Math.min(
-        GAME_CONFIG.waves.regularRockCountCap,
-        GAME_CONFIG.waves.regularRockBaseCount +
-          Math.ceil(tuningWave * GAME_CONFIG.waves.regularRockCountScale),
-      );
-      const count = Math.min(
-        GAME_CONFIG.waves.regularRockCountCap +
-          (this.state.team.directive === "asteroidSurge"
-            ? COOP_CONFIG.directives.asteroidSurgeExtraRocks
-            : 0),
-        Math.ceil(base * COOP_CONFIG.difficulty.enemyPressure) +
-          (this.state.team.directive === "asteroidSurge"
-            ? COOP_CONFIG.directives.asteroidSurgeExtraRocks
-            : 0),
-      );
-      for (let index = 0; index < count; index++) {
-        const size = randomChance(this.random, 0.45) ? 3 : 2;
-        this.state.rocks.push(
-          this.makeRock(
-            randomBetween(this.random, 50, this.width - 50),
-            randomBetween(this.random, 50, this.height * 0.45),
-            size,
-            this.rollTrait(),
-          ),
-        );
-      }
-      const sentinels = Math.min(
-        maxSentinels(this.state.team.wave),
-        sentinelWaveCount(this.state.team.wave),
-      );
-      for (let index = 0; index < sentinels; index++) this.spawnEnemy("sentinel");
-      if (
-        this.state.team.wave >= RUN_PACING.lateWardenFromWave &&
-        this.state.team.wave <= RUN_PACING.lateWardenToWave &&
-        randomChance(this.random, 0.55)
-      )
-        this.spawnEnemy("warden");
-      if (this.state.team.wave >= GAME_CONFIG.enemies.spikers.unlockWave) {
-        this.spawnEnemy("spiker");
-        if (
-          this.state.team.wave >= GAME_CONFIG.enemies.spikers.latePairFromWave &&
-          this.state.team.wave <= GAME_CONFIG.enemies.spikers.latePairToWave &&
-          randomChance(this.random, GAME_CONFIG.enemies.spikers.secondSpawnChance)
-        )
-          this.spawnEnemy("spiker");
-      }
-      if (this.state.team.wave >= COOP_CONFIG.tetherSentinel.unlockWave) {
-        this.spawnEnemy("tetherSentinel");
-        if (this.state.team.wave >= 18 && randomChance(this.random, 0.3))
-          this.spawnEnemy("tetherSentinel");
-      }
-      if (this.state.team.wave >= COOP_CONFIG.mineWarden.unlockWave) {
-        this.spawnEnemy("mineWarden");
-        if (this.state.team.wave >= 22 && randomChance(this.random, 0.25))
-          this.spawnEnemy("mineWarden");
-      }
-    }
-    this.events.push({
-      type: "waveStarted",
-      tick: this.state.tick,
-      wave: this.state.team.wave,
-      sector: this.state.team.sector,
-    });
-  }
-
-  private selectSectorDirective() {
-    const directives: CoopDirectiveId[] = ["asteroidSurge", "elitePatrol", "volatileSpace"];
-    const previous = this.state.team.directive;
-    const available = directives.filter((directive) => directive !== previous);
-    const directive = available[randomInteger(this.random, 0, available.length - 1)];
-    this.state.team.directive = directive;
-    this.events.push({
-      type: "directiveSelected",
-      tick: this.state.tick,
-      directive,
-      sector: this.state.team.sector,
-    });
-  }
-
-  private makeBoss(wave: number): CoopBossState {
-    const mk = bossMkForWave(wave);
-    let hp =
-      (GAME_CONFIG.bosses.waveBaseHp + scaledWave(wave) * GAME_CONFIG.bosses.hpPerScaledWave) *
-      BOSS_SPECS[mk].hpMul;
-    if (mk <= 2) hp = Math.min(hp, EARLY_BOSS_HP_CEILING);
-    if (mk === 3) hp = GAME_CONFIG.bosses.mk3Hp;
-    if (mk === 4) hp = GAME_CONFIG.bosses.mk4Hp;
-    if (mk === 5) hp = GAME_CONFIG.bosses.finalHp;
-    hp *= COOP_CONFIG.difficulty.bossHealth;
-    return {
-      id: this.nextId(),
-      mk,
-      x: this.width / 2,
-      y: this.height * 0.28,
-      radius: mk === 5 ? GAME_CONFIG.bosses.finalRadius : GAME_CONFIG.bosses.baseRadius,
-      hp,
-      maxHp: hp,
-      vx: 0,
-      vy: 0,
-      phase: 1,
-      attackTimer: GAME_CONFIG.bosses.baseAttackTimer,
-      abilityTimer: GAME_CONFIG.bosses.baseAttackTimer * 2,
-    };
-  }
-
-  private startBonusBoss(playerId: CoopPlayerId) {
-    const hp = GAME_CONFIG.bosses.bonusHp * COOP_CONFIG.difficulty.bossHealth;
-    this.state.phase = "running";
-    this.state.team.bonusAvailable = false;
-    this.state.team.bonusActive = true;
-    this.state.boss = {
-      id: this.nextId(),
-      mk: 6,
-      x: this.width / 2,
-      y: this.height * 0.25,
-      radius: GAME_CONFIG.bosses.bonusRadius,
-      hp,
-      maxHp: hp,
-      vx: 0,
-      vy: 0,
-      phase: 1,
-      attackTimer: GAME_CONFIG.bosses.baseAttackTimer,
-      abilityTimer: 3.5,
-    };
-    this.spawnEnemy("warden");
-    this.spawnEnemy("sentinel");
-    this.spawnEnemy("spiker");
-    this.spawnEnemy("tetherSentinel");
-    this.spawnEnemy("mineWarden");
-    this.events.push({ type: "bonusBossStarted", tick: this.state.tick, playerId });
-  }
-
-  private spawnEnemy(kind: CoopEnemyKind) {
-    const wave = this.state.team.wave;
-    const tuningWave = scaledWave(wave);
-    let hp: number;
-    let radius: number;
-    let fireTimer: number;
-    if (kind === "spiker") {
-      hp = GAME_CONFIG.enemies.spikers.hpBase + wave * GAME_CONFIG.enemies.spikers.hpPerWave;
-      radius = GAME_CONFIG.enemies.spikers.radius;
-      fireTimer = GAME_CONFIG.enemies.spikers.fireInterval;
-    } else if (kind === "tetherSentinel") {
-      hp = COOP_CONFIG.tetherSentinel.baseHp + wave * COOP_CONFIG.tetherSentinel.hpPerWave;
-      radius = COOP_CONFIG.tetherSentinel.radius;
-      fireTimer = randomBetween(this.random, 1.5, 3);
-    } else if (kind === "mineWarden") {
-      hp = COOP_CONFIG.mineWarden.baseHp + wave * COOP_CONFIG.mineWarden.hpPerWave;
-      radius = COOP_CONFIG.mineWarden.radius;
-      fireTimer = randomBetween(
-        this.random,
-        COOP_CONFIG.mineWarden.deploymentMin,
-        COOP_CONFIG.mineWarden.deploymentMax,
-      );
-    } else if (kind === "warden" || kind === "wardenTurret") {
-      hp =
-        kind === "wardenTurret"
-          ? GAME_CONFIG.enemies.wardens.turretHp
-          : GAME_CONFIG.enemies.wardens.ordinaryHpBase +
-            tuningWave * GAME_CONFIG.enemies.wardens.ordinaryHpPerWave;
-      radius = kind === "wardenTurret" ? 16 : GAME_CONFIG.enemies.wardens.radius;
-      fireTimer = randomBetween(
-        this.random,
-        GAME_CONFIG.enemies.wardens.shotDelayMin,
-        GAME_CONFIG.enemies.wardens.shotDelayMax,
-      );
-    } else {
-      hp =
-        GAME_CONFIG.enemies.sentinels.hpBase + tuningWave * GAME_CONFIG.enemies.sentinels.hpPerWave;
-      radius = GAME_CONFIG.enemies.sentinels.radius;
-      fireTimer = randomBetween(
-        this.random,
-        GAME_CONFIG.enemies.sentinels.fireIntervalMin,
-        GAME_CONFIG.enemies.sentinels.fireIntervalMax,
-      );
-    }
-    if (this.state.team.directive === "elitePatrol")
-      hp *= COOP_CONFIG.directives.elitePatrolHealthMultiplier;
-    const angle = this.random.next() * TAU;
-    const speed =
-      kind === "spiker"
-        ? randomBetween(
-            this.random,
-            GAME_CONFIG.enemies.spikers.speedMin,
-            GAME_CONFIG.enemies.spikers.speedMax,
-          )
-        : 0;
-    const enemy: CoopEnemyState = {
-      id: this.nextId(),
-      kind,
-      x: randomBetween(this.random, radius + 20, this.width - radius - 20),
-      y: randomBetween(this.random, radius + 20, this.height * 0.42),
-      vx: Math.cos(angle) * speed,
-      vy: Math.sin(angle) * speed,
-      angle,
-      radius,
-      hp,
-      maxHp: hp,
-      fireTimer,
-      behaviorTimer: randomBetween(this.random, 1.5, 3.5),
-      warningTimer: 0,
-      burst: 0,
-      targetPlayerId: null,
-      aimX: 0,
-      aimY: 0,
-    };
-    this.state.enemies.push(enemy);
-    this.events.push({ type: "enemySpawned", tick: this.state.tick, entityId: enemy.id, kind });
-    return enemy;
-  }
-
-  private makeRock(
-    x: number,
-    y: number,
-    size: 1 | 2 | 3,
-    trait: RockTrait,
-    vx = randomBetween(this.random, -70, 70),
-    vy = randomBetween(this.random, -70, 70),
-  ): CoopRockState {
-    const sizeName = size === 3 ? "large" : size === 2 ? "medium" : "small";
-    const tuning = GAME_CONFIG.asteroids.sizes[sizeName];
-    const radius =
-      tuning.radius *
-      randomBetween(
-        this.random,
-        GAME_CONFIG.asteroids.radiusRandomMin,
-        GAME_CONFIG.asteroids.radiusRandomMax,
-      );
-    const hp =
-      tuning.hp *
-      (1 + scaledWave(this.state.team.wave) * GAME_CONFIG.asteroids.hpPerScaledWave) *
-      (trait === "fast"
-        ? GAME_CONFIG.asteroids.traits.fast.hpMultiplier
-        : trait === "none"
-          ? 1
-          : GAME_CONFIG.asteroids.specialHpMultiplier);
-    if (trait === "fast") {
-      const speed = GAME_CONFIG.asteroids.traits.fast.speeds[sizeName];
-      const angle = Math.atan2(vy, vx) + randomBetween(this.random, -0.2, 0.2);
-      vx = Math.cos(angle) * speed;
-      vy = Math.sin(angle) * speed;
-    } else if (trait === "boom" || trait === "bounce") {
-      const speed =
-        trait === "boom"
-          ? GAME_CONFIG.asteroids.traits.boom.speeds[sizeName]
-          : GAME_CONFIG.asteroids.traits.bounce.speeds[sizeName];
-      const angle = Math.atan2(vy, vx);
-      vx = Math.cos(angle) * speed;
-      vy = Math.sin(angle) * speed;
-    }
-    return { id: this.nextId(), x, y, vx, vy, radius, size, hp, maxHp: hp, trait, fuse: -1 };
-  }
-
-  private rollTrait(): RockTrait {
-    const wave = this.state.team.wave;
-    if (wave < RUN_PACING.traitWaves.homing) return "none";
-    const pool: RockTrait[] = ["homing"];
-    if (wave >= RUN_PACING.traitWaves.bounce) pool.push("bounce");
-    if (
-      wave >= RUN_PACING.traitWaves.boom &&
-      this.state.rocks.filter((rock) => rock.trait === "boom").length <
-        GAME_CONFIG.asteroids.traits.boom.maxAlive
-    )
-      pool.push("boom");
-    if (wave >= RUN_PACING.traitWaves.fast) pool.push("fast");
-    const chance = Math.min(
-      0.95,
-      0.15 +
-        (wave - 1) * 0.04 +
-        (this.state.team.directive === "volatileSpace"
-          ? COOP_CONFIG.directives.volatileMutationBonus
-          : 0),
-    );
-    if (!randomChance(this.random, chance)) return "none";
-    return randomChance(this.random, 0.4)
-      ? pool[pool.length - 1]
-      : pool[randomInteger(this.random, 0, pool.length - 1)];
-  }
-
-  private nearestPlayer(x: number, y: number) {
-    return PLAYER_IDS.map((id) => this.state.players[id])
-      .filter((player) => !player.disabled)
-      .map((player) => ({ player, distance: Math.hypot(player.ship.x - x, player.ship.y - y) }))
-      .sort(
-        (left, right) =>
-          left.distance - right.distance || left.player.id.localeCompare(right.player.id),
-      )[0]?.player;
-  }
-
-  private nearestTarget(x: number, y: number) {
-    const targets = [
-      ...this.state.enemies.map((entity) => ({ entity, type: "enemy" as const })),
-      ...this.state.mines.map((entity) => ({ entity, type: "mine" as const })),
-      ...this.state.rocks.map((entity) => ({ entity, type: "rock" as const })),
-      ...(this.state.boss ? [{ entity: this.state.boss, type: "boss" as const }] : []),
-    ];
-    return targets
-      .map((target) => ({
-        ...target,
-        distance: Math.hypot(target.entity.x - x, target.entity.y - y),
-      }))
-      .sort((left, right) => left.distance - right.distance || left.entity.id - right.entity.id)[0];
-  }
-
-  private enforceEntityCaps() {
-    const caps = COOP_CONFIG.entityCaps;
-    // Persistent wave targets keep their oldest entries so a safety trim cannot skip the
-    // objective currently being fought. Short-lived effects keep the newest entries instead.
-    this.state.rocks.length = Math.min(this.state.rocks.length, caps.rocks);
-    this.state.enemies.length = Math.min(this.state.enemies.length, caps.enemies);
-    this.keepNewest(this.state.projectiles, caps.projectiles);
-    this.keepNewest(this.state.hostileProjectiles, caps.hostileProjectiles);
-    this.keepNewest(this.state.hazards, caps.hazards);
-    this.keepNewest(this.state.tethers, caps.tethers);
-    this.keepNewest(this.state.mines, caps.mines);
-    this.keepNewest(this.state.pickups, caps.pickups);
-  }
-
-  private keepNewest<T>(values: T[], maximum: number) {
-    if (values.length > maximum) values.splice(0, values.length - maximum);
-  }
-
-  private nextId() {
-    return this.state.nextEntityId++;
-  }
-
-  private endMatch(outcome: "victory" | "defeat") {
-    this.state.phase = outcome;
-    this.events.push({ type: "matchEnded", tick: this.state.tick, outcome });
   }
 }

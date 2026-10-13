@@ -72,3 +72,9 @@ deployment, and rollback are documented in the
 [online co-op release runbook](docs/multiplayer-deployment.md). Production deployment requires a
 separate explicit approval. During closed alpha, only players with the developer code can create a
 room; anyone can browse, Quick Join, join by code, or reconnect.
+
+Campaign and co-op now run the same `Game` combat methods and canvas renderer. The co-op adapter
+supplies two pilot contexts, seeded room randomness, revives, Overdrive, and room snapshots.
+When changing core gameplay, edit the campaign engine or its balance tables; do not introduce a
+second weapon, enemy, or boss implementation. See the runbook's **Updating to shared campaign
+gameplay** section for the multiplayer Worker update required by `0.5.1-alpha.1`.

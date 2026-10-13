@@ -1,5 +1,7 @@
 import type { RockTrait, SalvageDrone, SalvageUpgradeId, WeaponId, Player } from "../types";
 import type { FlightIntent } from "./movement";
+import type { CampaignWorld } from "../campaign-state";
+import type { UpgradeCard } from "../types";
 
 export type CoopPlayerId = "p1" | "p2";
 export type CoopMatchPhase = "waiting" | "running" | "bonusOffer" | "victory" | "defeat";
@@ -40,6 +42,17 @@ export interface CoopPlayerState {
   lastCommandSequence: number;
   input: CoopInputState;
   stats: CoopPlayerStats;
+  campaign?: {
+    choices: UpgradeCard[];
+    queuedChoices: UpgradeCard[][];
+    rerollCost: number;
+    combo: number;
+    comboTimer: number;
+    quietTime: number;
+    beamAngle: number;
+    anomalyTimer: number;
+    beamCooldown: number;
+  };
 }
 
 export interface CoopRockState {
@@ -197,6 +210,8 @@ export interface CoopTeamState {
 }
 
 export interface CoopMatchState {
+  /** Full campaign state replaces the retired alternate combat simulation. */
+  campaign?: CampaignWorld;
   version: 1;
   seed: number;
   randomState: number;
@@ -232,6 +247,7 @@ export type CoopCommand =
   | { type: "buyWeapon"; playerId: CoopPlayerId; sequence: number; weapon: WeaponId }
   | { type: "selectWeapon"; playerId: CoopPlayerId; sequence: number; weapon: WeaponId }
   | { type: "buyDrone"; playerId: CoopPlayerId; sequence: number }
+  | { type: "rerollUpgrades"; playerId: CoopPlayerId; sequence: number }
   | {
       type: "buyDroneUpgrade";
       playerId: CoopPlayerId;
@@ -245,6 +261,7 @@ export type CoopCommand =
   | { type: "declineBonusBoss"; playerId: CoopPlayerId; sequence: number };
 
 export type CoopEvent =
+  | { type: "sound"; tick: number; name: import("../audio").Sfx }
   | { type: "waveStarted"; tick: number; wave: number; sector: number }
   | { type: "weaponFired"; tick: number; playerId: CoopPlayerId; weapon: WeaponId }
   | { type: "missileFired"; tick: number; playerId: CoopPlayerId }

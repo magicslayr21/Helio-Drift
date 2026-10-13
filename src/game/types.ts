@@ -168,6 +168,10 @@ export interface SalvageShopInfo {
 /* ------------------------------------------------------------ entities */
 
 export interface Bullet {
+  /** Room-owned identity; absent for offline campaign shots. */
+  id?: number;
+  ownerId?: "p1" | "p2";
+  weapon?: WeaponId;
   x: number;
   y: number;
   vx: number;
@@ -217,6 +221,7 @@ export interface Crack {
 }
 
 export interface Rock {
+  coopMine?: { ownerId: number; armTimer: number; triggerTimer: number; life: number };
   id: number;
   x: number;
   y: number;
@@ -243,6 +248,12 @@ export interface Rock {
 
 /* Sentinels hunt, wardens snipe, and spikers drift while firing radial volleys. */
 export interface Drone {
+  coop?: {
+    kind: "tetherSentinel" | "mineWarden";
+    timer: number;
+    warning: number;
+    target: "p1" | "p2" | null;
+  };
   id: number;
   kind: "sentinel" | "warden" | "spiker";
   x: number;
@@ -456,6 +467,7 @@ export interface Text {
   size: number;
 }
 export interface Pickup {
+  id?: number;
   x: number;
   y: number;
   vx: number;

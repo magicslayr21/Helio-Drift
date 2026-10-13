@@ -22,6 +22,34 @@ The two Wrangler files must keep the same D1 database ID, but they must keep dif
 Do not bind live rooms to the leaderboard Worker or reuse either Durable Object class name for a
 different service.
 
+## Updating to shared campaign gameplay
+
+`0.5.1-alpha.1` runs the original campaign engine on the multiplayer Worker and uses the original
+campaign renderer in both browsers. Publish **both the frontend and multiplayer Worker** for this
+update. The leaderboard Worker, D1 schema, database binding, existing secrets, and service URLs do
+not need changes.
+
+After the source changes are available in your checkout, run these commands from the repository
+folder in PowerShell:
+
+```powershell
+git pull --ff-only
+npm.cmd ci
+npx.cmd wrangler login
+npx.cmd wrangler deploy --config wrangler.multiplayer.jsonc
+```
+
+Wrangler login is only needed if the current machine is not already authenticated. Publish the
+matching frontend through the normal GitHub Pages workflow and refresh both browsers. A new
+frontend connected to an older Worker displays an update-required message rather than an empty
+arena. Prefer finishing active matches before this deployment so both pilots reload together.
+
+Room checkpoints now store the native campaign world in an atomic group of bounded storage values.
+Existing room checkpoints remain readable: pilot equipment, health, credits, wave, enemy health,
+and live projectiles migrate. Attacks from the retired simulation resume using native campaign
+behaviour. New checkpoints preserve the full native boss script, timers, and seeded replay state.
+No manual storage migration or room reset is required.
+
 ## Account, variables, and secrets
 
 The Cloudflare account that owns the current `helio-drift-leaderboard` D1 database must perform the
@@ -99,21 +127,25 @@ refresh/reconnect, and leave. Set `CHROME_PATH` if Chromium is not in a standard
 
 ## Measured release envelope
 
-Measurements below were collected in the local Cloudflare/Chromium test environment on 13 October 2026. They are regression baselines, not a promise of Cloudflare edge latency or player skill.
+Measurements below were collected for the shared campaign implementation in the local
+Cloudflare/Chromium test environment on 13 October 2026. They are regression baselines, not a promise
+of Cloudflare edge latency or player skill.
 
-- A deterministic two-pilot reference loadout cleared waves 1–25 in **33.89 simulated minutes**, in
-  the 25–35 minute target. MK6 is optional and follows campaign completion.
+- A deterministic two-pilot reference loadout cleared waves 1–25 in **14.16 simulated minutes**.
+  This test gives pilots perfect positioning, continuous engagement, and immunity; it is not a
+  prediction of actual play time. The previous 33.89-minute benchmark belonged to the retired
+  alternate simulation. MK6 remains optional after campaign completion.
 - A ten-minute accelerated two-pilot soak remained finite and within all hard entity ceilings.
-- A cap-pressure wire snapshot was **147,637 bytes**, below the 192 KiB release ceiling.
-- Across isolated and concurrent gates, cap-pressure simulation took **442–1,091 ms for 300 ticks**;
-  the ten-minute soak took **351–693 ms for 18,000 ticks** on the test runner.
-- Eight MatchRoom objects and sixteen WebSockets launched and acknowledged two-player input in
-  **331–554 ms** locally.
-- The two-browser smoke covered refresh/reconnect and explicit leave with no page exceptions.
+- Native cap-pressure snapshots remain below the **192 KiB** release ceiling. The test checks
+  simulation, serialization, and entity limits using actual campaign entities.
+- Full campaign traversal includes all five bosses and the MK6 ending. Every weapon is compared
+  directly against the single-player engine.
+- The two-browser smoke verifies the original campaign renderer draws both pilots, plus
+  refresh/reconnect and explicit leave with no page exceptions.
 
 Hard per-room ceilings are 96 rocks, 32 enemies, 256 friendly projectiles, 256 hostile projectiles,
 48 hazards, 8 tethers, 8 mines, and 96 pickups. Normal waves remain well below these values. At the
-ceiling, the theoretical snapshot stream is about 4.4 MB/s per room (147,637 bytes × 15 Hz × two
+ceiling, the theoretical snapshot stream is about 5.9 MB/s per room (192 KiB × 15 Hz × two
 clients); normal snapshots are much smaller. Monitor egress and snapshot size before raising caps.
 
 ## Expected cost
@@ -128,7 +160,8 @@ For capacity planning, one 30-minute match produces approximately:
 - one active MatchRoom for 1,800 seconds;
 - 54,000 simulation ticks, executed in memory rather than as separate HTTP requests;
 - up to 27,000 snapshots per client at 15 Hz;
-- roughly one persisted room checkpoint per second while connected;
+- roughly one atomic room checkpoint per second while connected, split across multiple bounded
+  storage values for larger native worlds;
 - one idempotent D1 result insert at completion; and
 - a small number of lobby, ticket, join, heartbeat, and reconnect operations.
 

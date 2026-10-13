@@ -1,5 +1,6 @@
 import { COOP_FIXED_DT } from "../src/game/simulation/coop-config.ts";
 import { LocalCoopSimulation } from "../src/game/simulation/local-coop.ts";
+import { readRoomCheckpoint, writeRoomCheckpoint } from "./checkpoint.mjs";
 import { createWireState } from "../src/game/network/wire-state.ts";
 import {
   NETWORK_CONFIG,
@@ -332,7 +333,7 @@ export class MatchRoom {
     this.messageBuckets = new Map();
     this.operationTail = Promise.resolve();
     this.ready = state.blockConcurrencyWhile(async () => {
-      this.room = (await state.storage.get("room")) ?? null;
+      this.room = await readRoomCheckpoint(state.storage);
       if (!this.room) return;
       this.room.matchId ??= crypto.randomUUID();
       this.room.resultSubmittedAt ??= null;
@@ -572,6 +573,7 @@ export class MatchRoom {
       case "buyDroneUpgrade":
       case "equipDroneWeapon":
       case "chooseUpgrade":
+      case "rerollUpgrades":
       case "activateOverdrive":
       case "startBonusBoss":
       case "declineBonusBoss":
@@ -901,7 +903,7 @@ export class MatchRoom {
   }
 
   async persist() {
-    if (this.room) await this.state.storage.put("room", this.room);
+    if (this.room) await writeRoomCheckpoint(this.state.storage, this.room);
   }
 
   async submitResult(status) {

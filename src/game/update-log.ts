@@ -1,5 +1,29 @@
 export const UPDATE_LOG = [
   {
+    version: "0.5.1-alpha.1",
+    date: "2026-10-13",
+    title: "Campaign gameplay in co-op",
+    sections: [
+      {
+        title: "SHARED GAMEPLAY",
+        items: [
+          "Co-op now uses the original campaign combat and artwork.",
+          "Campaign weapons, enemy AI, boss phases, and meteor showers restored in co-op.",
+          "Campaign upgrade choices and paid rerolls added to the co-op shop.",
+          "Revives, Overdrive, separate equipment, and co-op escorts retained.",
+        ],
+      },
+      {
+        title: "SMOOTHER FLIGHT",
+        items: [
+          "Campaign effects, weapon sounds, and boss music now follow the shared battle.",
+          "Movement prediction follows campaign slow motion.",
+          "Larger room saves preserve boss attacks and individual pilot timers.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.5.0-alpha.1",
     date: "2026-10-13",
     title: "Online Co-op Expansion",

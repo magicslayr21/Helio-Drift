@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { CampaignBanner } from "./CampaignBanner";
 import {
   Game,
   loadScores,
@@ -628,23 +629,11 @@ export default function GameShell({
 
             {mode !== "menu" && <PlayerStatus hud={hud} />}
 
-            <AnimatePresence>
-              {hud.banner && mode === "playing" && (
-                <motion.div
-                  key={hud.banner}
-                  initial={{ opacity: 0, y: -12, letterSpacing: "0.5em" }}
-                  animate={{ opacity: 1, y: 0, letterSpacing: "0.22em" }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.5 }}
-                  className="pointer-events-none absolute inset-x-0 top-[45%] text-center sm:top-[16%]"
-                >
-                  <p className="font-display text-[clamp(1.8rem,6vw,3.4rem)] text-amber-hot drop-shadow-[0_0_28px_rgba(255,176,58,0.55)]">
-                    {hud.banner}
-                  </p>
-                  <p className="legend mt-1 text-amber/80">{hud.bannerSub}</p>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            <CampaignBanner
+              banner={hud.banner}
+              subtitle={hud.bannerSub}
+              visible={mode === "playing"}
+            />
 
             {/* ---------------- state overlays ---------------- */}
             <AnimatePresence>

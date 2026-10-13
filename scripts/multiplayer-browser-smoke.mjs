@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer as createHttpServer } from "node:http";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -391,6 +391,32 @@ try {
     ),
   ]);
 
+  await evaluate(
+    cdp,
+    alpha,
+    `(async()=>{
+    const resources=performance.getEntriesByType("resource");
+    const engineUrl=resources.find(e=>e.name.includes("/src/game/engine.ts"))?.name;
+    const rendererUrl=resources.find(e=>e.name.includes("/src/game/coop-renderer.ts"))?.name;
+    if(!engineUrl||!rendererUrl) throw new Error("Campaign modules were not loaded by the co-op client");
+    const {Game}=await import(engineUrl);
+    const {CoopRenderer}=await import(rendererUrl);
+    const render=Game.prototype.render, pilot=Game.prototype.renderPilot;
+    window.__campaignFrames=0;window.__campaignPilots=0;
+    Game.prototype.render=function(){if(this instanceof CoopRenderer) window.__campaignFrames++;return render.call(this)};
+    Game.prototype.renderPilot=function(ctx){if(this instanceof CoopRenderer) window.__campaignPilots++;return pilot.call(this,ctx)};
+  })()`,
+  );
+  await waitFor(
+    cdp,
+    alpha,
+    "window.__campaignFrames>3 && window.__campaignPilots>=window.__campaignFrames*2",
+    "both pilots drawn by campaign renderer",
+  );
+  if (process.env.HELIO_SMOKE_SCREENSHOT) {
+    const capture = await cdp.send("Page.captureScreenshot", { format: "png" }, alpha.sessionId);
+    await writeFile(process.env.HELIO_SMOKE_SCREENSHOT, Buffer.from(capture.data, "base64"));
+  }
   await evaluate(cdp, alpha, "window.__helioSmokeReloadPending = true");
   await cdp.send("Page.reload", { ignoreCache: true }, alpha.sessionId);
   await waitFor(

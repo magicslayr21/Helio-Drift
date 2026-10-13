@@ -325,3 +325,38 @@ test("a running match advances during a temporary full disconnect", async (t) =>
   const after = await app.nextMessage(reconnected.socket, (message) => message.type === "snapshot");
   assert.ok(after.serverTick > before.serverTick);
 });
+
+test("a running native campaign survives Worker restart with its world and pilot state", async (t) => {
+  const app = await multiplayerFixture(t);
+  const first = await app.create("Checkpoint Alpha");
+  const second = (await app.joinRoom(first.roomCode, "Checkpoint Bravo")).data;
+  const a = await app.connect(first),
+    b = await app.connect(second);
+  await Promise.all([
+    app.nextMessage(a.socket, (m) => m.type === "welcome"),
+    app.nextMessage(b.socket, (m) => m.type === "welcome"),
+  ]);
+  send(a.socket, { type: "ready", ready: true });
+  send(b.socket, { type: "ready", ready: true });
+  await app.nextMessage(
+    a.socket,
+    (m) => m.type === "room" && m.room.players.p1.ready && m.room.players.p2.ready,
+  );
+  send(a.socket, { type: "start" });
+  const before = await app.nextMessage(
+    a.socket,
+    (m) => m.type === "snapshot" && m.serverTick >= 32,
+  );
+  assert.ok(before.state.campaign.rocks.length);
+  await app.restart();
+  const reconnected = await app.connect(first);
+  await app.nextMessage(reconnected.socket, (m) => m.type === "welcome");
+  const after = await app.nextMessage(reconnected.socket, (m) => m.type === "snapshot");
+  // Checkpoints are committed once per second; at most one interval can be replayed.
+  assert.ok(after.serverTick >= before.serverTick - 30);
+  assert.equal(after.state.team.wave, before.state.team.wave);
+  assert.equal(after.state.players.p1.callsign, "Checkpoint Alpha");
+  assert.equal(after.state.players.p2.callsign, "Checkpoint Bravo");
+  assert.equal(after.state.players.p1.credits, before.state.players.p1.credits);
+  assert.ok(after.state.campaign.rocks.every((r) => r.pts.length > 0 && Array.isArray(r.cracks)));
+});

@@ -112,6 +112,7 @@ export function MultiplayerExperience({
 
   useEffect(() => {
     if (!session) return;
+    let beamActive = false;
     const link = new CoopConnection(
       session,
       (message) => {
@@ -124,18 +125,22 @@ export function MultiplayerExperience({
           setSnapshot(message);
           const events = message.events as CoopEvent[];
           for (const event of events) {
-            if (event.type === "playerDamaged" && event.playerId === session.playerId)
-              audio.play("hurt");
-            else if (event.type === "asteroidDestroyed" || event.type === "enemyDestroyed")
-              audio.play("explodeSmall");
-            else if (event.type === "bossDefeated") audio.play("bossDeath");
-            else if (event.type === "pickupCollected" && event.playerId === session.playerId)
-              audio.play("pickup");
+            if (event.type === "sound" && event.name !== "beamStart" && event.name !== "beamStop")
+              audio.play(event.name);
             else if (event.type === "playerDisabled") audio.play("death");
             else if (event.type === "playerRevived") audio.play("levelup");
             else if (event.type === "overdriveActivated") audio.play("bossCharge");
-            else if (event.type === "waveStarted") audio.play("wave");
           }
+          const pilots = Object.values(message.state.players);
+          const firingBeam = pilots.some((p) => !p.disabled && p.ship.beamOn);
+          if (firingBeam !== beamActive) {
+            audio.play(firingBeam ? "beamStart" : "beamStop");
+            beamActive = firingBeam;
+          }
+          if (firingBeam)
+            audio.beamHeat(
+              Math.max(...pilots.filter((p) => p.ship.beamOn).map((p) => p.ship.heat)),
+            );
         } else if (message.type === "error") {
           setNotice(message.message);
         }
@@ -145,6 +150,7 @@ export function MultiplayerExperience({
     connection.current = link;
     void link.connect();
     return () => {
+      if (beamActive) audio.play("beamStop");
       link.close();
       if (connection.current === link) connection.current = null;
     };
@@ -285,7 +291,7 @@ export function MultiplayerExperience({
     }
     audio.setMusicOverride(
       state.boss?.mk === 6
-        ? state.boss.phase >= 2
+        ? state.campaign?.boss?.mk6?.enraged
           ? "mk6Phase2"
           : "mk6"
         : state.boss
@@ -293,7 +299,7 @@ export function MultiplayerExperience({
           : "flight",
     );
     return () => audio.setMusicOverride(null);
-  }, [state?.boss?.mk, state?.boss?.phase, state?.phase]);
+  }, [state?.boss?.mk, state?.campaign?.boss?.mk6?.enraged, state?.phase]);
 
   if (
     session &&
@@ -303,6 +309,17 @@ export function MultiplayerExperience({
     teammateId &&
     (room.phase === "running" || room.phase === "finished")
   ) {
+    if (!state.campaign)
+      return (
+        <div className="coop-screen">
+          <h2>Multiplayer update required</h2>
+          <p>
+            The game server is running an older version. Ask the server owner to update it, then
+            reconnect.
+          </p>
+          <button onClick={back}>Back</button>
+        </div>
+      );
     const ended = state.phase === "victory" || state.phase === "defeat";
     return (
       <section className="coop-game" aria-label="Online cooperative match">
@@ -887,20 +904,26 @@ function CoopShop({
           <>
             <h3>Upgrade points · {player.upgradePoints}</h3>
             <div className="coop-shop-grid">
-              {STAT_UPGRADES.map((upgrade) => (
+              {(player.campaign?.choices ?? []).map((upgrade) => (
                 <button
                   key={upgrade.id}
-                  disabled={(player.upgrades[upgrade.id] ?? 0) >= upgrade.max}
                   onClick={() => send({ type: "chooseUpgrade", upgrade: upgrade.id })}
                 >
                   <strong>{upgrade.name}</strong>
                   <span>{upgrade.desc}</span>
                   <small>
-                    {player.upgrades[upgrade.id] ?? 0}/{upgrade.max}
+                    {upgrade.rarity} · {player.upgrades[upgrade.id] ?? 0}/
+                    {STAT_UPGRADES.find((entry) => entry.id === upgrade.id)?.max}
                   </small>
                 </button>
               ))}
             </div>
+            <button
+              disabled={player.credits < (player.campaign?.rerollCost ?? Infinity)}
+              onClick={() => send({ type: "rerollUpgrades" })}
+            >
+              Reroll · {player.campaign?.rerollCost ?? 0} CR
+            </button>
           </>
         )}
         <h3>Salvage drone</h3>
