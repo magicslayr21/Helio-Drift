@@ -40,6 +40,7 @@ export function CoopArena({
     firing.current = false;
     missile.current = false;
     touchMove.current = { x: 0, y: 0 };
+    if (active) canvasRef.current?.focus({ preventScroll: true });
   }, [active]);
 
   useEffect(() => {
@@ -52,7 +53,14 @@ export function CoopArena({
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
       if (!handlers.current.active) return;
-      if (["INPUT", "BUTTON", "TEXTAREA"].includes((event.target as HTMLElement)?.tagName)) return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable)
+      )
+        return;
+      // Preserve keyboard activation of UI buttons without swallowing flight keys.
+      if (target?.closest("button, a") && ["Space", "Enter", "Tab"].includes(event.code)) return;
       keys.current.add(event.code);
       if (event.code === "KeyE" && !event.repeat) missile.current = true;
       if (event.code === "KeyQ" && !event.repeat) handlers.current.onOverdrive();
@@ -66,12 +74,14 @@ export function CoopArena({
       missile.current = false;
       touchMove.current = { x: 0, y: 0 };
     };
-    window.addEventListener("keydown", down);
-    window.addEventListener("keyup", up);
+    // Deploy's modal stops bubbling keys to protect the underlying campaign.
+    // Handle flight in capture phase, before that boundary consumes the event.
+    window.addEventListener("keydown", down, true);
+    window.addEventListener("keyup", up, true);
     window.addEventListener("blur", clear);
     return () => {
-      window.removeEventListener("keydown", down);
-      window.removeEventListener("keyup", up);
+      window.removeEventListener("keydown", down, true);
+      window.removeEventListener("keyup", up, true);
       window.removeEventListener("blur", clear);
     };
   }, []);
@@ -115,10 +125,17 @@ export function CoopArena({
     const observer = new ResizeObserver(resize);
     observer.observe(canvasRef.current.parentElement!);
     window.addEventListener("resize", resize);
+    let displayDensity = window.devicePixelRatio || 1;
     renderer.resizeDisplay();
     let renderTick: number | null = null;
     let renderedAt = performance.now();
     const render = () => {
+      // Monitor/zoom changes can update DPR without firing resize or media events.
+      // This inexpensive scalar check also refreshes a paused canvas after a switch.
+      if (displayDensity !== (window.devicePixelRatio || 1)) {
+        displayDensity = window.devicePixelRatio || 1;
+        resize();
+      }
       if (latest.current.pause && pausedSnapshot === latest.current) {
         frame = requestAnimationFrame(render);
         return;
@@ -164,9 +181,14 @@ export function CoopArena({
     aim.current = Math.atan2(y - ship.y, x - ship.x);
   };
   const moveButton = (x: number, y: number) => ({
-    onPointerDown: () => (touchMove.current = { x, y }),
+    onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (!handlers.current.active) return;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      touchMove.current = { x, y };
+    },
     onPointerUp: () => (touchMove.current = { x: 0, y: 0 }),
     onPointerCancel: () => (touchMove.current = { x: 0, y: 0 }),
+    onLostPointerCapture: () => (touchMove.current = { x: 0, y: 0 }),
   });
 
   return (
@@ -176,10 +198,12 @@ export function CoopArena({
         width={WIDTH}
         height={HEIGHT}
         className="coop-arena"
+        tabIndex={0}
         aria-label="Online cooperative Helios Drift arena"
         onPointerMove={point}
         onPointerDown={(event) => {
           if (!handlers.current.active) return;
+          event.currentTarget.focus({ preventScroll: true });
           point(event);
           firing.current = true;
           event.currentTarget.setPointerCapture(event.pointerId);

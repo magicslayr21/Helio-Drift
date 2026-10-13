@@ -1,5 +1,23 @@
 export const UPDATE_LOG = [
   {
+    version: "0.5.3-alpha.1",
+    date: "2026-10-14",
+    title: "Co-op controls and clarity",
+    sections: [
+      {
+        title: "MULTIPLAYER",
+        items: [
+          "Fixed the Deploy dialog blocking movement and Escape-to-pause.",
+          "Movement keys work after clicking HUD buttons.",
+          "Flight controls regain focus when entering or resuming a match.",
+          "Touch movement releases correctly outside its button.",
+          "Sharper canvas on high-density displays and smaller windows.",
+          "Resolution updates when switching displays or zooming.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.5.2-alpha.1",
     date: "2026-10-13",
     title: "Co-op flight improvements",

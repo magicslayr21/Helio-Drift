@@ -259,6 +259,75 @@ async function enterMultiplayer(client, page) {
   );
 }
 
+async function observeFlight(client, page) {
+  await evaluate(
+    client,
+    page,
+    `(async () => {
+    window.__keys=[];
+    window.addEventListener('keydown', e => window.__keys.push({code:e.code, target:e.target.tagName}), true);
+    const send = WebSocket.prototype.send;
+    WebSocket.prototype.send = function(data) { const message=JSON.parse(data);if(message.type==='input')window.__sentInput=message;return send.call(this,data); };
+    const url = performance.getEntriesByType('resource').find(e => e.name.includes('/src/game/network/client-sync.ts')).name;
+    const {ClientPrediction} = await import(url);
+    const reconcile = ClientPrediction.prototype.reconcile;
+    ClientPrediction.prototype.reconcile = function(snapshot) {
+      window.__flight = snapshot.state;
+      return reconcile.call(this, snapshot);
+    };
+  })()`,
+  );
+  await waitFor(client, page, "window.__flight", "authoritative flight probe");
+}
+
+async function checkMovement(client, pilot, observer, id, code, axis, direction) {
+  await client.send("Page.bringToFront", {}, pilot.sessionId);
+  // A HUD button retaining focus must not swallow WASD/arrows.
+  await evaluate(client, pilot, "document.querySelector('.coop-game-header button').focus()");
+  const start = await evaluate(client, observer, `window.__flight.players.${id}.ship.${axis}`);
+  await client.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyDown", code, key: code === "KeyD" ? "d" : "ArrowUp" },
+    pilot.sessionId,
+  );
+  try {
+    await waitFor(
+      client,
+      observer,
+      `window.__flight.players.${id}.input.${axis === "x" ? "moveX" : "moveY"} === ${direction}`,
+      `${id} movement reaching other client`,
+    );
+    await waitFor(
+      client,
+      observer,
+      `(window.__flight.players.${id}.ship.${axis} - ${start}) * ${direction} > 20`,
+      `${id} authoritative movement`,
+    );
+  } catch (error) {
+    console.info(
+      "Movement diagnostics",
+      await evaluate(
+        client,
+        pilot,
+        "JSON.stringify({keys:window.__keys,sent:window.__sentInput,inputs:Object.values(window.__flight?.players ?? {}).map(p=>({id:p.id,input:p.input,x:p.ship.x,y:p.ship.y})),focus:document.activeElement?.tagName})",
+      ),
+    );
+    throw error;
+  } finally {
+    await client.send(
+      "Input.dispatchKeyEvent",
+      { type: "keyUp", code, key: code === "KeyD" ? "d" : "ArrowUp" },
+      pilot.sessionId,
+    );
+  }
+  await waitFor(
+    client,
+    observer,
+    `window.__flight.players.${id}.input.${axis === "x" ? "moveX" : "moveY"} === 0`,
+    `${id} key release`,
+  );
+}
+
 try {
   await listen(leaderboard, leaderboardPort);
   await multiplayer.ready;
@@ -401,6 +470,10 @@ try {
     ),
   ]);
 
+  await Promise.all([observeFlight(cdp, alpha), observeFlight(cdp, bravo)]);
+  await checkMovement(cdp, alpha, bravo, "p1", "KeyD", "x", 1);
+  await checkMovement(cdp, bravo, alpha, "p2", "ArrowUp", "y", -1);
+
   await evaluate(
     cdp,
     alpha,
@@ -434,12 +507,83 @@ try {
     const times=window.__drawTimes.slice(-60).sort((a,b)=>a-b);
     const canvas=document.querySelector('.coop-arena');
     const rect=canvas.getBoundingClientRect();
-    return {meanMs:times.reduce((a,b)=>a+b,0)/times.length,p95Ms:times[56],pixels:canvas.width,expectedPixels:Math.round(rect.width*Math.min(devicePixelRatio,2)),aspect:rect.width/rect.height};
+    return {meanMs:times.reduce((a,b)=>a+b,0)/times.length,p95Ms:times[56],pixels:canvas.width,expectedPixels:Math.max(1000,Math.round(rect.width*devicePixelRatio)),aspect:rect.width/rect.height};
   })()`,
   );
   assert.equal(rendering.pixels, rendering.expectedPixels);
   assert.ok(Math.abs(rendering.aspect - 10 / 7) < 0.001, "arena must retain campaign proportions");
   console.info(`[coop rendering] ${JSON.stringify(rendering)}`);
+  for (const display of [
+    { width: 1440, height: 900, deviceScaleFactor: 3, mobile: false },
+    { width: 640, height: 480, deviceScaleFactor: 1, mobile: false },
+    { width: 1440, height: 900, deviceScaleFactor: 2, mobile: false },
+  ]) {
+    await cdp.send("Emulation.setDeviceMetricsOverride", display, alpha.sessionId);
+    try {
+      await waitFor(
+        cdp,
+        alpha,
+        `(() => {
+      const canvas = document.querySelector('.coop-arena');
+      const rect = canvas.getBoundingClientRect();
+      return devicePixelRatio === ${display.deviceScaleFactor} &&
+        Math.abs(canvas.width - Math.max(1000, Math.round(rect.width * devicePixelRatio))) <= 1 &&
+        Math.abs(canvas.height - canvas.width * 0.7) <= 1 &&
+        Math.abs(rect.width / rect.height - 10 / 7) < 0.001;
+    })()`,
+        "sharp canvas after viewport/display-density change",
+      );
+    } catch (error) {
+      console.info(
+        "Display diagnostics",
+        display,
+        await evaluate(
+          cdp,
+          alpha,
+          `(() => {const c=document.querySelector('.coop-arena'),r=c.getBoundingClientRect();return {width:c.width,height:c.height,cssWidth:r.width,cssHeight:r.height,dpr:devicePixelRatio}})()`,
+        ),
+      );
+      throw error;
+    }
+    if (display.width === 640) {
+      await cdp.send("Page.bringToFront", {}, alpha.sessionId);
+      const point = await evaluate(
+        cdp,
+        alpha,
+        `(() => {
+        const r=document.querySelector('button[aria-label="Move left"]').getBoundingClientRect();
+        return {x:r.x+r.width/2,y:r.y+r.height/2};
+      })()`,
+      );
+      await cdp.send(
+        "Input.dispatchMouseEvent",
+        { type: "mousePressed", ...point, button: "left", clickCount: 1 },
+        alpha.sessionId,
+      );
+      await waitFor(
+        cdp,
+        bravo,
+        "window.__flight.players.p1.input.moveX === -1",
+        "on-screen movement reaches teammate",
+      );
+      await cdp.send(
+        "Input.dispatchMouseEvent",
+        { type: "mouseMoved", x: 5, y: 5, button: "left", buttons: 1 },
+        alpha.sessionId,
+      );
+      await cdp.send(
+        "Input.dispatchMouseEvent",
+        { type: "mouseReleased", x: 5, y: 5, button: "left", clickCount: 1 },
+        alpha.sessionId,
+      );
+      await waitFor(
+        cdp,
+        bravo,
+        "window.__flight.players.p1.input.moveX === 0",
+        "movement released outside on-screen button",
+      );
+    }
+  }
   if (process.env.HELIO_SMOKE_SCREENSHOT) {
     const capture = await cdp.send("Page.captureScreenshot", { format: "png" }, alpha.sessionId);
     await writeFile(process.env.HELIO_SMOKE_SCREENSHOT, Buffer.from(capture.data, "base64"));
@@ -466,24 +610,47 @@ try {
     "document.querySelector('canvas') && document.body.textContent.includes('Wave 01')",
     "reconnected flight",
   );
+  await observeFlight(cdp, alpha);
+  await checkMovement(cdp, alpha, bravo, "p1", "KeyD", "x", 1);
 
-  assert.equal(await evaluate(cdp, bravo, clickText("Pause", ".coop-game-header button")), true);
+  await cdp.send("Page.bringToFront", {}, bravo.sessionId);
+  await cdp.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyDown", code: "Escape", key: "Escape" },
+    bravo.sessionId,
+  );
+  await cdp.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyUp", code: "Escape", key: "Escape" },
+    bravo.sessionId,
+  );
   await Promise.all([
     waitFor(cdp, alpha, "document.querySelector('.coop-pause')", "shared pause on alpha"),
     waitFor(cdp, bravo, "document.querySelector('.coop-pause')", "shared pause on bravo"),
   ]);
-  assert.equal(await evaluate(cdp, alpha, clickText("Resume flight")), true);
+  await cdp.send("Page.bringToFront", {}, alpha.sessionId);
+  await cdp.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyDown", code: "Escape", key: "Escape" },
+    alpha.sessionId,
+  );
+  await cdp.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyUp", code: "Escape", key: "Escape" },
+    alpha.sessionId,
+  );
   await Promise.all([
     waitFor(cdp, alpha, "!document.querySelector('.coop-pause')", "alpha resume"),
     waitFor(cdp, bravo, "!document.querySelector('.coop-pause')", "bravo resume"),
   ]);
+  await checkMovement(cdp, bravo, alpha, "p2", "ArrowUp", "y", -1);
   await evaluate(cdp, bravo, clickText("Pause", ".coop-game-header button"));
   await waitFor(cdp, bravo, "document.querySelector('.coop-pause')", "pause menu before leaving");
   assert.equal(await evaluate(cdp, bravo, clickText("Leave match", ".coop-pause button")), true);
   await waitFor(cdp, bravo, "document.body.innerText.includes('FLY TOGETHER')", "leave return");
   assert.deepEqual(cdp.exceptions, []);
   console.info(
-    `[coop readiness] two-browser room ${roomCode}: join, ready, flight, refresh/reconnect and leave passed`,
+    `[coop readiness] two-browser room ${roomCode}: both pilots move and release keys, HUD focus, display density, pause/resume, refresh/reconnect and leave passed`,
   );
 } finally {
   try {

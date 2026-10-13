@@ -125,8 +125,8 @@ export function MultiplayerExperience({
       event.preventDefault();
       connection.current?.send({ type: pause ? "resume" : "pause" });
     };
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
+    window.addEventListener("keydown", key, true);
+    return () => window.removeEventListener("keydown", key, true);
   }, [room?.phase, snapshot?.state.phase, pause]);
 
   const enterSession = useCallback((next: CoopSession) => {

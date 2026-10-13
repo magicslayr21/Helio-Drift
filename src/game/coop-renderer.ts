@@ -73,11 +73,14 @@ export class CoopRenderer extends Game {
     if (!width) return;
     this.canvas.style.width = `${width}px`;
     this.canvas.style.height = `${(width * this.h) / this.w}px`;
-    this.dpr = (width / this.w) * Math.min(window.devicePixelRatio || 1, 2);
-    const pixels = Math.round(this.w * this.dpr);
-    if (this.canvas.width !== pixels) {
+    // Keep native world detail even in a small viewport, and match every physical
+    // display pixel on high-density screens instead of upscaling a capped buffer.
+    const pixels = Math.max(this.w, Math.round(width * (window.devicePixelRatio || 1)));
+    this.dpr = pixels / this.w;
+    const height = Math.round(this.h * this.dpr);
+    if (this.canvas.width !== pixels || this.canvas.height !== height) {
       this.canvas.width = pixels;
-      this.canvas.height = Math.round(this.h * this.dpr);
+      this.canvas.height = height;
     }
   }
 
