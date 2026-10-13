@@ -31,6 +31,16 @@ export function CoopArena({
   const firing = useRef(false);
   const missile = useRef(false);
   const touchMove = useRef({ x: 0, y: 0 });
+  const sampledAt = useRef(performance.now());
+  const handlers = useRef({ send, onOverdrive, active });
+  handlers.current = { send, onOverdrive, active };
+
+  useEffect(() => {
+    keys.current.clear();
+    firing.current = false;
+    missile.current = false;
+    touchMove.current = { x: 0, y: 0 };
+  }, [active]);
 
   useEffect(() => {
     latest.current = snapshot;
@@ -41,10 +51,11 @@ export function CoopArena({
 
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
+      if (!handlers.current.active) return;
       if (["INPUT", "BUTTON", "TEXTAREA"].includes((event.target as HTMLElement)?.tagName)) return;
       keys.current.add(event.code);
       if (event.code === "KeyE" && !event.repeat) missile.current = true;
-      if (event.code === "KeyQ") onOverdrive();
+      if (event.code === "KeyQ" && !event.repeat) handlers.current.onOverdrive();
       if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.code))
         event.preventDefault();
     };
@@ -63,11 +74,11 @@ export function CoopArena({
       window.removeEventListener("keyup", up);
       window.removeEventListener("blur", clear);
     };
-  }, [onOverdrive]);
+  }, []);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      if (!active) return;
+      if (!handlers.current.active) return;
       const pressed = keys.current;
       const moveX =
         touchMove.current.x +
@@ -85,29 +96,64 @@ export function CoopArena({
         missile: missile.current,
         interact: pressed.has("KeyF") || pressed.has("KeyR"),
       });
+      sampledAt.current = performance.now();
       missile.current = false;
-      send(message);
+      handlers.current.send(message);
     }, 1000 / 30);
     return () => window.clearInterval(timer);
-  }, [active, send]);
+  }, []);
 
   useEffect(() => {
     let frame = 0;
     if (!canvasRef.current) return;
     const renderer = new CoopRenderer(canvasRef.current);
+    let pausedSnapshot: AuthoritativeSnapshot | null = null;
+    const resize = () => {
+      renderer.resizeDisplay();
+      pausedSnapshot = null;
+    };
+    const observer = new ResizeObserver(resize);
+    observer.observe(canvasRef.current.parentElement!);
+    window.addEventListener("resize", resize);
+    renderer.resizeDisplay();
+    let renderTick: number | null = null;
+    let renderedAt = performance.now();
     const render = () => {
+      if (latest.current.pause && pausedSnapshot === latest.current) {
+        frame = requestAnimationFrame(render);
+        return;
+      }
+      pausedSnapshot = latest.current.pause ? latest.current : null;
       const context = canvasRef.current?.getContext("2d");
       if (context) {
-        const elapsedTicks = Math.min(2, ((performance.now() - receivedAt.current) / 1000) * 30);
-        const state =
-          interpolation.current.sample(latest.current.serverTick - 2 + elapsedTicks) ??
-          latest.current.state;
-        renderer.draw(state, playerId, prediction.current.ship);
+        const now = performance.now();
+        const dt = Math.min(0.1, (now - renderedAt) / 1000);
+        renderedAt = now;
+        const elapsedTicks = Math.min(3, ((now - receivedAt.current) / 1000) * 30);
+        const targetTick = latest.current.serverTick - 3 + elapsedTicks;
+        // Keep a continuous presentation clock instead of jumping on every packet arrival.
+        if (renderTick === null || Math.abs(targetTick - renderTick) > 9) renderTick = targetTick;
+        else
+          renderTick = Math.min(
+            latest.current.serverTick,
+            renderTick + dt * 30 + Math.max(-1, Math.min(1, targetTick - renderTick)) * dt * 3,
+          );
+        if (latest.current.pause) renderTick = latest.current.serverTick;
+        const state = interpolation.current.sample(renderTick) ?? latest.current.state;
+        renderer.draw(
+          state,
+          playerId,
+          prediction.current.renderShip((performance.now() - sampledAt.current) / 1000),
+        );
       }
       frame = requestAnimationFrame(render);
     };
     frame = requestAnimationFrame(render);
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener("resize", resize);
+    };
   }, [playerId]);
 
   const point = (event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -133,6 +179,7 @@ export function CoopArena({
         aria-label="Online cooperative Helios Drift arena"
         onPointerMove={point}
         onPointerDown={(event) => {
+          if (!handlers.current.active) return;
           point(event);
           firing.current = true;
           event.currentTarget.setPointerCapture(event.pointerId);

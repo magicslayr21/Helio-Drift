@@ -59,9 +59,12 @@ export type MultiplayerClientMessage =
   | { type: "heartbeat" }
   | { type: "ready"; ready: boolean }
   | { type: "start" }
+  | { type: "pause" }
+  | { type: "resume" }
   | { type: "leave" };
 
 export interface AuthoritativeSnapshot {
+  pause?: { playerId: CoopPlayerId; until: number } | null;
   type: "snapshot";
   serverTime: number;
   serverTick: number;

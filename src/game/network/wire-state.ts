@@ -37,7 +37,6 @@ export function createWireState(state: CoopMatchState): CoopWireState {
       delete b.weapon;
       delete b.ownerId;
     });
-    wire.campaign.particles = wire.campaign.particles.slice(0, 100);
   }
   roundPresentation(wire);
   return wire;

@@ -5,6 +5,71 @@ import { multiplayerFixture } from "./fixture.mjs";
 
 const send = (socket, message) => socket.send(JSON.stringify(message));
 
+test(
+  "either pilot pauses both worlds, resumes, and the server enforces the 30 second deadline",
+  { timeout: 45_000 },
+  async (t) => {
+    const app = await multiplayerFixture(t);
+    const first = await app.create("Alpha");
+    const second = (await app.joinRoom(first.roomCode, "Bravo")).data;
+    let a = await app.connect(first);
+    const b = await app.connect(second);
+    send(a.socket, { type: "ready", ready: true });
+    send(b.socket, { type: "ready", ready: true });
+    await app.nextMessage(
+      a.socket,
+      (m) => m.type === "room" && m.room.players.p1.ready && m.room.players.p2?.ready,
+    );
+    send(a.socket, { type: "start" });
+    await app.nextMessage(a.socket, (m) => m.type === "snapshot");
+    send(b.socket, { type: "pause" });
+    const paused = await app.nextMessage(a.socket, (m) => m.type === "snapshot" && m.pause);
+    const other = await app.nextMessage(b.socket, (m) => m.type === "snapshot" && m.pause);
+    assert.deepEqual(paused.pause, other.pause);
+    assert.equal(paused.pause.playerId, "p2");
+    assert.ok(paused.pause.until - paused.serverTime <= 30_000);
+    send(a.socket, { type: "input", sequence: 10, moveX: 1, moveY: 0, aimAngle: 0, fire: true });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    send(a.socket, { type: "resume" });
+    const resumed = await app.nextMessage(
+      a.socket,
+      (m) => m.type === "snapshot" && !m.pause && m.serverTime > paused.serverTime,
+    );
+    assert.equal(resumed.serverTick, paused.serverTick);
+    assert.equal(resumed.state.team.elapsedSeconds, paused.state.team.elapsedSeconds);
+    assert.equal(resumed.acknowledgements.p1, paused.acknowledgements.p1);
+    send(a.socket, { type: "pause" });
+    const timed = await app.nextMessage(
+      a.socket,
+      (m) => m.type === "snapshot" && m.pause && m.pause.playerId === "p1",
+    );
+    a = await app.connect(first);
+    const reconnected = await app.nextMessage(a.socket, (m) => m.type === "snapshot");
+    assert.deepEqual(reconnected.pause, timed.pause);
+    assert.equal(reconnected.serverTick, timed.serverTick);
+    let repeats = 0;
+    const heartbeat = setInterval(() => {
+      send(a.socket, { type: "heartbeat" });
+      send(b.socket, { type: "heartbeat" });
+      if (++repeats <= 5) send(b.socket, { type: "pause" });
+    }, 5000);
+    t.after(() => clearInterval(heartbeat));
+    const automatic = await app.nextMessage(
+      a.socket,
+      (m) => m.type === "snapshot" && !m.pause && m.serverTime >= timed.pause.until,
+      33_000,
+    );
+    assert.equal(automatic.serverTick, timed.serverTick);
+    assert.equal(automatic.state.team.elapsedSeconds, timed.state.team.elapsedSeconds);
+    assert.ok(automatic.serverTime - timed.pause.until < 1000);
+    const running = await app.nextMessage(
+      b.socket,
+      (m) => m.type === "snapshot" && !m.pause && m.serverTick > timed.serverTick,
+    );
+    assert.ok(running.state.team.elapsedSeconds > timed.state.team.elapsedSeconds);
+  },
+);
+
 test("health, CORS and input validation are isolated from the leaderboard service", async (t) => {
   const app = await multiplayerFixture(t);
   const health = await app.request("/health", { headers: { Origin: "http://localhost:5173" } });

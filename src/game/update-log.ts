@@ -1,5 +1,22 @@
 export const UPDATE_LOG = [
   {
+    version: "0.5.2-alpha.1",
+    date: "2026-10-13",
+    title: "Co-op flight improvements",
+    sections: [
+      {
+        title: "MULTIPLAYER",
+        items: [
+          "Smoother rendering and controls with less snapshot processing.",
+          "Sharper display resolution and a larger flight area.",
+          "More campaign particle effects visible in co-op.",
+          "Either pilot can pause both players for up to 30 seconds.",
+          "Resume or leave from the shared pause menu.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.5.1-alpha.1",
     date: "2026-10-13",
     title: "Campaign gameplay in co-op",

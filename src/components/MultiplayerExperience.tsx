@@ -101,6 +101,33 @@ export function MultiplayerExperience({
   const [developerNotice, setDeveloperNotice] = useState("");
   const connection = useRef<CoopConnection | null>(null);
   const commandSequence = useRef(0);
+  const [pauseSeconds, setPauseSeconds] = useState(0);
+  const pause = snapshot?.pause;
+  useEffect(() => {
+    if (!pause || !snapshot) return;
+    // Use the server duration so a client's wall-clock skew cannot change the countdown.
+    const deadline = performance.now() + Math.max(0, pause.until - snapshot.serverTime);
+    const update = () =>
+      setPauseSeconds(Math.max(0, Math.ceil((deadline - performance.now()) / 1000)));
+    update();
+    const timer = window.setInterval(update, 100);
+    return () => window.clearInterval(timer);
+  }, [pause, snapshot?.serverTime]);
+  useEffect(() => {
+    const key = (event: KeyboardEvent) => {
+      if (
+        event.code !== "Escape" ||
+        event.repeat ||
+        room?.phase !== "running" ||
+        snapshot?.state.phase !== "running"
+      )
+        return;
+      event.preventDefault();
+      connection.current?.send({ type: pause ? "resume" : "pause" });
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [room?.phase, snapshot?.state.phase, pause]);
 
   const enterSession = useCallback((next: CoopSession) => {
     setSession(next);
@@ -132,7 +159,7 @@ export function MultiplayerExperience({
             else if (event.type === "overdriveActivated") audio.play("bossCharge");
           }
           const pilots = Object.values(message.state.players);
-          const firingBeam = pilots.some((p) => !p.disabled && p.ship.beamOn);
+          const firingBeam = !message.pause && pilots.some((p) => !p.disabled && p.ship.beamOn);
           if (firingBeam !== beamActive) {
             audio.play(firingBeam ? "beamStart" : "beamStop");
             beamActive = firingBeam;
@@ -338,8 +365,12 @@ export function MultiplayerExperience({
           <div className={`coop-link is-${connectionState}`}>
             <Radio size={14} /> {statusLabel[connectionState]}
           </div>
-          <button onClick={leave} className="coop-quiet-button">
-            Leave
+          <button
+            disabled={ended || state.phase !== "running"}
+            onClick={() => connection.current?.send({ type: "pause" })}
+            className="coop-quiet-button"
+          >
+            Pause · Esc
           </button>
         </header>
         <div className="coop-hud-row">
@@ -350,7 +381,7 @@ export function MultiplayerExperience({
               <i style={{ width: `${state.team.overdrive}%` }} />
             </div>
             <button
-              disabled={state.team.overdrive < 100 || ended}
+              disabled={state.team.overdrive < 100 || ended || Boolean(pause)}
               onClick={() => sendCommand({ type: "activateOverdrive" })}
             >
               {state.team.overdriveRemaining > 0
@@ -370,7 +401,7 @@ export function MultiplayerExperience({
             playerId={session.playerId}
             send={(message) => connection.current?.send(message) ?? false}
             onOverdrive={() => sendCommand({ type: "activateOverdrive" })}
-            active={state.phase === "running"}
+            active={state.phase === "running" && !pause}
           />
         )}
         <div className="coop-game-actions">
@@ -397,6 +428,25 @@ export function MultiplayerExperience({
         )}
         {shopOpen && me && (
           <CoopShop player={me} onClose={() => setShopOpen(false)} send={sendCommand} />
+        )}
+        {pause && (
+          <div
+            className="coop-modal coop-pause"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="coop-pause-title"
+          >
+            <div>
+              <p className="deploy-eyebrow">Both pilots paused</p>
+              <h2 id="coop-pause-title">FLIGHT PAUSED</h2>
+              <p>{state.players[pause.playerId].callsign} paused the game.</p>
+              <p>Automatically resuming in {pauseSeconds}s</p>
+              <button autoFocus onClick={() => connection.current?.send({ type: "resume" })}>
+                Resume flight
+              </button>
+              <button onClick={leave}>Leave match</button>
+            </div>
+          </div>
         )}
         {ended && (
           <div className="coop-modal">

@@ -46,6 +46,45 @@ function snapshot(simulation) {
   };
 }
 
+test("render interpolation preserves buffered worlds without deep-cloning each frame", () => {
+  const sim = new LocalCoopSimulation({ seed: 17 });
+  const first = snapshot(sim);
+  sim.stepTicks(2);
+  const second = snapshot(sim);
+  const before = JSON.stringify([first, second]);
+  const buffer = new SnapshotInterpolator();
+  buffer.push(first);
+  buffer.push(second);
+  const originalClone = globalThis.structuredClone;
+  let clones = 0;
+  globalThis.structuredClone = (...args) => {
+    clones++;
+    return originalClone(...args);
+  };
+  try {
+    for (let frame = 0; frame < 120; frame++) {
+      const world = buffer.sample((frame % 10) / 5);
+      world.players.p1.ship.x = -1000;
+      if (world.campaign.rocks[0]) world.campaign.rocks[0].x = -1000;
+    }
+    assert.equal(clones, 0);
+    assert.equal(JSON.stringify([first, second]), before);
+  } finally {
+    globalThis.structuredClone = originalClone;
+  }
+});
+
+test("paused snapshots discard movement prediction and rendered extrapolation", () => {
+  const sim = new LocalCoopSimulation({ seed: 18 });
+  const predictor = new ClientPrediction("p1", 1000, 700);
+  predictor.reconcile(snapshot(sim));
+  predictor.sample({ moveX: 1, moveY: 0, aimAngle: 0 });
+  const paused = { ...snapshot(sim), pause: { playerId: "p2", until: 31000 } };
+  predictor.reconcile(paused);
+  assert.equal(predictor.pendingCount, 0);
+  assert.equal(predictor.renderShip(0.03).x, paused.state.players.p1.ship.x);
+});
+
 test("client prediction replays only inputs newer than the server acknowledgement", () => {
   const simulation = new LocalCoopSimulation({ seed: 13 });
   const prediction = new ClientPrediction("p1", 1000, 700);

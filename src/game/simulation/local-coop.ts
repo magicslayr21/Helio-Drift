@@ -361,12 +361,30 @@ export class LocalCoopSimulation {
     this.state.clockAccumulator = clock.accumulator;
     return steps;
   }
+  clearControls() {
+    this.commands = this.commands.filter((command) => command.type !== "input");
+    for (const p of Object.values(this.state.players)) {
+      Object.assign(p.input, { moveX: 0, moveY: 0, fire: false, missile: false, interact: false });
+      p.ship.beamOn = false;
+      p.ship.thrusting = false;
+    }
+  }
   stepTicks(ticks = 1) {
     for (let i = 0; i < Math.max(0, Math.floor(ticks)); i++) this.advance(COOP_FIXED_DT);
   }
-  snapshot(): CoopMatchState {
+  snapshot(includeLegacy = true): CoopMatchState {
     this.sync();
     const { campaign: _previous, ...state } = this.state;
+    if (!includeLegacy)
+      Object.assign(state, {
+        rocks: [],
+        enemies: [],
+        projectiles: [],
+        hostileProjectiles: [],
+        hazards: [],
+        mines: [],
+        pickups: [],
+      });
     return { ...structuredClone(state), campaign: captureCampaignWorld(this.game) };
   }
   drainEvents() {

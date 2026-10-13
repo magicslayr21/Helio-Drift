@@ -62,7 +62,22 @@ export class ClientPrediction {
   }
 
   get ship(): Player | null {
-    return this.predictedShip ? structuredClone(this.predictedShip) : null;
+    return this.predictedShip ? { ...this.predictedShip } : null;
+  }
+
+  renderShip(elapsedSinceInput: number): Player | null {
+    const ship = this.ship;
+    const input = this.pending.at(-1)?.message;
+    if (ship && input && !this.disabled)
+      replayInput(
+        ship,
+        input,
+        clamp(elapsedSinceInput, 0, COOP_FIXED_DT),
+        this.width,
+        this.height,
+        this.timeScale,
+      );
+    return ship;
   }
 
   get pendingCount() {
@@ -91,10 +106,11 @@ export class ClientPrediction {
     const authoritative = snapshot.state.players[this.playerId].ship;
     this.predictedShip = structuredClone(authoritative);
     this.timeScale = snapshot.state.campaign?.timeScale ?? 1;
-    this.disabled = snapshot.state.players[this.playerId].disabled;
+    this.disabled = snapshot.state.players[this.playerId].disabled || Boolean(snapshot.pause);
     const acknowledgement = snapshot.acknowledgements[this.playerId];
     this.sequence = Math.max(this.sequence, acknowledgement);
     this.pending = this.pending.filter((entry) => entry.message.sequence > acknowledgement);
+    if (snapshot.pause) this.pending = [];
     for (const entry of this.pending) {
       if (!this.disabled)
         replayInput(
@@ -113,8 +129,48 @@ export class ClientPrediction {
 const interpolateAngle = (from: number, to: number, alpha: number) =>
   from + wrapAngle(to - from) * alpha;
 
+// Copy only mutable presentation fields, not weapon inventories, boss scripts or upgrades.
+function presentationCopy(from: CoopWireState): CoopWireState {
+  const state = { ...from, players: { ...from.players } };
+  for (const id of ["p1", "p2"] as const)
+    state.players[id] = {
+      ...from.players[id],
+      ship: { ...from.players[id].ship },
+      drone: { ...from.players[id].drone },
+    };
+  for (const key of [
+    "rocks",
+    "enemies",
+    "projectiles",
+    "hostileProjectiles",
+    "hazards",
+    "mines",
+    "pickups",
+  ] as const)
+    Object.assign(state, { [key]: from[key].map((entity) => ({ ...entity })) });
+  state.boss = from.boss ? { ...from.boss } : null;
+  if (from.campaign) {
+    state.campaign = {
+      ...from.campaign,
+      boss: from.campaign.boss ? { ...from.campaign.boss } : null,
+    };
+    for (const key of [
+      "rocks",
+      "drones",
+      "bullets",
+      "pickups",
+      "particles",
+      "texts",
+      "rings",
+      "arcs",
+    ] as const)
+      Object.assign(state.campaign, { [key]: from.campaign[key].map((entity) => ({ ...entity })) });
+  }
+  return state;
+}
+
 function interpolatePositions(from: CoopWireState, to: CoopWireState, alpha: number) {
-  const state = structuredClone(from);
+  const state = presentationCopy(from);
   for (const id of ["p1", "p2"] as const) {
     const left = from.players[id].ship;
     const right = to.players[id].ship;
@@ -210,7 +266,7 @@ export class SnapshotInterpolator {
   push(snapshot: AuthoritativeSnapshot) {
     const existing = this.snapshots.findIndex((entry) => entry.serverTick === snapshot.serverTick);
     if (existing >= 0) this.snapshots.splice(existing, 1);
-    this.snapshots.push(structuredClone(snapshot));
+    this.snapshots.push(snapshot);
     this.snapshots.sort((left, right) => left.serverTick - right.serverTick);
     if (this.snapshots.length > this.capacity) {
       this.snapshots.splice(0, this.snapshots.length - this.capacity);
@@ -222,7 +278,7 @@ export class SnapshotInterpolator {
     const rightIndex = this.snapshots.findIndex((snapshot) => snapshot.serverTick >= renderTick);
     if (rightIndex <= 0) {
       const snapshot = rightIndex === 0 ? this.snapshots[0] : this.snapshots.at(-1)!;
-      return structuredClone(snapshot.state);
+      return presentationCopy(snapshot.state);
     }
     const left = this.snapshots[rightIndex - 1];
     const right = this.snapshots[rightIndex];

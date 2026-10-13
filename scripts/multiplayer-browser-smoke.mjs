@@ -186,6 +186,16 @@ async function makePage(client, callsign) {
   const { sessionId } = await client.send("Target.attachToTarget", { targetId, flatten: true });
   await client.send("Runtime.enable", {}, sessionId);
   await client.send("Page.enable", {}, sessionId);
+  await client.send(
+    "Emulation.setDeviceMetricsOverride",
+    {
+      width: 1440,
+      height: 900,
+      deviceScaleFactor: 2,
+      mobile: false,
+    },
+    sessionId,
+  );
   const identity = JSON.stringify({
     playerId: `smoke-${callsign}`,
     playerToken: "local",
@@ -401,6 +411,9 @@ try {
     if(!engineUrl||!rendererUrl) throw new Error("Campaign modules were not loaded by the co-op client");
     const {Game}=await import(engineUrl);
     const {CoopRenderer}=await import(rendererUrl);
+    const draw=CoopRenderer.prototype.draw;
+    window.__drawTimes=[];
+    CoopRenderer.prototype.draw=function(...args){const start=performance.now();const result=draw.apply(this,args);window.__drawTimes.push(performance.now()-start);return result};
     const render=Game.prototype.render, pilot=Game.prototype.renderPilot;
     window.__campaignFrames=0;window.__campaignPilots=0;
     Game.prototype.render=function(){if(this instanceof CoopRenderer) window.__campaignFrames++;return render.call(this)};
@@ -413,6 +426,20 @@ try {
     "window.__campaignFrames>3 && window.__campaignPilots>=window.__campaignFrames*2",
     "both pilots drawn by campaign renderer",
   );
+  await waitFor(cdp, alpha, "window.__drawTimes.length>=60", "60 native rendered frames");
+  const rendering = await evaluate(
+    cdp,
+    alpha,
+    `(() => {
+    const times=window.__drawTimes.slice(-60).sort((a,b)=>a-b);
+    const canvas=document.querySelector('.coop-arena');
+    const rect=canvas.getBoundingClientRect();
+    return {meanMs:times.reduce((a,b)=>a+b,0)/times.length,p95Ms:times[56],pixels:canvas.width,expectedPixels:Math.round(rect.width*Math.min(devicePixelRatio,2)),aspect:rect.width/rect.height};
+  })()`,
+  );
+  assert.equal(rendering.pixels, rendering.expectedPixels);
+  assert.ok(Math.abs(rendering.aspect - 10 / 7) < 0.001, "arena must retain campaign proportions");
+  console.info(`[coop rendering] ${JSON.stringify(rendering)}`);
   if (process.env.HELIO_SMOKE_SCREENSHOT) {
     const capture = await cdp.send("Page.captureScreenshot", { format: "png" }, alpha.sessionId);
     await writeFile(process.env.HELIO_SMOKE_SCREENSHOT, Buffer.from(capture.data, "base64"));
@@ -440,7 +467,19 @@ try {
     "reconnected flight",
   );
 
-  assert.equal(await evaluate(cdp, bravo, clickText("Leave", ".coop-game-header button")), true);
+  assert.equal(await evaluate(cdp, bravo, clickText("Pause", ".coop-game-header button")), true);
+  await Promise.all([
+    waitFor(cdp, alpha, "document.querySelector('.coop-pause')", "shared pause on alpha"),
+    waitFor(cdp, bravo, "document.querySelector('.coop-pause')", "shared pause on bravo"),
+  ]);
+  assert.equal(await evaluate(cdp, alpha, clickText("Resume flight")), true);
+  await Promise.all([
+    waitFor(cdp, alpha, "!document.querySelector('.coop-pause')", "alpha resume"),
+    waitFor(cdp, bravo, "!document.querySelector('.coop-pause')", "bravo resume"),
+  ]);
+  await evaluate(cdp, bravo, clickText("Pause", ".coop-game-header button"));
+  await waitFor(cdp, bravo, "document.querySelector('.coop-pause')", "pause menu before leaving");
+  assert.equal(await evaluate(cdp, bravo, clickText("Leave match", ".coop-pause button")), true);
   await waitFor(cdp, bravo, "document.body.innerText.includes('FLY TOGETHER')", "leave return");
   assert.deepEqual(cdp.exceptions, []);
   console.info(

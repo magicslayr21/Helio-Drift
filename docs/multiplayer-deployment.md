@@ -24,6 +24,19 @@ different service.
 
 ## Updating to shared campaign gameplay
 
+`0.5.2-alpha.1` also needs **both** the frontend and multiplayer Worker update for the shared
+30-second pause. Either pilot can pause or resume; the server freezes combat and all gameplay
+timers, retains the deadline on reconnect, and automatically resumes without catching up paused
+time. Repeated pause requests do not extend the deadline. No database migration is required.
+
+Rendering now avoids full-world copies per frame, scales the canvas to display density, and uses
+more of the viewport. Room snapshots are built once per broadcast instead of redundantly every
+tick. The full bounded particle list is sent; the old 100-particle wire truncation is removed.
+The 4 KB incoming-message limit applies only to player commands, not outgoing world snapshots.
+Increasing that limit or buying a larger packet allowance does not improve graphics resolution;
+large snapshots still cost bandwidth and take time to parse. No account-specific plan change is
+required by this update.
+
 `0.5.1-alpha.1` runs the original campaign engine on the multiplayer Worker and uses the original
 campaign renderer in both browsers. Publish **both the frontend and multiplayer Worker** for this
 update. The leaderboard Worker, D1 schema, database binding, existing secrets, and service URLs do

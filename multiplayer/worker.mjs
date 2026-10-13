@@ -565,6 +565,9 @@ export class MatchRoom {
         return;
       case "start":
         return this.startMatch(socket);
+      case "pause":
+      case "resume":
+        return this.setPause(socket, playerId, message.type === "pause");
       case "input":
         return this.applyInput(socket, playerId, message);
       case "buyWeapon":
@@ -641,7 +644,7 @@ export class MatchRoom {
       callsigns: [this.room.players.p1.callsign, this.room.players.p2.callsign],
     });
     this.room.phase = "running";
-    this.room.match = this.simulation.snapshot();
+    this.room.match = this.simulation.snapshot(false);
     this.room.lastAdvancedAt = Date.now();
     this.lastClockAt = this.room.lastAdvancedAt;
     this.lastPersistedTick = this.room.match.tick;
@@ -654,6 +657,7 @@ export class MatchRoom {
   }
 
   applyInput(socket, playerId, message) {
+    if (this.room.pause) return;
     if (this.room.phase !== "running" || !this.simulation) {
       return this.sendError(socket, "not_running", "Match has not started.");
     }
@@ -676,6 +680,7 @@ export class MatchRoom {
   }
 
   applyCombatCommand(socket, playerId, message) {
+    if (this.room.pause) return;
     if (this.room.phase !== "running" || !this.simulation) {
       return this.sendError(socket, "not_running", "Match has not started.");
     }
@@ -748,6 +753,20 @@ export class MatchRoom {
     this.clock = setInterval(() => this.tick(), 1000 / 30);
   }
 
+  async setPause(socket, playerId, paused) {
+    if (this.room.phase !== "running" || this.simulation?.state.phase !== "running")
+      return this.sendError(socket, "not_running", "Pause is available during flight.");
+    if (paused && this.room.pause) return; // Repeated requests cannot extend the deadline.
+    if (!paused && !this.room.pause) return;
+    this.room.pause = paused ? { playerId, until: Date.now() + 30_000 } : null;
+    this.simulation.clearControls();
+    this.lastClockAt = Date.now();
+    this.room.lastAdvancedAt = this.lastClockAt;
+    this.room.match = this.simulation.snapshot(false);
+    this.broadcastSnapshot(this.room.match);
+    await this.persist();
+  }
+
   stopClock() {
     if (this.clock) clearInterval(this.clock);
     this.clock = null;
@@ -756,20 +775,40 @@ export class MatchRoom {
   tick() {
     if (!this.simulation || this.room.phase !== "running") return this.stopClock();
     const now = Date.now();
+    if (this.room.pause) {
+      this.lastClockAt = now;
+      this.room.lastAdvancedAt = now;
+      if (now < this.room.pause.until) return;
+      this.room.pause = null;
+      this.simulation.clearControls();
+      this.room.match = this.simulation.snapshot(false);
+      this.broadcastSnapshot(this.room.match);
+      this.state.waitUntil(this.persist());
+      return;
+    }
     const elapsed = Math.max(0, (now - this.lastClockAt) / 1000);
     this.lastClockAt = now;
     const steps = this.simulation.advance(elapsed);
     this.room.lastAdvancedAt = now;
     if (steps === 0) return;
-    this.room.match = this.simulation.snapshot();
-    if (this.room.match.tick % 30 === 0) this.closeIdleSockets(now);
-    if (this.room.match.tick % NETWORK_CONFIG.snapshotEveryTicks === 0) this.broadcastSnapshot();
-    if (this.room.match.tick - this.lastPersistedTick >= 30) {
+    const current = this.simulation.state;
+    const shouldBroadcast =
+      current.tick - (this.lastBroadcastTick ?? 0) >= NETWORK_CONFIG.snapshotEveryTicks;
+    const shouldPersist = current.tick - this.lastPersistedTick >= 30;
+    const finished = current.phase === "victory" || current.phase === "defeat";
+    if (!shouldBroadcast && !shouldPersist && !finished) return;
+    this.room.match = this.simulation.snapshot(false);
+    if (shouldBroadcast) {
+      this.lastBroadcastTick = current.tick;
+      this.broadcastSnapshot(this.room.match);
+    }
+    if (shouldPersist) {
+      this.closeIdleSockets(now);
       this.lastPersistedTick = this.room.match.tick;
       this.touch();
       this.state.waitUntil(this.persist());
     }
-    if (this.room.match.phase === "victory" || this.room.match.phase === "defeat") {
+    if (finished) {
       const outcome = this.room.match.phase;
       this.room.phase = "finished";
       this.room.finishedAt ??= now;
@@ -806,14 +845,17 @@ export class MatchRoom {
       this.simulation &&
       this.state.getWebSockets().length === 0
     ) {
-      const elapsedTicks = Math.min(
-        30,
-        Math.floor((now - this.room.lastAdvancedAt) / (COOP_FIXED_DT * 1000)),
-      );
+      if (this.room.pause) {
+        this.room.lastAdvancedAt = Math.min(now, this.room.pause.until);
+        if (now >= this.room.pause.until) this.room.pause = null;
+      }
+      const elapsedTicks = this.room.pause
+        ? 0
+        : Math.min(30, Math.floor((now - this.room.lastAdvancedAt) / (COOP_FIXED_DT * 1000)));
       if (elapsedTicks > 0) {
         this.simulation.stepTicks(elapsedTicks);
         this.room.lastAdvancedAt += elapsedTicks * COOP_FIXED_DT * 1000;
-        this.room.match = this.simulation.snapshot();
+        this.room.match = this.simulation.snapshot(false);
       }
       const active = Object.values(this.room.players).filter((player) => player && !player.left);
       const latestDisconnect = Math.max(...active.map((player) => player.disconnectedAt ?? now));
@@ -980,9 +1022,10 @@ export class MatchRoom {
 
   sendSnapshot(socket) {
     if (!this.simulation) return;
-    const state = this.simulation.snapshot();
+    const state = this.simulation.snapshot(false);
     this.send(socket, {
       type: "snapshot",
+      pause: this.room.pause ?? null,
       serverTime: Date.now(),
       serverTick: state.tick,
       acknowledgements: {
@@ -994,11 +1037,12 @@ export class MatchRoom {
     });
   }
 
-  broadcastSnapshot() {
+  broadcastSnapshot(snapshot) {
     if (!this.simulation) return;
-    const state = this.simulation.snapshot();
+    const state = snapshot ?? this.simulation.snapshot(false);
     this.broadcast({
       type: "snapshot",
+      pause: this.room.pause ?? null,
       serverTime: Date.now(),
       serverTick: state.tick,
       acknowledgements: {

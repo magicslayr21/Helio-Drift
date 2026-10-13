@@ -1,8 +1,8 @@
 import { Game } from "./engine";
-import { restoreCampaignWorld } from "./campaign-state";
+import { THEMES } from "./balance";
 import type { CoopWireState } from "./network/wire-state";
 import type { CoopPlayerId } from "./simulation/coop-types";
-import type { Player } from "./types";
+import type { Player, Bullet } from "./types";
 
 /** A presentation-only instance of the same renderer used by the campaign. */
 export class CoopRenderer extends Game {
@@ -28,7 +28,10 @@ export class CoopRenderer extends Game {
     if (!state.campaign) return;
     this.room = state;
     this.localId = localId;
-    restoreCampaignWorld(this, state.campaign);
+    // This is a presentation instance: no collision sets or persistence clone needed.
+    Object.assign(this, state.campaign);
+    this.bullets = state.campaign.bullets as unknown as Bullet[];
+    this.theme = THEMES[this.themeIdx];
     if (this.frame !== this.lastWorldFrame) {
       this.lastWorldFrame = this.frame;
       this.lastWorldAt = performance.now();
@@ -61,6 +64,21 @@ export class CoopRenderer extends Game {
       ctx.stroke();
     }
     ctx.restore();
+  }
+
+  resizeDisplay() {
+    const shell = this.canvas.parentElement;
+    if (!shell) return;
+    const width = Math.min(shell.clientWidth, (shell.clientHeight * this.w) / this.h);
+    if (!width) return;
+    this.canvas.style.width = `${width}px`;
+    this.canvas.style.height = `${(width * this.h) / this.w}px`;
+    this.dpr = (width / this.w) * Math.min(window.devicePixelRatio || 1, 2);
+    const pixels = Math.round(this.w * this.dpr);
+    if (this.canvas.width !== pixels) {
+      this.canvas.width = pixels;
+      this.canvas.height = Math.round(this.h * this.dpr);
+    }
   }
 
   private bindView(id: CoopPlayerId) {
