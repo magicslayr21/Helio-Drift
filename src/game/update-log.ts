@@ -1,5 +1,37 @@
 export const UPDATE_LOG = [
   {
+    version: "0.5.4-alpha.1",
+    date: "2026-10-14",
+    title: "Co-op flight deck and reliability",
+    sections: [
+      {
+        title: "MULTIPLAYER",
+        items: [
+          "Stalled connections now time out and retry automatically.",
+          "Fixed sockets getting stuck while closing.",
+          "Reconnects recover after network changes and returning to the game.",
+          "Fixed competing tabs repeatedly disconnecting each other.",
+          "Slow reconnect requests no longer invalidate newer connection tickets.",
+          "Added clearer connection status and a Reconnect button.",
+          "Released multiplayer styling and callsign editing in the lobby.",
+          "Dismissible warning about possible multiplayer progress wipes.",
+          "Escape opens shared pause without leaving the match.",
+          "Pause includes settings, leaderboards, game details and update notes.",
+          "Authorized developer console; assisted runs stay off the leaderboard.",
+        ],
+      },
+      {
+        title: "FLIGHT & LOADOUT",
+        items: [
+          "Weapon bar restored with two customizable quick slots.",
+          "Press 1 or 2 to equip your chosen primary or secondary weapon.",
+          "Green salvage drone chassis.",
+          "Slower early meteor showers; full speed from wave 21.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.5.3-alpha.1",
     date: "2026-10-14",
     title: "Co-op controls and clarity",

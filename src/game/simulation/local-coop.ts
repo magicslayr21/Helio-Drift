@@ -1,6 +1,14 @@
 import { CoopCampaign, PILOTS, freshPilotCampaign, isHostileShot } from "../coop-campaign";
 import { captureCampaignWorld, restoreCampaignWorld } from "../campaign-state";
-import { freshPlayer, freshSalvageDrone, THEMES, STAT_UPGRADES } from "../balance";
+import {
+  freshPlayer,
+  freshSalvageDrone,
+  THEMES,
+  STAT_UPGRADES,
+  WEAPON_ORDER,
+  weaponMaxLevel,
+} from "../balance";
+import { validDeveloperCommand, type DeveloperCommand } from "../developer-command";
 import { GAME_CONFIG } from "../game-config";
 import { clamp, wrapAngle } from "../math";
 import { COOP_CONFIG, COOP_FIXED_DT } from "./coop-config";
@@ -368,6 +376,46 @@ export class LocalCoopSimulation {
       p.ship.beamOn = false;
       p.ship.thrusting = false;
     }
+  }
+  /** Invoked only after Worker authorization; reuses campaign console operations. */
+  developer(playerId: CoopPlayerId, command: DeveloperCommand) {
+    if (!validDeveloperCommand(command) || this.state.phase !== "running") return false;
+    const g = this.game;
+    g.bindPilot(playerId);
+    switch (command.action) {
+      case "heal":
+        g.p.hull = g.p.maxHull;
+        break;
+      case "credits":
+        g.credits += 10000;
+        break;
+      case "clear":
+        g.clearAllArt();
+        break;
+      case "nextWave":
+        g.clearAllArt();
+        g.nextWave();
+        break;
+      case "weapons":
+        for (const id of WEAPON_ORDER) g.p.weapons[id] = weaponMaxLevel(id);
+        break;
+      case "drone":
+        g.devSpawnSalvage(1);
+        break;
+      case "rock":
+        g.devSpawnRock(command.size, command.kind, command.count);
+        break;
+      case "enemy":
+        g.devSpawnMob(command.kind, command.count, command.size);
+        break;
+      case "boss":
+        g.boss = g.makeBoss(command.mk === 5, command.mk);
+        break;
+    }
+    g.releasePilot();
+    this.enforceEntityCaps();
+    this.sync();
+    return true;
   }
   stepTicks(ticks = 1) {
     for (let i = 0; i < Math.max(0, Math.floor(ticks)); i++) this.advance(COOP_FIXED_DT);

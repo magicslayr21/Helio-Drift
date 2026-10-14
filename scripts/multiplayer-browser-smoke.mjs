@@ -243,6 +243,12 @@ async function waitFor(client, page, expression, label, timeoutMs = 10_000) {
 const clickText = (text, selector = "button") =>
   `(() => { const target = [...document.querySelectorAll(${JSON.stringify(selector)})].find((element) => element.textContent.trim().includes(${JSON.stringify(text)})); if (!target) return false; target.click(); return true; })()`;
 
+async function capture(client, page, name) {
+  if (!process.env.HELIOS_SCREENSHOT_DIR) return;
+  const { data } = await client.send("Page.captureScreenshot", { format: "png" }, page.sessionId);
+  await writeFile(join(process.env.HELIOS_SCREENSHOT_DIR, name), Buffer.from(data, "base64"));
+}
+
 async function enterMultiplayer(client, page) {
   await waitFor(client, page, clickText("Deploy"), "main menu Deploy action");
   await waitFor(
@@ -257,6 +263,11 @@ async function enterMultiplayer(client, page) {
     "document.body.innerText.includes('FLY TOGETHER')",
     "multiplayer menu",
   );
+  await waitFor(client, page, clickText("Got it · Continue"), "dismissible alpha warning");
+  assert.equal(
+    await evaluate(client, page, "Boolean(document.querySelector('.coop-callsign input'))"),
+    true,
+  );
 }
 
 async function observeFlight(client, page) {
@@ -267,7 +278,7 @@ async function observeFlight(client, page) {
     window.__keys=[];
     window.addEventListener('keydown', e => window.__keys.push({code:e.code, target:e.target.tagName}), true);
     const send = WebSocket.prototype.send;
-    WebSocket.prototype.send = function(data) { const message=JSON.parse(data);if(message.type==='input')window.__sentInput=message;return send.call(this,data); };
+    WebSocket.prototype.send = function(data) { const message=JSON.parse(data);if(message.type==='input'){window.__sentInput=message;window.__flightSocket=this;}return send.call(this,data); };
     const url = performance.getEntriesByType('resource').find(e => e.name.includes('/src/game/network/client-sync.ts')).name;
     const {ClientPrediction} = await import(url);
     const reconcile = ClientPrediction.prototype.reconcile;
@@ -389,6 +400,24 @@ try {
   const alpha = await makePage(cdp, "Smoke Alpha");
   const bravo = await makePage(cdp, "Smoke Bravo");
   await Promise.all([enterMultiplayer(cdp, alpha), enterMultiplayer(cdp, bravo)]);
+  await capture(cdp, alpha, "helio-coop-menu.png");
+  await evaluate(
+    cdp,
+    alpha,
+    `(() => { const input = document.querySelector('.coop-callsign input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'Unsaved Pilot'); input.dispatchEvent(new Event('input', { bubbles: true })); })()`,
+  );
+  await evaluate(cdp, alpha, clickText("Quick join"));
+  await waitFor(
+    cdp,
+    alpha,
+    "document.body.innerText.includes('Choose and save your callsign')",
+    "unsaved callsign gate",
+  );
+  await evaluate(
+    cdp,
+    alpha,
+    `(() => { const input = document.querySelector('.coop-callsign input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'Smoke Alpha'); input.dispatchEvent(new Event('input', { bubbles: true })); })()`,
+  );
 
   await waitFor(
     cdp,
@@ -473,6 +502,45 @@ try {
   await Promise.all([observeFlight(cdp, alpha), observeFlight(cdp, bravo)]);
   await checkMovement(cdp, alpha, bravo, "p1", "KeyD", "x", 1);
   await checkMovement(cdp, bravo, alpha, "p2", "ArrowUp", "y", -1);
+
+  await evaluate(
+    cdp,
+    alpha,
+    `(() => {
+    const fetch = window.fetch;
+    window.__failedTicket = false;
+    window.__recoveryRequests = [];
+    window.fetch = (...args) => {
+      window.__recoveryRequests.push(String(args[0]));
+      if (!window.__failedTicket && String(args[0]).endsWith('/tickets')) {
+        window.__failedTicket = true;
+        return Promise.resolve(new Response(JSON.stringify({error:'Temporary smoke-test outage'}), {status:503}));
+      }
+      return fetch(...args);
+    };
+    window.__droppedSocket = window.__flightSocket;
+    window.__droppedSocket.close(4000, 'Simulated connection loss');
+  })()`,
+  );
+  try {
+    await waitFor(
+      cdp,
+      alpha,
+      "window.__failedTicket && window.__flightSocket !== window.__droppedSocket && document.querySelector('.coop-game .coop-link.is-connected')",
+      "automatic recovery from socket loss and a temporary ticket failure",
+    );
+  } catch (error) {
+    console.info(
+      "Recovery diagnostics",
+      await evaluate(
+        cdp,
+        alpha,
+        `({failed:window.__failedTicket,requests:window.__recoveryRequests,changed:window.__flightSocket!==window.__droppedSocket,oldReady:window.__droppedSocket.readyState,newReady:window.__flightSocket.readyState,links:[...document.querySelectorAll('.coop-link')].map(e=>e.className)})`,
+      ),
+    );
+    throw error;
+  }
+  await checkMovement(cdp, alpha, bravo, "p1", "KeyD", "x", 1);
 
   await evaluate(
     cdp,
@@ -629,6 +697,70 @@ try {
     waitFor(cdp, bravo, "document.querySelector('.coop-pause')", "shared pause on bravo"),
   ]);
   await cdp.send("Page.bringToFront", {}, alpha.sessionId);
+  await capture(cdp, alpha, "helio-coop-pause.png");
+  assert.equal(await evaluate(cdp, alpha, clickText("Settings", ".coop-pause button")), true);
+  await waitFor(
+    cdp,
+    alpha,
+    "document.querySelector('.coop-settings select')",
+    "multiplayer settings",
+  );
+  assert.equal(
+    await evaluate(
+      cdp,
+      alpha,
+      "document.querySelectorAll('.coop-settings input[type=checkbox]').length",
+    ),
+    4,
+  );
+  // Escape dismisses the settings subpage, keeping both pilots paused.
+  await evaluate(
+    cdp,
+    alpha,
+    "document.querySelector('.coop-settings input[type=checkbox]').click()",
+  );
+  assert.equal(
+    await evaluate(cdp, alpha, "JSON.parse(localStorage.getItem('helios-settings-v1')).autoFire"),
+    true,
+  );
+  await cdp.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyDown", code: "Escape", key: "Escape" },
+    alpha.sessionId,
+  );
+  await cdp.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyUp", code: "Escape", key: "Escape" },
+    alpha.sessionId,
+  );
+  await waitFor(cdp, alpha, "document.querySelector('.coop-pause-nav')", "return to pause menu");
+  assert.equal(await evaluate(cdp, bravo, "Boolean(document.querySelector('.coop-pause'))"), true);
+  await evaluate(cdp, alpha, clickText("Developer panel", ".coop-pause button"));
+  await waitFor(
+    cdp,
+    alpha,
+    "document.querySelector('.coop-pause input[type=password]')",
+    "developer reauthorization after refresh",
+  );
+  await evaluate(
+    cdp,
+    alpha,
+    `(() => { const input = document.querySelector('.coop-pause input[type=password]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(smokeDeveloperCode)}); input.dispatchEvent(new Event('input', { bubbles: true })); })()`,
+  );
+  await evaluate(cdp, alpha, clickText("Unlock developer panel", ".coop-pause button"));
+  await waitFor(
+    cdp,
+    alpha,
+    clickText("Max weapons", ".coop-pause button"),
+    "authorized developer console",
+  );
+  await waitFor(
+    cdp,
+    bravo,
+    "window.__flight.players.p1.ship.weapons.laser > 0",
+    "developer loadout synchronized to teammate",
+  );
+  await evaluate(cdp, alpha, clickText("Back to pause menu", ".coop-pause button"));
   await cdp.send(
     "Input.dispatchKeyEvent",
     { type: "keyDown", code: "Escape", key: "Escape" },
@@ -644,13 +776,87 @@ try {
     waitFor(cdp, bravo, "!document.querySelector('.coop-pause')", "bravo resume"),
   ]);
   await checkMovement(cdp, bravo, alpha, "p2", "ArrowUp", "y", -1);
+  await waitFor(
+    cdp,
+    bravo,
+    "window.__flight.players.p1.input.fire",
+    "multiplayer auto-fire setting",
+  );
+  await evaluate(
+    cdp,
+    alpha,
+    `(() => { const select = document.querySelector('select[aria-label="Choose secondary weapon"]'); select.value = 'laser'; select.dispatchEvent(new Event('change', { bubbles: true })); })()`,
+  );
+  await waitFor(
+    cdp,
+    bravo,
+    "window.__flight.players.p1.ship.primary === 'laser'",
+    "secondary weapon selection",
+  );
+  await cdp.send("Page.bringToFront", {}, alpha.sessionId);
+  await evaluate(cdp, alpha, "document.querySelector('.coop-arena').focus()");
+  await cdp.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyDown", code: "Digit1", key: "1" },
+    alpha.sessionId,
+  );
+  await cdp.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyUp", code: "Digit1", key: "1" },
+    alpha.sessionId,
+  );
+  await waitFor(
+    cdp,
+    bravo,
+    "window.__flight.players.p1.ship.primary === 'pulse'",
+    "primary quick slot",
+  );
+  await cdp.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyDown", code: "KeyD", key: "d" },
+    alpha.sessionId,
+  );
+  await waitFor(
+    cdp,
+    bravo,
+    "window.__flight.players.p1.input.moveX === 1",
+    "movement before opening loadout",
+  );
+  await evaluate(cdp, alpha, clickText("Loadout", ".coop-game-actions button"));
+  await waitFor(
+    cdp,
+    bravo,
+    "window.__flight.players.p1.input.moveX === 0 && !window.__flight.players.p1.input.fire",
+    "loadout releases flight controls",
+  );
+  await cdp.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyUp", code: "KeyD", key: "d" },
+    alpha.sessionId,
+  );
+  await cdp.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyDown", code: "Escape", key: "Escape" },
+    alpha.sessionId,
+  );
+  await cdp.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyUp", code: "Escape", key: "Escape" },
+    alpha.sessionId,
+  );
+  await waitFor(
+    cdp,
+    alpha,
+    "!document.querySelector('.coop-shop') && document.querySelector('.coop-game')",
+    "Escape closes loadout without leaving multiplayer",
+  );
   await evaluate(cdp, bravo, clickText("Pause", ".coop-game-header button"));
   await waitFor(cdp, bravo, "document.querySelector('.coop-pause')", "pause menu before leaving");
   assert.equal(await evaluate(cdp, bravo, clickText("Leave match", ".coop-pause button")), true);
   await waitFor(cdp, bravo, "document.body.innerText.includes('FLY TOGETHER')", "leave return");
   assert.deepEqual(cdp.exceptions, []);
   console.info(
-    `[coop readiness] two-browser room ${roomCode}: both pilots move and release keys, HUD focus, display density, pause/resume, refresh/reconnect and leave passed`,
+    `[coop readiness] two-browser room ${roomCode}: movement, display density, reconnect recovery, shared pause, settings, callsign gate, developer authorization, weapon slots, loadout controls and leave passed`,
   );
 } finally {
   try {

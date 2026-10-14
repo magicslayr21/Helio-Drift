@@ -1537,7 +1537,8 @@ export class Game {
     const fromLeft = side < 0;
     const y = this.rnd(40, this.h - 40);
     const x = fromLeft ? -50 : this.w + 50;
-    const speed = this.rnd(520, 700);
+    // Ease pilots into showers; reach the original speed in the final sector.
+    const speed = this.rnd(520, 700) * (0.55 + 0.45 * clamp((this.wave - 6) / 15, 0, 1));
     const drift = this.rnd(-0.32, 0.32);
     const rock = this.makeRock(
       x,
@@ -6213,12 +6214,12 @@ export class Game {
     ctx.lineTo(-13, 7);
     ctx.lineTo(0, 10);
     ctx.closePath();
-    ctx.fillStyle = "rgba(20,35,48,0.92)";
+    ctx.fillStyle = "rgba(12,42,28,0.92)";
     ctx.fill();
-    ctx.strokeStyle = ICE;
+    ctx.strokeStyle = "#72ef9c";
     ctx.lineWidth = 1.8;
     ctx.shadowBlur = 14;
-    ctx.shadowColor = ICE;
+    ctx.shadowColor = "#72ef9c";
     ctx.stroke();
     ctx.shadowBlur = 0;
 
@@ -6299,18 +6300,18 @@ export class Game {
     } else {
       ctx.beginPath();
       ctx.arc(-2, 0, 2.5, 0, TAU);
-      ctx.fillStyle = ICE;
+      ctx.fillStyle = "#72ef9c";
       ctx.fill();
     }
     if (d.assembly > 0) {
       const build = clamp(d.assembly / 1.8, 0, 1);
       ctx.beginPath();
       ctx.arc(0, 0, 27 + Math.sin(this.frame * 0.18) * 3, -Math.PI * build, Math.PI * build);
-      ctx.strokeStyle = ICE;
+      ctx.strokeStyle = "#72ef9c";
       ctx.lineWidth = 2;
       ctx.globalAlpha = 0.4 + (1 - build) * 0.6;
       ctx.shadowBlur = 16;
-      ctx.shadowColor = ICE;
+      ctx.shadowColor = "#72ef9c";
       ctx.stroke();
       ctx.shadowBlur = 0;
     }

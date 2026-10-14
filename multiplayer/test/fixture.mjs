@@ -103,11 +103,13 @@ export async function multiplayerFixture(t) {
     return response.data;
   }
 
-  async function connect(identity) {
-    const ticket = await request(`/rooms/${identity.roomCode}/tickets`, {
-      method: "POST",
-      token: identity.reconnectToken,
-    });
+  async function connect(identity, existingTicket) {
+    const ticket = existingTicket
+      ? { status: 200, data: { socketTicket: existingTicket } }
+      : await request(`/rooms/${identity.roomCode}/tickets`, {
+          method: "POST",
+          token: identity.reconnectToken,
+        });
     assert.equal(ticket.status, 200, JSON.stringify(ticket.data));
     const response = await mf.dispatchFetch(
       `https://multiplayer.example/api/rooms/${identity.roomCode}/socket?ticket=${ticket.data.socketTicket}`,

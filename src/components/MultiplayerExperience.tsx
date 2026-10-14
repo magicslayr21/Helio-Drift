@@ -52,6 +52,13 @@ import {
   type CoopSession,
 } from "../multiplayer/client";
 import { CoopArena } from "./CoopArena";
+import { WeaponBar } from "./WeaponBar";
+import { FlightSettings } from "./FlightSettings";
+import { readFlightSettings, saveFlightSettings } from "../game/preferences";
+import { UpdateLog } from "./UpdateLog";
+import { Leaderboard } from "./Leaderboard";
+import SpecSection from "./SpecSection";
+import { CoopDeveloperPanel } from "./CoopDeveloperPanel";
 import "./MultiplayerExperience.css";
 
 type Screen = "home" | "browse" | "create" | "join" | "leaderboard" | "room";
@@ -76,9 +83,13 @@ const duration = (seconds: number) =>
 
 export function MultiplayerExperience({
   callsign,
+  callsignForm,
+  callsignReady,
   onExit,
 }: {
   callsign: string;
+  callsignForm: ReactNode;
+  callsignReady: boolean;
   onExit: () => void;
 }) {
   const configured = isMultiplayerConfigured();
@@ -102,7 +113,15 @@ export function MultiplayerExperience({
   const connection = useRef<CoopConnection | null>(null);
   const commandSequence = useRef(0);
   const [pauseSeconds, setPauseSeconds] = useState(0);
+  const [warningOpen, setWarningOpen] = useState(true);
+  const [pausePanel, setPausePanel] = useState<
+    "main" | "settings" | "records" | "details" | "developer" | "updates" | "global"
+  >("main");
+  const [settings, setSettings] = useState(readFlightSettings);
   const pause = snapshot?.pause;
+  useEffect(() => {
+    if (!pause) setPausePanel("main");
+  }, [Boolean(pause)]);
   useEffect(() => {
     if (!pause || !snapshot) return;
     // Use the server duration so a client's wall-clock skew cannot change the countdown.
@@ -115,19 +134,34 @@ export function MultiplayerExperience({
   }, [pause, snapshot?.serverTime]);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
-      if (
-        event.code !== "Escape" ||
-        event.repeat ||
-        room?.phase !== "running" ||
-        snapshot?.state.phase !== "running"
-      )
-        return;
+      if (event.code !== "Escape" || event.repeat) return;
+      // Separate top-layer dialogs (records/update log) own their own Escape key.
+      const dialog = (event.target as HTMLElement | null)?.closest("dialog");
+      if (dialog && !dialog.classList.contains("deploy-screen")) return;
       event.preventDefault();
-      connection.current?.send({ type: pause ? "resume" : "pause" });
+      event.stopImmediatePropagation();
+      if (warningOpen) {
+        setWarningOpen(false);
+        return;
+      }
+      if (pause && pausePanel !== "main") {
+        setPausePanel("main");
+        return;
+      }
+      if (shopOpen) {
+        setShopOpen(false);
+        return;
+      }
+      if (room?.phase === "running") {
+        connection.current?.send({ type: pause ? "resume" : "pause" });
+      } else if (!session) {
+        if (screen === "home") onExit();
+        else setScreen("home");
+      }
     };
     window.addEventListener("keydown", key, true);
     return () => window.removeEventListener("keydown", key, true);
-  }, [room?.phase, snapshot?.state.phase, pause]);
+  }, [room?.phase, pause, warningOpen, pausePanel, shopOpen, session, screen, onExit]);
 
   const enterSession = useCallback((next: CoopSession) => {
     setSession(next);
@@ -170,9 +204,17 @@ export function MultiplayerExperience({
             );
         } else if (message.type === "error") {
           setNotice(message.message);
+          if (message.code === "developer_required") {
+            clearDeveloperSession();
+            setDeveloperSession(null);
+            setDeveloperNotice(message.message);
+          }
         }
       },
-      setConnectionState,
+      (state) => {
+        setConnectionState(state);
+        if (state === "connected") setNotice("");
+      },
     );
     connection.current = link;
     void link.connect();
@@ -185,6 +227,11 @@ export function MultiplayerExperience({
 
   const run = useCallback(
     async (operation: () => Promise<CoopSession>) => {
+      if (!callsignReady) {
+        setNotice("Choose and save your callsign before joining or creating a room.");
+        setScreen("home");
+        return;
+      }
       setPending(true);
       setNotice("");
       audio.unlock();
@@ -202,7 +249,7 @@ export function MultiplayerExperience({
         setPending(false);
       }
     },
-    [enterSession],
+    [enterSession, callsignReady],
   );
 
   const authorizeHosting = async (event: FormEvent) => {
@@ -239,12 +286,15 @@ export function MultiplayerExperience({
     }
   }, []);
 
-  const loadBoard = useCallback(async () => {
+  const loadBoard = useCallback(async (offset = 0) => {
     setScreen("leaderboard");
     setPending(true);
     setNotice("");
     try {
-      setBoard(await getCoopLeaderboard(0, 50));
+      const page = await getCoopLeaderboard(offset, 50);
+      setBoard((current) =>
+        offset && current ? { ...page, entries: [...current.entries, ...page.entries] } : page,
+      );
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Co-op records are unavailable.");
     } finally {
@@ -254,6 +304,7 @@ export function MultiplayerExperience({
 
   const sendCommand = useCallback((message: UiCommand) => {
     if (
+      message.type === "developer" ||
       message.type === "heartbeat" ||
       message.type === "ready" ||
       message.type === "start" ||
@@ -358,6 +409,7 @@ export function MultiplayerExperience({
           <div className="coop-wave">
             <span>Wave {String(state.team.wave).padStart(2, "0")}</span>
             <small>
+              {room.assisted && "Developer run · "}
               Sector {state.team.sector} ·{" "}
               {state.team.directive ? directiveNames[state.team.directive] : "Stand by"}
             </small>
@@ -373,6 +425,17 @@ export function MultiplayerExperience({
             Pause · Esc
           </button>
         </header>
+        {connectionState !== "connected" && (
+          <p className="coop-notice" role="status">
+            {connectionState === "closed"
+              ? notice || "Disconnected. Reconnect to return to your pilot."
+              : "Connecting to your room. Flight resumes when the connection is restored."}
+            {connectionState !== "connecting" && (
+              <button onClick={() => void connection.current?.connect()}>Reconnect</button>
+            )}
+            <button onClick={leave}>Leave match</button>
+          </p>
+        )}
         <div className="coop-hud-row">
           <PilotHud name={me.callsign} playerId={session.playerId} player={me} local />
           <div className="coop-overdrive">
@@ -397,13 +460,25 @@ export function MultiplayerExperience({
         </div>
         {snapshot && (
           <CoopArena
+            settings={settings}
             snapshot={snapshot}
             playerId={session.playerId}
             send={(message) => connection.current?.send(message) ?? false}
             onOverdrive={() => sendCommand({ type: "activateOverdrive" })}
-            active={state.phase === "running" && !pause}
+            active={
+              state.phase === "running" && !pause && !shopOpen && connectionState === "connected"
+            }
           />
         )}
+        <WeaponBar
+          owned={WEAPON_ORDER.map((id) => ({ id, level: me.ship.weapons[id] }))}
+          active={me.ship.primary}
+          blocked={me.drone.weapon}
+          enabled={
+            state.phase === "running" && !pause && !shopOpen && connectionState === "connected"
+          }
+          onSelect={(weapon) => sendCommand({ type: "selectWeapon", weapon })}
+        />
         <div className="coop-game-actions">
           <span>WASD move · Pointer aim/fire · E missile · F hold to revive</span>
           {teammate?.disabled && !me.disabled && (
@@ -441,6 +516,136 @@ export function MultiplayerExperience({
               <h2 id="coop-pause-title">FLIGHT PAUSED</h2>
               <p>{state.players[pause.playerId].callsign} paused the game.</p>
               <p>Automatically resuming in {pauseSeconds}s</p>
+              <details className="coop-pilot-details">
+                <summary>Pilot, loadout & upgrades</summary>
+                <p>
+                  Wave {state.team.wave} · Sector {state.team.sector} ·{" "}
+                  {duration(state.team.elapsedSeconds)} flown
+                </p>
+                <p>
+                  {me.callsign} · Level {me.level} · {me.credits} CR · Hull{" "}
+                  {Math.ceil(me.ship.hull)}/{me.ship.maxHull} · Missiles {me.ship.missiles}/
+                  {me.ship.maxMissiles}
+                </p>
+                <p>
+                  Damage ×{me.ship.damageMul.toFixed(2)} · Fire rate ×
+                  {me.ship.fireRateMul.toFixed(2)} · Critical chance{" "}
+                  {Math.round(me.ship.crit * 100)}%
+                </p>
+                <p>
+                  {WEAPON_ORDER.filter((id) => me.ship.weapons[id] > 0)
+                    .map(
+                      (id) =>
+                        `${WEAPON_DEFS[id].short} Lv ${me.ship.weapons[id]}${me.ship.primary === id ? " (active)" : ""}`,
+                    )
+                    .join(" · ")}
+                </p>
+                <p>
+                  {STAT_UPGRADES.filter((upgrade) => me.upgrades[upgrade.id] > 0)
+                    .map((upgrade) => `${upgrade.name} ${me.upgrades[upgrade.id]}/${upgrade.max}`)
+                    .join(" · ") || "No stat upgrades yet."}
+                </p>
+                <p>
+                  Drone:{" "}
+                  {me.drone.purchased
+                    ? `${me.drone.active ? "Active" : "Rebuilding"} · ${Math.ceil(me.drone.hp)}/${me.drone.maxHp} hull · ${me.drone.weapon ? WEAPON_DEFS[me.drone.weapon].short : "Starter cannon"}`
+                    : "Not purchased"}
+                </p>
+                {me.drone.purchased && (
+                  <p>
+                    {SALVAGE_UPGRADE_ORDER.filter((id) => me.drone.upgrades[id] > 0)
+                      .map(
+                        (id) =>
+                          `${SALVAGE_UPGRADES[id].name} ${me.drone.upgrades[id]}/${SALVAGE_UPGRADES[id].max}`,
+                      )
+                      .join(" · ") || "No drone upgrades yet."}
+                  </p>
+                )}
+                <p>
+                  {me.stats.kills} enemy kills · {me.stats.asteroidKills} asteroid kills ·{" "}
+                  {me.stats.revives} revives · {Math.floor(me.stats.damage).toLocaleString()} damage
+                  dealt
+                </p>
+              </details>
+              {notice && <p role="status">{notice}</p>}
+              {pausePanel === "main" ? (
+                <nav className="coop-pause-nav" aria-label="Pause menu">
+                  <button onClick={() => setPausePanel("settings")}>Settings</button>
+                  <button
+                    onClick={() => {
+                      setPausePanel("records");
+                      void loadBoard();
+                    }}
+                  >
+                    Co-op leaderboard
+                  </button>
+                  <button onClick={() => setPausePanel("global")}>Global leaderboard</button>
+                  <button onClick={() => setPausePanel("details")}>Game details</button>
+                  <button onClick={() => setPausePanel("updates")}>
+                    Update log · v{__APP_VERSION__}
+                  </button>
+                  <button onClick={() => setPausePanel("developer")}>Developer panel</button>
+                </nav>
+              ) : (
+                <button onClick={() => setPausePanel("main")}>Back to pause menu</button>
+              )}
+              {pausePanel === "settings" && (
+                <FlightSettings
+                  settings={settings}
+                  onChange={(next) => {
+                    setSettings(next);
+                    saveFlightSettings(next);
+                  }}
+                />
+              )}
+              {pausePanel === "records" && (
+                <CoopBoard
+                  page={board}
+                  notice={notice}
+                  pending={pending}
+                  onRefresh={() => void loadBoard()}
+                  onMore={() => void loadBoard(board?.entries.length ?? 0)}
+                />
+              )}
+              {pausePanel === "details" && (
+                <>
+                  <p>
+                    Co-op runs reconnect through the room relay. Campaign browser saves are
+                    separate. Both pilots pause together for up to 30 seconds.
+                  </p>
+                  <SpecSection developer={Boolean(developerSession)} multiplayer />
+                </>
+              )}
+              {pausePanel === "updates" && <UpdateLog onClose={() => setPausePanel("main")} />}
+              {pausePanel === "global" && (
+                <Leaderboard
+                  devUnlocked={Boolean(developerSession)}
+                  onClose={() => setPausePanel("main")}
+                />
+              )}
+              {pausePanel === "developer" &&
+                (developerSession ? (
+                  <CoopDeveloperPanel
+                    send={(command) =>
+                      sendCommand({ type: "developer", token: developerSession.token, command })
+                    }
+                  />
+                ) : (
+                  <form onSubmit={authorizeHosting} className="coop-settings">
+                    <label>
+                      Developer code
+                      <input
+                        type="password"
+                        value={developerCode}
+                        maxLength={256}
+                        required
+                        onChange={(event) => setDeveloperCode(event.target.value)}
+                      />
+                    </label>
+                    <button disabled={developerPending}>Unlock developer panel</button>
+                    <p role="status">{developerNotice}</p>
+                  </form>
+                ))}
               <button autoFocus onClick={() => connection.current?.send({ type: "resume" })}>
                 Resume flight
               </button>
@@ -489,6 +694,29 @@ export function MultiplayerExperience({
 
   return (
     <section className="coop-menu" aria-label="Online co-op deployment">
+      {warningOpen && (
+        <div
+          className="coop-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="coop-alpha-warning"
+        >
+          <div>
+            <p className="deploy-eyebrow">Multiplayer alpha</p>
+            <h2 id="coop-alpha-warning">WORK IN PROGRESS</h2>
+            <p>
+              Multiplayer is still being developed. All multiplayer progress and records may be
+              wiped at any time.
+            </p>
+            <button autoFocus onClick={() => setWarningOpen(false)}>
+              Got it · Continue
+            </button>
+            <button aria-label="Close multiplayer warning" onClick={() => setWarningOpen(false)}>
+              Close
+            </button>
+          </div>
+        </div>
+      )}
       <div className="coop-menu-bar">
         <button onClick={back}>
           <ArrowLeft size={18} /> Back
@@ -500,6 +728,9 @@ export function MultiplayerExperience({
           <span className={`coop-link is-${connectionState}`}>
             <Radio size={13} /> {statusLabel[connectionState]}
           </span>
+        )}
+        {session && (connectionState === "closed" || connectionState === "reconnecting") && (
+          <button onClick={() => void connection.current?.connect()}>Reconnect</button>
         )}
       </div>
       {!configured ? (
@@ -530,6 +761,7 @@ export function MultiplayerExperience({
               <span>SURVIVE THE DRIFT.</span>
             </h1>
             <p>Separate loadouts. Shared waves, Overdrive, directives and victory.</p>
+            <div className="coop-callsign">{callsignForm}</div>
             <div className={`coop-host-gate${hostingUnlocked ? " is-unlocked" : ""}`}>
               {hostingUnlocked ? (
                 <>
@@ -719,6 +951,7 @@ export function MultiplayerExperience({
           notice={notice}
           pending={pending}
           onRefresh={() => void loadBoard()}
+          onMore={() => void loadBoard(board?.entries.length ?? 0)}
         />
       )}
       {notice && screen !== "browse" && screen !== "leaderboard" && (
@@ -851,11 +1084,13 @@ function CoopBoard({
   notice,
   pending,
   onRefresh,
+  onMore,
 }: {
   page: CoopLeaderboardPage | null;
   notice: string;
   pending: boolean;
   onRefresh: () => void;
+  onMore: () => void;
 }) {
   return (
     <div className="coop-browser">
@@ -897,6 +1132,11 @@ function CoopBoard({
           </span>
         </div>
       ))}
+      {page && page.entries.length < page.total && (
+        <button className="coop-load-more" disabled={pending} onClick={onMore}>
+          Load more records
+        </button>
+      )}
       {!pending && !page?.entries.length && (
         <p className="coop-help">No authoritative co-op results have been recorded yet.</p>
       )}

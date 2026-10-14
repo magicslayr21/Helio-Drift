@@ -24,6 +24,12 @@ different service.
 
 ## Updating to shared campaign gameplay
 
+For `0.5.4-alpha.1`, publish both the frontend and multiplayer Worker for the connection fixes.
+No database migration is needed. Clients recover stalled handshakes and silent connections, and
+the Worker retains up to three short-lived, single-use tickets per pilot to tolerate overlapping
+requests. Refresh old tabs after deployment; a replaced tab now stays disconnected instead of
+repeatedly taking the session back from the newer tab.
+
 `0.5.2-alpha.1` also needs **both** the frontend and multiplayer Worker update for the shared
 30-second pause. Either pilot can pause or resume; the server freezes combat and all gameplay
 timers, retains the deadline on reconnect, and automatically resumes without catching up paused
@@ -290,3 +296,17 @@ rebuild Pages. A custom domain changes routing, not the D1 or Durable Object dat
 
 Single-player saves are browser-local and isolated from co-op room state, so disabling or rolling
 back multiplayer does not require a save migration.
+
+## Flight deck and connection update (0.5.4-alpha.1)
+
+Deploy the multiplayer Worker before publishing the updated frontend. The socket-close fix and
+authorized developer commands require this Worker update; no leaderboard Worker update or new
+database migration is needed. Existing room and campaign saves remain compatible.
+
+The shared pause still expires after 30 seconds, including while browsing settings or records.
+Developer commands are checked against the existing developer session on the server, reuse the
+campaign console operations, and mark the entire room as assisted. Assisted rooms do not submit
+competitive co-op records. Simply opening the panel does not mark a run as assisted.
+
+The weapon bar provides two customizable quick slots (keys 1 and 2). Slots only offer owned
+weapons that are not mounted on the drone; they do not grant weapons or fire two weapons at once.

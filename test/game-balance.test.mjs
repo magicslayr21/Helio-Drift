@@ -18,9 +18,12 @@ registerHooks({
       return {
         format: "module",
         shortCircuit: true,
-        source: ts.transpileModule(readFileSync(new URL(url), "utf8").replaceAll("import.meta.env", '({ DEV: true })'), {
-          compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
-        }).outputText,
+        source: ts.transpileModule(
+          readFileSync(new URL(url), "utf8").replaceAll("import.meta.env", "({ DEV: true })"),
+          {
+            compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+          },
+        ).outputText,
       };
     }
     return nextLoad(url, context);
@@ -56,6 +59,24 @@ function seeded(t, seed = 42) {
     return seed / 4294967296;
   });
 }
+
+test("meteor showers ease in early and reach original speed at wave 21", () => {
+  const g = game();
+  g.rnd = (min, max) => (min + max) / 2;
+  const speedAt = (wave) => {
+    g.wave = wave;
+    g.spawnMeteor(-1);
+    const rock = g.rocks.at(-1);
+    return Math.hypot(rock.vx, rock.vy);
+  };
+  const early = speedAt(6),
+    middle = speedAt(13),
+    late = speedAt(21);
+  assert.ok(early < middle && middle < late);
+  assert.ok(Math.abs(early / late - 0.55) < 0.001);
+  assert.equal(late, 610);
+  assert.equal(speedAt(25), late);
+});
 
 test("beam follows ship heading and does not bend toward an off-axis target", () => {
   const g = game();
@@ -1126,7 +1147,6 @@ test("mixed late-boss combat survives upgraded drone attacks and mid-frame boss 
   }
 });
 
-
 test("failed initial saves retry without overwriting a newer run or tombstone", async (t) => {
   const { RunSave } = await import("../src/game/run-save.ts");
   let stored = null;
@@ -1166,14 +1186,23 @@ test("late-wave boss saves restore progress and leaderboard metadata", async (t)
   const { RunSave } = await import("../src/game/run-save.ts");
   let stored = null;
   t.mock.method(localStorage, "getItem", () => stored);
-  t.mock.method(localStorage, "setItem", (_key, value) => { stored = value; });
+  t.mock.method(localStorage, "setItem", (_key, value) => {
+    stored = value;
+  });
   for (const wave of [20, 21, 24, 25]) {
     const g = game();
     g.wave = wave;
     g.score = wave * 1000;
     g.boss = g.makeBoss(false, 5);
     g.salvageDrone.upgrades.shield = 3;
-    g.leaderboardRun = { runId: crypto.randomUUID(), revision: 90, durationSeconds: 800, deathCause: null, assisted: false, finalReport: null };
+    g.leaderboardRun = {
+      runId: crypto.randomUUID(),
+      revision: 90,
+      durationSeconds: 800,
+      deathCause: null,
+      assisted: false,
+      finalReport: null,
+    };
     const save = new RunSave();
     save.begin(g);
     const restored = game();
@@ -1187,14 +1216,24 @@ test("late-wave boss saves restore progress and leaderboard metadata", async (t)
 
 test("leaderboard retries old Worker shield rejection and retains failed reports", async (t) => {
   const store = new Map();
-  t.mock.method(localStorage, "getItem", key => store.get(key) ?? null);
+  t.mock.method(localStorage, "getItem", (key) => store.get(key) ?? null);
   t.mock.method(localStorage, "setItem", (key, value) => store.set(key, value));
-  store.set("helios-leaderboard-player-v1", JSON.stringify({ playerId: "pilot", playerToken: "token", username: "TestPilot" }));
+  store.set(
+    "helios-leaderboard-player-v1",
+    JSON.stringify({ playerId: "pilot", playerToken: "token", username: "TestPilot" }),
+  );
   const client = await import("../src/leaderboard/client.ts");
   const g = game();
   g.wave = 25;
   g.salvageDrone.upgrades.shield = 3;
-  g.leaderboardRun = { runId: crypto.randomUUID(), revision: 1, durationSeconds: 900, deathCause: null, assisted: false, finalReport: null };
+  g.leaderboardRun = {
+    runId: crypto.randomUUID(),
+    revision: 1,
+    durationSeconds: 900,
+    deathCause: null,
+    assisted: false,
+    finalReport: null,
+  };
   const report = g.leaderboardReport();
   const sent = [];
   t.mock.method(globalThis, "fetch", async (_url, options) => {
@@ -1214,7 +1253,11 @@ test("leaderboard retries old Worker shield rejection and retains failed reports
   assert.equal(client.getSyncStatus(), "saved");
   assert.deepEqual(JSON.parse(store.get("helios-leaderboard-pending-v1")), []);
   // A rejected wave 25 must remain available for retries, including after reload.
-  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ error: "Temporary rejection" }), { status: 400 }));
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async () => new Response(JSON.stringify({ error: "Temporary rejection" }), { status: 400 }),
+  );
   store.set("helios-leaderboard-pending-v1", JSON.stringify([report]));
   await client.flushPendingRuns();
   assert.equal(client.getSyncStatus(), "offline");
@@ -1225,10 +1268,14 @@ test("leaderboard retries old Worker shield rejection and retains failed reports
   // Reports queued during a slow upload survive removal of the older revision.
   let release;
   let started;
-  const requestStarted = new Promise(resolve => { started = resolve; });
+  const requestStarted = new Promise((resolve) => {
+    started = resolve;
+  });
   t.mock.method(globalThis, "fetch", async () => {
     started();
-    await new Promise(resolve => { release = resolve; });
+    await new Promise((resolve) => {
+      release = resolve;
+    });
     return new Response(JSON.stringify({ accepted: true }));
   });
   store.set("helios-leaderboard-pending-v1", JSON.stringify([report]));

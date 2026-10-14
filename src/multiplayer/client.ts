@@ -42,7 +42,7 @@ async function request<T>(path: string, options: RequestInit = {}, token?: strin
   const abort = () => controller.abort();
   options.signal?.addEventListener("abort", abort, { once: true });
   if (options.signal?.aborted) controller.abort();
-  const timeout = window.setTimeout(abort, 8000);
+  const timeout = window.setTimeout(abort, 15_000);
   try {
     const response = await fetch(`${API}${path}`, {
       ...options,
@@ -142,6 +142,17 @@ export class CoopConnection {
   private retry: number | null = null;
   private disposed = false;
   private attempts = 0;
+  private generation = 0;
+  private ticketRequest: AbortController | null = null;
+  private handshake: number | null = null;
+  private lastReceivedAt = 0;
+  private listening = false;
+
+  private wake = () => {
+    if (this.disposed || document.visibilityState === "hidden") return;
+    if (!this.socket || Date.now() - this.lastReceivedAt > 25_000) void this.connect();
+    else this.send({ type: "heartbeat" });
+  };
 
   constructor(
     readonly session: CoopSession,
@@ -151,46 +162,86 @@ export class CoopConnection {
 
   async connect() {
     this.disposed = false;
+    if (!this.listening) {
+      window.addEventListener("online", this.wake);
+      document.addEventListener("visibilitychange", this.wake);
+      this.listening = true;
+    }
+    const generation = ++this.generation;
+    this.releaseTransport();
+    const controller = new AbortController();
+    this.ticketRequest = controller;
     this.onState(this.attempts ? "reconnecting" : "connecting");
     try {
       const ticket = await request<{ socketTicket: string }>(
         `/rooms/${this.session.roomCode}/tickets`,
-        { method: "POST" },
+        { method: "POST", signal: controller.signal },
         this.session.reconnectToken,
       );
-      if (this.disposed) return;
+      if (this.disposed || generation !== this.generation) return;
+      this.ticketRequest = null;
       const socketUrl = apiToWebSocketUrl(
         API,
         `/rooms/${this.session.roomCode}/socket?ticket=${encodeURIComponent(ticket.socketTicket)}`,
       );
       const socket = new WebSocket(socketUrl);
       this.socket = socket;
+      this.lastReceivedAt = Date.now();
+      this.handshake = window.setTimeout(() => this.reconnect(socket), 12_000);
       socket.addEventListener("open", () => {
         if (this.disposed || socket !== this.socket) return socket.close();
-        this.attempts = 0;
-        this.onState("connected");
-        this.heartbeat = window.setInterval(() => this.send({ type: "heartbeat" }), 10_000);
+        // Opening TCP alone does not prove that the room accepted this session.
+        this.heartbeat = window.setInterval(() => {
+          if (socket.readyState !== WebSocket.OPEN || Date.now() - this.lastReceivedAt > 25_000)
+            this.reconnect(socket);
+          else this.send({ type: "heartbeat" });
+        }, 5_000);
       });
       socket.addEventListener("message", (event) => {
         if (socket !== this.socket || typeof event.data !== "string") return;
+        let message: MultiplayerServerMessage;
         try {
-          this.onMessage(JSON.parse(event.data) as MultiplayerServerMessage);
+          message = JSON.parse(event.data) as MultiplayerServerMessage;
         } catch {
-          /* Ignore malformed server frames without taking down the page. */
+          return;
         }
+        if (!message || typeof message !== "object" || !("type" in message)) return;
+        this.lastReceivedAt = Date.now();
+        if (message.type === "welcome") {
+          if (this.handshake !== null) window.clearTimeout(this.handshake);
+          this.handshake = null;
+          this.attempts = 0;
+          this.onState("connected");
+        }
+        if (message.type === "error" && message.code === "session_replaced") this.close();
+        this.onMessage(message);
       });
-      socket.addEventListener("close", () => this.handleClose(socket));
-      socket.addEventListener("error", () => socket.close());
+      socket.addEventListener("close", (event) => {
+        if (socket !== this.socket) return;
+        if (event.code === 4001 || event.code === 4003) {
+          this.close();
+          if (event.code === 4003) clearCoopSession();
+          this.onMessage({
+            type: "error",
+            code: event.code === 4001 ? "session_replaced" : "session_expired",
+            message:
+              event.code === 4001
+                ? "This session is connected in another tab. Continue there, or reconnect here."
+                : "This co-op session is no longer available. Join a new room.",
+          });
+        } else this.reconnect(socket);
+      });
+      socket.addEventListener("error", () => this.reconnect(socket));
     } catch (error) {
+      if (this.disposed || generation !== this.generation || controller.signal.aborted) return;
       if (error instanceof MultiplayerError && (error.status === 401 || error.status === 404)) {
-        this.disposed = true;
+        this.close();
         clearCoopSession();
         this.onMessage({
           type: "error",
           code: "session_expired",
           message: "This co-op session has expired. Leave the room and join again.",
         });
-        this.onState("closed");
         return;
       }
       this.scheduleReconnect();
@@ -199,8 +250,13 @@ export class CoopConnection {
 
   send(message: MultiplayerClientMessage) {
     if (this.socket?.readyState !== WebSocket.OPEN) return false;
-    this.socket.send(JSON.stringify(message));
-    return true;
+    try {
+      this.socket.send(JSON.stringify(message));
+      return true;
+    } catch {
+      this.reconnect(this.socket);
+      return false;
+    }
   }
 
   leave() {
@@ -211,26 +267,43 @@ export class CoopConnection {
 
   close() {
     this.disposed = true;
-    if (this.retry !== null) window.clearTimeout(this.retry);
-    if (this.heartbeat !== null) window.clearInterval(this.heartbeat);
-    this.retry = this.heartbeat = null;
-    this.socket?.close(1000, "Client closed");
-    this.socket = null;
+    this.generation++;
+    this.releaseTransport();
+    if (this.listening) {
+      window.removeEventListener("online", this.wake);
+      document.removeEventListener("visibilitychange", this.wake);
+      this.listening = false;
+    }
     this.onState("closed");
   }
 
-  private handleClose(socket: WebSocket) {
-    if (socket !== this.socket) return;
-    this.socket = null;
+  private releaseTransport() {
+    this.ticketRequest?.abort();
+    this.ticketRequest = null;
+    if (this.retry !== null) window.clearTimeout(this.retry);
     if (this.heartbeat !== null) window.clearInterval(this.heartbeat);
-    this.heartbeat = null;
+    if (this.handshake !== null) window.clearTimeout(this.handshake);
+    this.retry = this.heartbeat = this.handshake = null;
+    const socket = this.socket;
+    this.socket = null;
+    try {
+      socket?.close(1000, "Client closed");
+    } catch {
+      /* Already gone. */
+    }
+  }
+
+  private reconnect(socket: WebSocket) {
+    if (socket !== this.socket) return;
+    this.releaseTransport();
     if (!this.disposed) this.scheduleReconnect();
   }
 
   private scheduleReconnect() {
     if (this.disposed || this.retry !== null) return;
     this.onState("reconnecting");
-    const delay = Math.min(5000, 500 * 2 ** Math.min(this.attempts++, 4));
+    const delay =
+      Math.min(5000, 500 * 2 ** Math.min(this.attempts++, 4)) * (0.8 + Math.random() * 0.4);
     this.retry = window.setTimeout(() => {
       this.retry = null;
       void this.connect();

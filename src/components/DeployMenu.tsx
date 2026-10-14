@@ -126,7 +126,7 @@ export function DeployMenu({
       }}
       onCancel={(event) => {
         event.preventDefault();
-        back();
+        if (stage !== "multiplayer") back();
       }}
       onKeyDown={(event) => event.stopPropagation()}
     >
@@ -153,7 +153,12 @@ export function DeployMenu({
         </header>
       )}
       {stage === "multiplayer" ? (
-        <MultiplayerExperience callsign={callsign} onExit={() => setStage("modes")} />
+        <MultiplayerExperience
+          callsign={callsign}
+          callsignForm={callsignForm}
+          callsignReady={callsignReady}
+          onExit={() => setStage("modes")}
+        />
       ) : (
         <main className="deploy-content">
           <div className="deploy-heading">
@@ -178,7 +183,6 @@ export function DeployMenu({
               {MODES.map((mode) => (
                 <button
                   key={mode.id}
-                  disabled={mode.id === "multiplayer" && !callsignReady}
                   aria-label={mode.name}
                   aria-pressed={selected === mode.id}
                   aria-describedby={`deploy-${mode.id}-description`}
@@ -186,7 +190,7 @@ export function DeployMenu({
                   onClick={() => {
                     setSelected(mode.id);
                     if (mode.id === "campaign") setStage("campaign");
-                    if (mode.id === "multiplayer" && callsignReady) setStage("multiplayer");
+                    if (mode.id === "multiplayer") setStage("multiplayer");
                   }}
                 >
                   <span className="deploy-tile-top">
@@ -205,9 +209,7 @@ export function DeployMenu({
                     )}
                   </span>
                   <span id={`deploy-${mode.id}-description`} className="deploy-caption">
-                    {mode.id === "multiplayer" && !callsignReady
-                      ? "Save your callsign under Campaign to unlock co-op."
-                      : mode.caption}
+                    {mode.caption}
                   </span>
                 </button>
               ))}

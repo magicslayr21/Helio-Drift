@@ -20,6 +20,8 @@ import {
 } from "../game/engine";
 import { PlayerStatus } from "./PlayerStatus";
 import { DevWindow } from "./DevWindow";
+import { WeaponBar } from "./WeaponBar";
+import { readFlightSettings } from "../game/preferences";
 import { Leaderboard } from "./Leaderboard";
 import {
   authenticateDeveloper,
@@ -164,6 +166,15 @@ export default function GameShell({
     return { ...EMPTY_SETTINGS };
   });
   const [panel, setPanel] = useState<"none" | "settings" | "code">("none");
+  useEffect(() => {
+    const sync = () => {
+      setSettings(readFlightSettings());
+      setMuted(audio.muted);
+      setMusicEnabled(audio.musicEnabled);
+    };
+    window.addEventListener("helios-settings-change", sync);
+    return () => window.removeEventListener("helios-settings-change", sync);
+  }, []);
   const [codeInput, setCodeInput] = useState("");
   const [codeError, setCodeError] = useState(false);
   const [, forceTick] = useState(0);
@@ -689,7 +700,7 @@ export default function GameShell({
 
                     {/* arsenal readout */}
                     <div className="mt-5 border-y border-steel/30 py-3">
-                      <p className="legend mb-2">Arsenal · Tab / Q to cycle · 1–8 to select</p>
+                      <p className="legend mb-2">Arsenal · Tab / Q to cycle · 1 / 2 quick slots</p>
                       <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-3">
                         {hud.owned.map((o) => (
                           <button
@@ -1928,6 +1939,21 @@ export default function GameShell({
             )}
           </div>
 
+          {mode !== "menu" && (
+            <WeaponBar
+              owned={hud.owned}
+              active={hud.primary}
+              blocked={gameRef.current?.salvageDrone.weapon}
+              enabled={mode === "playing" || mode === "paused"}
+              onSelect={(weapon) => {
+                const game = gameRef.current;
+                if (game) {
+                  game.selectWeapon(weapon);
+                  setHud(game.snapshot());
+                }
+              }}
+            />
+          )}
           {/* touch controls */}
           <div
             className={`${mode === "menu" ? "hidden" : "flex"} shrink-0 items-center justify-between gap-3 px-3 pb-4 sm:hidden`}

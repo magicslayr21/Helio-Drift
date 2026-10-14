@@ -175,12 +175,18 @@
 .deploy-tile--campaign {
   grid-column: 1;
   grid-row: 1 / 3;
+}
+.deploy-tile--campaign,
+.deploy-tile--multiplayer {
   color: #ffb03a;
   background:
     radial-gradient(ellipse at 50% 45%, #ffb03a0e, transparent 70%),
     repeating-linear-gradient(135deg, transparent 0 5px, #ffb03a06 5px 6px), #0e121bdc;
 }
 .deploy-tile--campaign:hover,
+.deploy-tile--multiplayer:hover,
+.deploy-tile--multiplayer:focus-visible,
+.deploy-tile--multiplayer.is-selected,
 .deploy-tile--campaign:focus-visible,
 .deploy-tile--campaign.is-selected {
   color: #ffe0a3;

@@ -253,6 +253,11 @@
   font-size: 10px;
   line-height: 1.6;
 }
+.coop-notice button {
+  margin-left: 12px;
+  padding: 5px 10px;
+  border: 1px solid currentColor;
+}
 .coop-browser,
 .coop-ready {
   width: min(1120px, calc(100% - 36px));
@@ -546,10 +551,75 @@
   backdrop-filter: blur(4px);
 }
 .coop-modal > div {
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
   width: min(620px, 96%);
   border: 1px solid rgba(111, 231, 255, 0.45);
   padding: clamp(22px, 4vw, 42px);
   background: #0b0e18;
+}
+.coop-pause-nav,
+.coop-dev-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 16px 0;
+}
+.coop-pause-nav button,
+.coop-dev-actions button,
+.coop-settings button {
+  border: 1px solid #6fe7ff55;
+  padding: 10px;
+  color: #6fe7ff;
+  font-size: 11px;
+}
+.coop-pause-nav button:hover,
+.coop-dev-actions button:hover {
+  border-color: #ffb03a;
+  color: #ffb03a;
+}
+.coop-settings label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 14px 0;
+  font-size: 12px;
+}
+.coop-settings select,
+.coop-settings input:not([type="checkbox"]) {
+  min-width: 0;
+  max-width: 70%;
+  background: #101925;
+  border: 1px solid #6fe7ff55;
+  color: #ffe0a3;
+  padding: 8px;
+}
+.coop-settings input[type="checkbox"] {
+  accent-color: #ffb03a;
+}
+.coop-callsign {
+  margin: 20px 0;
+}
+.coop-pilot-details {
+  border: 1px solid #475366;
+  margin: 14px 0;
+  padding: 10px;
+  font-size: 11px;
+}
+.coop-pilot-details summary {
+  color: #ffb03a;
+  cursor: pointer;
+}
+.coop-callsign input {
+  min-width: 0;
+  background: #101925;
+  border: 1px solid #6fe7ff55;
+  padding: 10px;
+}
+.coop-callsign button {
+  border: 1px solid #ffb03a88;
+  padding: 10px;
 }
 .coop-modal h2 {
   margin: 10px 0;

@@ -5,6 +5,67 @@ import { multiplayerFixture } from "./fixture.mjs";
 
 const send = (socket, message) => socket.send(JSON.stringify(message));
 
+test("developer actions require authorization, synchronize while paused, and exclude records", async (t) => {
+  const app = await multiplayerFixture(t);
+  const first = await app.create("Developer");
+  const second = (await app.joinRoom(first.roomCode, "Guest")).data;
+  let a = await app.connect(first);
+  let b = await app.connect(second);
+  send(a.socket, { type: "ready", ready: true });
+  send(b.socket, { type: "ready", ready: true });
+  await app.nextMessage(
+    a.socket,
+    (m) => m.type === "room" && m.room.players.p1.ready && m.room.players.p2?.ready,
+  );
+  send(a.socket, { type: "start" });
+  await app.nextMessage(a.socket, (m) => m.type === "snapshot");
+  send(a.socket, { type: "pause" });
+  const before = await app.nextMessage(a.socket, (m) => m.type === "snapshot" && m.pause);
+  send(b.socket, { type: "developer", command: { action: "credits" }, token: "invalid" });
+  assert.equal(
+    (await app.nextMessage(b.socket, (m) => m.type === "error")).code,
+    "developer_required",
+  );
+  send(a.socket, {
+    type: "developer",
+    command: { action: "enemy", kind: "warden", count: 500, size: 3 },
+    token: app.developerToken,
+  });
+  assert.equal(
+    (await app.nextMessage(a.socket, (m) => m.type === "error")).code,
+    "invalid_command",
+  );
+  send(a.socket, { type: "developer", command: { action: "credits" }, token: app.developerToken });
+  const after = await app.nextMessage(
+    b.socket,
+    (m) =>
+      m.type === "snapshot" &&
+      m.state.players.p1.credits >= before.state.players.p1.credits + 10000,
+  );
+  assert.equal(after.serverTick, before.serverTick);
+  assert.equal(after.state.players.p2.credits, before.state.players.p2.credits);
+  const view = await app.nextMessage(a.socket, (m) => m.type === "room" && m.room.assisted);
+  assert.equal(view.room.assisted, true);
+  await app.restart();
+  a = await app.connect(first);
+  b = await app.connect(second);
+  const restored = await app.nextMessage(a.socket, (m) => m.type === "welcome");
+  assert.equal(restored.room.assisted, true);
+  await app.db.prepare("UPDATE admin_sessions SET expires_at = 0").run();
+  send(a.socket, { type: "developer", command: { action: "weapons" }, token: app.developerToken });
+  assert.equal(
+    (await app.nextMessage(a.socket, (m) => m.type === "error")).code,
+    "developer_required",
+  );
+  send(a.socket, { type: "leave" });
+  send(b.socket, { type: "leave" });
+  await app.nextClose(b.socket);
+  const status = await app.request(`/rooms/${first.roomCode}`);
+  assert.equal(status.data.room.phase, "closed");
+  const results = await app.db.prepare("SELECT COUNT(*) AS count FROM coop_runs").first();
+  assert.equal(results.count, 0);
+});
+
 test(
   "either pilot pauses both worlds, resumes, and the server enforces the 30 second deadline",
   { timeout: 45_000 },
@@ -211,6 +272,47 @@ test("oversized and rate-flooded socket messages are closed at the room boundary
   const floodedClose = app.nextClose(flooded.socket);
   for (let index = 0; index < 100; index++) send(flooded.socket, { type: "heartbeat" });
   assert.equal((await floodedClose).code, 4008);
+});
+
+test("overlapping reconnect tickets remain usable, bounded and single-use", async (t) => {
+  const app = await multiplayerFixture(t);
+  const identity = await app.create();
+  const tickets = [];
+  for (let i = 0; i < 4; i++) {
+    const response = await app.request(`/rooms/${identity.roomCode}/tickets`, {
+      method: "POST",
+      token: identity.reconnectToken,
+    });
+    assert.equal(response.status, 200);
+    tickets.push(response.data.socketTicket);
+  }
+  const oldest = await app.request(`/rooms/${identity.roomCode}/socket?ticket=${tickets[0]}`, {
+    headers: { Upgrade: "websocket" },
+  });
+  assert.equal(oldest.status, 401);
+  const first = await app.connect(identity, tickets[1]);
+  assert.equal((await app.nextMessage(first.socket, (m) => m.type === "welcome")).playerId, "p1");
+  const reused = await app.request(`/rooms/${identity.roomCode}/socket?ticket=${tickets[1]}`, {
+    headers: { Upgrade: "websocket" },
+  });
+  assert.equal(reused.status, 401);
+  const latest = await app.connect(identity, tickets[3]);
+  assert.equal((await app.nextMessage(latest.socket, (m) => m.type === "welcome")).playerId, "p1");
+});
+
+test("client-initiated close is acknowledged promptly and the slot can reconnect", async (t) => {
+  const app = await multiplayerFixture(t);
+  const identity = await app.create();
+  const first = await app.connect(identity);
+  await app.nextMessage(first.socket, (m) => m.type === "welcome");
+  const closed = app.nextClose(first.socket);
+  first.socket.close(4000, "Temporary disconnect");
+  await closed;
+  const second = await app.connect(identity);
+  assert.equal(
+    (await app.nextMessage(second.socket, (m) => m.type === "welcome")).playerId,
+    identity.playerId,
+  );
 });
 
 test("either ready player can start and receive 15 Hz authoritative snapshots", async (t) => {

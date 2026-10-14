@@ -4,6 +4,7 @@ import type { AuthoritativeSnapshot, ClientInputMessage } from "../game/network/
 import type { CoopPlayerId } from "../game/simulation/coop-types";
 import { CoopRenderer } from "../game/coop-renderer";
 import { CampaignBanner } from "./CampaignBanner";
+import type { FlightSettings } from "../game/preferences";
 
 const WIDTH = 1000;
 const HEIGHT = 700;
@@ -14,12 +15,14 @@ export function CoopArena({
   send,
   onOverdrive,
   active = true,
+  settings,
 }: {
   snapshot: AuthoritativeSnapshot;
   playerId: CoopPlayerId;
   send: (message: ClientInputMessage) => boolean;
   onOverdrive: () => void;
   active?: boolean;
+  settings: FlightSettings;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const prediction = useRef(new ClientPrediction(playerId, WIDTH, HEIGHT));
@@ -32,8 +35,8 @@ export function CoopArena({
   const missile = useRef(false);
   const touchMove = useRef({ x: 0, y: 0 });
   const sampledAt = useRef(performance.now());
-  const handlers = useRef({ send, onOverdrive, active });
-  handlers.current = { send, onOverdrive, active };
+  const handlers = useRef({ send, onOverdrive, active, settings });
+  handlers.current = { send, onOverdrive, active, settings };
 
   useEffect(() => {
     keys.current.clear();
@@ -41,6 +44,17 @@ export function CoopArena({
     missile.current = false;
     touchMove.current = { x: 0, y: 0 };
     if (active) canvasRef.current?.focus({ preventScroll: true });
+    else
+      handlers.current.send(
+        prediction.current.sample({
+          moveX: 0,
+          moveY: 0,
+          aimAngle: aim.current,
+          fire: false,
+          missile: false,
+          interact: false,
+        }),
+      );
   }, [active]);
 
   useEffect(() => {
@@ -90,19 +104,34 @@ export function CoopArena({
     const timer = window.setInterval(() => {
       if (!handlers.current.active) return;
       const pressed = keys.current;
-      const moveX =
+      let moveX =
         touchMove.current.x +
         Number(pressed.has("KeyD") || pressed.has("ArrowRight")) -
         Number(pressed.has("KeyA") || pressed.has("ArrowLeft"));
-      const moveY =
+      let moveY =
         touchMove.current.y +
         Number(pressed.has("KeyS") || pressed.has("ArrowDown")) -
         Number(pressed.has("KeyW") || pressed.has("ArrowUp"));
+      const preferences = handlers.current.settings;
+      const touchMoving = touchMove.current.x !== 0 || touchMove.current.y !== 0;
+      if (preferences.legacyMovement && !touchMoving) {
+        aim.current += moveX * 0.1;
+        const thrust = pressed.has("KeyW") || pressed.has("ArrowUp") ? 1 : 0;
+        moveX = Math.cos(aim.current) * thrust;
+        moveY = Math.sin(aim.current) * thrust;
+      } else if (preferences.mouseControl && !touchMoving) {
+        moveX = Math.cos(aim.current) * Number(firing.current);
+        moveY = Math.sin(aim.current) * Number(firing.current);
+      }
       const message = prediction.current.sample({
         moveX,
         moveY,
         aimAngle: aim.current,
-        fire: firing.current || pressed.has("Space"),
+        fire:
+          preferences.autoFire ||
+          preferences.trackpad ||
+          (!preferences.mouseControl && firing.current) ||
+          pressed.has("Space"),
         missile: missile.current,
         interact: pressed.has("KeyF") || pressed.has("KeyR"),
       });
@@ -130,6 +159,7 @@ export function CoopArena({
     let renderTick: number | null = null;
     let renderedAt = performance.now();
     const render = () => {
+      renderer.settings.shake = handlers.current.settings.shake;
       // Monitor/zoom changes can update DPR without firing resize or media events.
       // This inexpensive scalar check also refreshes a paused canvas after a switch.
       if (displayDensity !== (window.devicePixelRatio || 1)) {
@@ -174,6 +204,7 @@ export function CoopArena({
   }, [playerId]);
 
   const point = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (handlers.current.settings.legacyMovement) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const x = ((event.clientX - rect.left) / rect.width) * WIDTH;
     const y = ((event.clientY - rect.top) / rect.height) * HEIGHT;

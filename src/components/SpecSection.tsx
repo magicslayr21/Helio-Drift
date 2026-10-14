@@ -30,7 +30,13 @@ const MANUAL_ROWS = [
   },
 ];
 
-export default function SpecSection({ developer }: { developer: boolean }) {
+export default function SpecSection({
+  developer,
+  multiplayer = false,
+}: {
+  developer: boolean;
+  multiplayer?: boolean;
+}) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
@@ -87,7 +93,11 @@ export default function SpecSection({ developer }: { developer: boolean }) {
                       <h3 className="text-[12px] font-semibold uppercase tracking-[0.18em] text-amber-hot">
                         {row.title}
                       </h3>
-                      <p className="mt-2 text-[11.5px] leading-relaxed text-amber/58">{row.body}</p>
+                      <p className="mt-2 text-[11.5px] leading-relaxed text-amber/58">
+                        {multiplayer && row.n === "05"
+                          ? "Reconnect from the multiplayer menu to reclaim your pilot while the room is still available. Campaign saves are separate. Multiplayer progress and records may be wiped during alpha."
+                          : row.body}
+                      </p>
                     </div>
                   </li>
                 ))}
@@ -97,21 +107,35 @@ export default function SpecSection({ developer }: { developer: boolean }) {
               <p className="legend text-amber/70">Control Map</p>
               <dl className="mt-3 space-y-2 text-[11px]">
                 {[
-                  [
-                    "Steer / Thrust",
-                    "WASD · Arrow keys · Left-half touch stick · Mouse or Hybrid Aim (setting)",
-                  ],
-                  ["Fire", "Space · Ctrl · Hold right half of screen · Auto (setting)"],
-                  ["Cycle weapon", "Tab / Q · 1–8 direct · On-screen WEAPON button"],
-                  ["Missiles", "E · On-screen MISSILE button"],
-                  ["Pause", "P or Esc"],
-                  ["Instant restart", "R (pause & game over)"],
-                  ["Mute audio", "♪ toggle, top-right of the bezel"],
-                  [
-                    "Weapon shop",
-                    "SHOP bezel button · Pause → Weapon Shop · Level-up intermission",
-                  ],
-                  ["Settings", "Pause → Settings (also on the start screen)"],
+                  ...(multiplayer
+                    ? [
+                        ["Move / aim", "WASD / arrows · Pointer aim · On-screen movement buttons"],
+                        ["Fire", "Space / click · Auto-fire or Trackpad in Settings"],
+                        ["Weapon slots", "1 / 2 · Choose weapons in the weapon bar"],
+                        ["Missiles", "E · On-screen MISSILE button"],
+                        ["Revive", "Hold F near a disabled teammate"],
+                        ["Overdrive", "Q · Shared Overdrive button"],
+                        ["Pause", "Esc · Both pilots pause for up to 30 seconds"],
+                        ["Loadout", "Loadout button · Combat continues while browsing"],
+                        ["Audio / settings", "Pause → Settings"],
+                      ]
+                    : [
+                        [
+                          "Steer / Thrust",
+                          "WASD · Arrow keys · Left-half touch stick · Mouse or Hybrid Aim (setting)",
+                        ],
+                        ["Fire", "Space · Ctrl · Hold right half of screen · Auto (setting)"],
+                        ["Cycle weapon", "Tab / Q · 1 / 2 quick slots · On-screen WEAPON button"],
+                        ["Missiles", "E · On-screen MISSILE button"],
+                        ["Pause", "P or Esc"],
+                        ["Instant restart", "R (pause & game over)"],
+                        ["Mute audio", "♪ toggle, top-right of the bezel"],
+                        [
+                          "Weapon shop",
+                          "SHOP bezel button · Pause → Weapon Shop · Level-up intermission",
+                        ],
+                        ["Settings", "Pause → Settings (also on the start screen)"],
+                      ]),
                 ].map(([k, v]) => (
                   <div
                     key={k}

@@ -11,6 +11,7 @@ export interface MultiplayerRoomPlayer {
 }
 
 export interface MultiplayerRoomView {
+  assisted?: boolean;
   code: string;
   visibility: "private" | "public";
   name: string | null;
@@ -46,6 +47,7 @@ export interface ClientInputMessage {
 
 export type MultiplayerClientMessage =
   | ClientInputMessage
+  | { type: "developer"; token: string; command: import("../developer-command").DeveloperCommand }
   | { type: "buyWeapon"; sequence: number; weapon: WeaponId }
   | { type: "selectWeapon"; sequence: number; weapon: WeaponId }
   | { type: "buyDrone"; sequence: number }

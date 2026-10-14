@@ -442,8 +442,12 @@ export class MatchRoom {
         if (!player) return json(401, { error: "Reconnect token is invalid." });
         const socketTicket = newToken();
         const now = Date.now();
-        this.room.tickets = this.room.tickets
-          .filter((ticket) => ticket.expiresAt > now && ticket.playerId !== player.id)
+        const liveTickets = this.room.tickets.filter((ticket) => ticket.expiresAt > now);
+        // An aborted/slow HTTP attempt can finish after a newer ticket request.
+        // Keep a small overlap so it cannot invalidate the ticket already in flight.
+        this.room.tickets = liveTickets
+          .filter((ticket) => ticket.playerId !== player.id)
+          .concat(liveTickets.filter((ticket) => ticket.playerId === player.id).slice(-2))
           .concat({
             tokenHash: await hash(socketTicket),
             playerId: player.id,
@@ -565,6 +569,8 @@ export class MatchRoom {
         return;
       case "start":
         return this.startMatch(socket);
+      case "developer":
+        return this.applyDeveloperCommand(socket, playerId, message);
       case "pause":
       case "resume":
         return this.setPause(socket, playerId, message.type === "pause");
@@ -589,11 +595,23 @@ export class MatchRoom {
   }
 
   async webSocketClose(socket) {
+    // Complete the close handshake before persistence; otherwise browsers can
+    // remain CLOSING while the old room connection blocks recovery.
+    try {
+      socket.close(1000, "Connection closed");
+    } catch {
+      /* Already closed. */
+    }
     await this.ready;
     await this.exclusive(() => this.disconnect(socket));
   }
 
   async webSocketError(socket) {
+    try {
+      socket.close(4000, "Connection interrupted");
+    } catch {
+      /* Already closed. */
+    }
     await this.ready;
     await this.exclusive(() => this.disconnect(socket));
   }
@@ -612,7 +630,11 @@ export class MatchRoom {
     this.touch();
     await this.persist();
     this.broadcastRoom();
-    if (this.state.getWebSockets().length === 0) {
+    if (
+      !this.state
+        .getWebSockets()
+        .some((candidate) => candidate !== socket && candidate.readyState === WebSocket.OPEN)
+    ) {
       this.stopClock();
       await this.scheduleAlarm(1000);
     }
@@ -677,6 +699,35 @@ export class MatchRoom {
       interact: Boolean(message.interact),
     });
     if (!accepted) this.sendError(socket, "stale_input", "Input sequence was already processed.");
+  }
+
+  async applyDeveloperCommand(socket, playerId, message) {
+    if (this.room.phase !== "running" || !this.simulation)
+      return this.sendError(socket, "not_running", "Match has not started.");
+    try {
+      if (typeof message.token !== "string" || !TOKEN_PATTERN.test(message.token))
+        throw new RequestError(401, "Developer authorization is required.");
+      await requireDeveloperSession(
+        new Request("https://internal/", {
+          headers: { Authorization: `Bearer ${message.token}` },
+        }),
+        this.env,
+      );
+    } catch {
+      return this.sendError(
+        socket,
+        "developer_required",
+        "Developer authorization expired or was denied.",
+      );
+    }
+    if (!this.simulation.developer(playerId, message.command))
+      return this.sendError(socket, "invalid_command", "Developer command was invalid.");
+    // Console-assisted runs must never become competitive records.
+    this.room.assisted = true;
+    this.room.match = this.simulation.snapshot(false);
+    await this.persist();
+    this.broadcastRoom();
+    this.broadcastSnapshot();
   }
 
   applyCombatCommand(socket, playerId, message) {
@@ -905,6 +956,7 @@ export class MatchRoom {
       visibility: this.room.visibility ?? "private",
       name: this.room.name ?? null,
       phase: this.room.phase,
+      assisted: Boolean(this.room.assisted),
       playerCount,
       capacity: NETWORK_CONFIG.maximumPlayers,
       joinable: this.room.phase === "waiting" && playerCount < NETWORK_CONFIG.maximumPlayers,
@@ -950,6 +1002,11 @@ export class MatchRoom {
 
   async submitResult(status) {
     if (!this.room?.match || this.room.resultSubmittedAt) return true;
+    if (this.room.assisted) {
+      this.room.resultSubmittedAt = Date.now();
+      await this.persist();
+      return true;
+    }
     if (this.resultSubmission) return this.resultSubmission;
     this.resultSubmission = (async () => {
       try {
