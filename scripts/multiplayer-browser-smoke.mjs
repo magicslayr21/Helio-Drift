@@ -412,6 +412,30 @@ try {
   const bravo = await makePage(cdp, "Smoke Bravo");
   await Promise.all([enterMultiplayer(cdp, alpha), enterMultiplayer(cdp, bravo)]);
   await capture(cdp, alpha, "helio-coop-menu.png");
+  await evaluate(cdp, alpha, clickText("Browse rooms"));
+  await waitFor(cdp, alpha, "document.querySelector('.coop-room-empty')", "empty patrol browser");
+  await capture(cdp, alpha, "helio-coop-browser-empty.png");
+  const publicPatrol = await multiplayer.dispatchFetch(
+    "https://multiplayer.example/api/rooms/public",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${smokeDeveloperToken}`,
+      },
+      body: JSON.stringify({ callsign: "Beacon", name: "Outer Belt Patrol" }),
+    },
+  );
+  assert.equal(publicPatrol.status, 201);
+  await evaluate(cdp, alpha, clickText("Refresh", ".coop-room-browser button"));
+  await waitFor(
+    cdp,
+    alpha,
+    "document.querySelector('.coop-room-list')?.textContent.includes('Outer Belt Patrol')",
+    "public patrol row",
+  );
+  await capture(cdp, alpha, "helio-coop-browser.png");
+  await evaluate(cdp, alpha, clickText("Back", ".coop-menu-bar button"));
   await evaluate(
     cdp,
     alpha,
@@ -709,6 +733,19 @@ try {
   ]);
   await cdp.send("Page.bringToFront", {}, alpha.sessionId);
   await capture(cdp, alpha, "helio-coop-pause.png");
+  if (process.env.HELIOS_SCREENSHOT_DIR) {
+    await cdp.send(
+      "Emulation.setDeviceMetricsOverride",
+      { width: 390, height: 844, deviceScaleFactor: 2, mobile: false },
+      alpha.sessionId,
+    );
+    await capture(cdp, alpha, "helio-coop-pause-mobile.png");
+    await cdp.send(
+      "Emulation.setDeviceMetricsOverride",
+      { width: 1440, height: 900, deviceScaleFactor: 2, mobile: false },
+      alpha.sessionId,
+    );
+  }
   assert.equal(await evaluate(cdp, alpha, clickText("Settings", ".coop-pause button")), true);
   await waitFor(
     cdp,
@@ -771,6 +808,7 @@ try {
     "window.__flight.players.p1.ship.weapons.laser > 0",
     "developer loadout synchronized to teammate",
   );
+  await capture(cdp, alpha, "helio-coop-developer.png");
   await evaluate(cdp, alpha, clickText("Back to pause menu", ".coop-pause button"));
   await cdp.send(
     "Input.dispatchKeyEvent",

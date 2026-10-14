@@ -5,7 +5,8 @@ export function CoopDeveloperPanel({ send }: { send: (command: DeveloperCommand)
   const [count, setCount] = useState(1);
   const [size, setSize] = useState<1 | 2 | 3>(2);
   return (
-    <div className="coop-settings">
+    <div className="coop-settings coop-developer">
+      <p className="deploy-eyebrow">Service bay / operator access</p>
       <h3>Developer console</h3>
       <p>
         Commands affect the shared match. Using this console excludes the run from competitive

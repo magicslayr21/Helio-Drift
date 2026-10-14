@@ -52,6 +52,7 @@ import {
   type CoopSession,
 } from "../multiplayer/client";
 import { CoopArena } from "./CoopArena";
+import { HeliosMark } from "./Masthead";
 import { WeaponBar } from "./WeaponBar";
 import { FlightSettings } from "./FlightSettings";
 import { readFlightSettings, saveFlightSettings } from "../game/preferences";
@@ -512,10 +513,16 @@ export function MultiplayerExperience({
             aria-labelledby="coop-pause-title"
           >
             <div>
-              <p className="deploy-eyebrow">Both pilots paused</p>
+              <div className="coop-panel-heading">
+                <p className="deploy-eyebrow">Helios / flight systems</p>
+                <span>Both pilots paused</span>
+              </div>
               <h2 id="coop-pause-title">FLIGHT PAUSED</h2>
               <p>{state.players[pause.playerId].callsign} paused the game.</p>
-              <p>Automatically resuming in {pauseSeconds}s</p>
+              <div className="coop-pause-clock">
+                <p>Automatic flight resume</p>
+                <strong>{String(pauseSeconds).padStart(2, "0")}s</strong>
+              </div>
               <details className="coop-pilot-details">
                 <summary>Pilot, loadout & upgrades</summary>
                 <p>
@@ -646,10 +653,16 @@ export function MultiplayerExperience({
                     <p role="status">{developerNotice}</p>
                   </form>
                 ))}
-              <button autoFocus onClick={() => connection.current?.send({ type: "resume" })}>
+              <button
+                className="coop-resume"
+                autoFocus
+                onClick={() => connection.current?.send({ type: "resume" })}
+              >
                 Resume flight
               </button>
-              <button onClick={leave}>Leave match</button>
+              <button className="coop-leave" onClick={leave}>
+                Leave match
+              </button>
             </div>
           </div>
         )}
@@ -722,7 +735,7 @@ export function MultiplayerExperience({
           <ArrowLeft size={18} /> Back
         </button>
         <span>
-          <Users size={18} /> Online co-op
+          <HeliosMark size={22} /> Helios / Online co-op
         </span>
         {session && (
           <span className={`coop-link is-${connectionState}`}>
@@ -754,7 +767,7 @@ export function MultiplayerExperience({
       ) : screen === "home" ? (
         <div className="coop-home">
           <div className="coop-home-copy">
-            <p className="deploy-eyebrow">Two pilots / one authoritative campaign</p>
+            <p className="deploy-eyebrow">Helios flight systems / cooperative patrol</p>
             <h1>
               FLY TOGETHER.
               <br />
@@ -897,10 +910,10 @@ export function MultiplayerExperience({
           </button>
         </CoopForm>
       ) : screen === "browse" ? (
-        <div className="coop-browser">
+        <div className="coop-browser coop-room-browser">
           <div className="coop-section-title">
             <div>
-              <p className="deploy-eyebrow">Public relay</p>
+              <p className="deploy-eyebrow">Helios / public relay</p>
               <h2>OPEN PATROLS</h2>
             </div>
             <button onClick={() => void loadRooms()} disabled={pending}>
@@ -912,6 +925,11 @@ export function MultiplayerExperience({
               {notice}
             </p>
           )}
+          <div className="coop-room-columns" aria-hidden="true">
+            <span>Patrol / channel</span>
+            <span>Pilots</span>
+            <span>Uplink</span>
+          </div>
           <div className="coop-room-list">
             {publicRooms.map((listed) => (
               <button
@@ -932,7 +950,11 @@ export function MultiplayerExperience({
               </button>
             ))}
             {!pending && !publicRooms.length && (
-              <p>No public patrols are waiting. Create one or try Quick Join later.</p>
+              <div className="coop-room-empty">
+                <Radio size={28} />
+                <p>No patrol signals detected.</p>
+                <p>Create a public room or refresh to scan again.</p>
+              </div>
             )}
           </div>
           {nextCursor && (

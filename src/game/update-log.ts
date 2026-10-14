@@ -1,5 +1,21 @@
 export const UPDATE_LOG = [
   {
+    version: "0.5.5-alpha.1",
+    date: "2026-10-14",
+    title: "A unified Helios flight deck",
+    sections: [
+      {
+        title: "MULTIPLAYER",
+        items: [
+          "Amber controls, charcoal panels and illuminated corners across multiplayer.",
+          "Restyled pause menu with a clear resume action and countdown.",
+          "Developer console styled as the Helios service bay.",
+          "Room browser refreshed with patrol rows and a signal-search display.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.5.4-alpha.1",
     date: "2026-10-14",
     title: "Co-op flight deck and reliability",
