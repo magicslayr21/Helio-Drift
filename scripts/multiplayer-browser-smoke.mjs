@@ -9,12 +9,18 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { createServer as createViteServer } from "vite";
+import { waitForDevtools } from "./chromium-startup.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const scratch = await mkdtemp(join(tmpdir(), "helio-browser-smoke-"));
 const chromePath =
   process.env.CHROME_PATH ||
-  ["/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome"].find(existsSync);
+  [
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+  ].find(existsSync);
 
 if (!chromePath)
   throw new Error("Chromium was not found. Set CHROME_PATH to run the two-browser smoke test.");
@@ -142,37 +148,36 @@ class CdpClient {
 }
 
 async function connectCdp(port, chromeProcess, diagnostics, launchError) {
-  let metadata;
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    if (launchError()) throw new Error(`Chromium failed to launch: ${launchError().message}`);
-    if (chromeProcess.exitCode !== null) {
-      const detail = diagnostics().trim();
-      throw new Error(
-        `Chromium exited with code ${chromeProcess.exitCode} before DevTools became ready.${detail ? `\n${detail}` : ""}`,
-      );
-    }
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/json/version`, {
-        signal: AbortSignal.timeout(1_000),
-      });
-      if (response.ok) {
-        metadata = await response.json();
-        break;
-      }
-    } catch {}
-    await delay(100);
-  }
-  if (!metadata) {
-    const detail = diagnostics().trim();
-    throw new Error(
-      `Chromium DevTools endpoint did not become ready within 30 seconds.${detail ? `\n${detail}` : ""}`,
-    );
-  }
-  const socket = new WebSocket(metadata.webSocketDebuggerUrl);
+  const endpoint = await waitForDevtools({
+    port,
+    process: chromeProcess,
+    diagnostics,
+    launchError,
+    onSlowStartup: () =>
+      console.info("[coop readiness] Chromium is still starting; allowing up to 90 seconds."),
+  });
+  const socket = new WebSocket(endpoint);
   await new Promise((resolve, reject) => {
-    socket.addEventListener("open", resolve, { once: true });
-    socket.addEventListener("error", reject, { once: true });
+    const timeout = setTimeout(() => {
+      socket.close();
+      reject(new Error("Chromium announced DevTools but the WebSocket handshake timed out."));
+    }, 10_000);
+    socket.addEventListener(
+      "open",
+      () => {
+        clearTimeout(timeout);
+        resolve();
+      },
+      { once: true },
+    );
+    socket.addEventListener(
+      "error",
+      () => {
+        clearTimeout(timeout);
+        reject(new Error("Unable to connect to Chromium DevTools.\n" + diagnostics().trim()));
+      },
+      { once: true },
+    );
   });
   return new CdpClient(socket);
 }
@@ -377,12 +382,18 @@ try {
       "--mute-audio",
       "--no-first-run",
       "--no-default-browser-check",
+      "--disable-background-networking",
+      "--disable-extensions",
+      "--disable-component-update",
       "--remote-debugging-address=127.0.0.1",
       `--remote-debugging-port=${cdpPort}`,
       `--user-data-dir=${join(scratch, "chromium")}`,
       "about:blank",
     ],
-    { stdio: ["ignore", "ignore", "pipe"] },
+    {
+      stdio: ["ignore", "ignore", "pipe"],
+      env: { ...process.env, DBUS_SESSION_BUS_ADDRESS: "unix:path=/dev/null" },
+    },
   );
   chrome.stderr.setEncoding("utf8");
   chrome.stderr.on("data", (chunk) => {

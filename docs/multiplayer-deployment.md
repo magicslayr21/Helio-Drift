@@ -103,6 +103,15 @@ sessions. Wrangler login or a narrowly scoped CI token supplies deployment autho
 Requirements are Node.js 24, npm, and Chromium for the two-browser smoke test. On Windows
 PowerShell, use `npm.cmd`/`npx.cmd` if the execution policy blocks `npm.ps1`.
 
+The browser smoke test prefers installed Google Chrome (including the GitHub runner's Chrome),
+then Chromium. `CHROME_PATH` can override the executable. Startup allows up to 90 seconds and
+accepts Chrome's printed DevTools socket address as well as HTTP discovery. D-Bus warnings alone
+do not indicate a multiplayer server failure. Browser crashes and failed socket handshakes still
+fail the test; gameplay assertions are not skipped.
+
+Game test files run sequentially so the release performance benchmark does not compete with other
+test files for CPU. Its existing timing and entity-budget assertions remain enforced.
+
 ```sh
 npm ci
 npm run cf:migrate:local
