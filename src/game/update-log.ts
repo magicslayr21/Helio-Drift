@@ -1,5 +1,24 @@
 export const UPDATE_LOG = [
   {
+    version: "0.6.4-alpha.1",
+    date: "2026-10-15",
+    title: "The equipment exchange",
+    sections: [
+      {
+        title: "SHOP",
+        items: [
+          "New weapon gallery with HUD icons, rarity colours and upgrade comparisons.",
+          "Separate Weapons and Salvage Drone tabs; Missiles marked in development.",
+          "Fresh drone chassis, mounts and upgrade cards with shorter descriptions.",
+          "Confirmed upgrades light up with installation effects and purchase receipts.",
+          "Shared shop design in campaign and co-op.",
+          "Corrected weapon upgrade summaries and range readouts.",
+          "Fixed warning-ring rendering and a pause/resume timing error.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.6.3-alpha.1",
     date: "2026-10-15",
     title: "Systems ascending",

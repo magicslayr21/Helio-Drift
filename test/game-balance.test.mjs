@@ -1368,6 +1368,11 @@ test("Range is a capped common upgrade that extends projectile, beam, arc and dr
   g.rocks = [g.makeRock(drone.x + range * 1.2, drone.y, 1, 0, 0, "none")];
   g.salvageFire(drone, 0.01);
   assert.ok(g.bullets.length > 0, "range should extend the drone's target acquisition");
+  const railRows = g.weaponRows("rail", 1);
+  assert.equal(
+    railRows.find((row) => row.label === "Effective range").value,
+    Math.round(g.weaponStats("rail", 1).speed * g.weaponStats("rail", 1).life).toString(),
+  );
   g.devSetStack("range", 0);
   assert.equal(g.p.rangeMul, 1);
 });
@@ -1461,4 +1466,20 @@ test("campaign waves naturally deploy Rift Spikers from 16 with bounded late pai
   bonus.wave = 25;
   bonus.startBonusBoss();
   assert.equal(bonus.drones.filter((d) => d.coop?.kind === "riftSpiker").length, 1);
+});
+
+test("resuming a modal never integrates backwards when a queued frame timestamp predates the mode change", (t) => {
+  const g = game();
+  const updates = [];
+  g.last = 1000;
+  g.lastSave = Infinity;
+  g.timeScale = 1;
+  g.render = noop;
+  g.update = (dt) => updates.push(dt);
+  t.mock.method(g.sound, "setMusic", noop);
+  g.loop(990);
+  assert.equal(updates[0], 0);
+  assert.equal(g.last, 1000);
+  g.loop(1005);
+  assert.equal(updates[1], 0.005);
 });

@@ -386,3 +386,10 @@ in the campaign developer console.
 Publish the frontend and redeploy the multiplayer Worker for the refreshed co-op upgrade
 descriptions. No leaderboard Worker deployment or database migration is required. Campaign
 Rift Spiker encounters and the new level-up screen are included in the frontend.
+
+## Updating to 0.6.4-alpha.1
+
+The redesigned equipment shop is a frontend update. No Worker redeployment or database
+migration is required for its tabs, icons, comparisons and purchase confirmations. Campaign
+and co-op continue to use the existing purchase and equipment commands. The Missiles tab
+is visibly in development and inactive.

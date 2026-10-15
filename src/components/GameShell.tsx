@@ -5,21 +5,17 @@ import {
   Game,
   loadScores,
   saveScore,
-  WEAPON_DEFS,
   WEAPON_ORDER,
   type Hud,
   type Mode,
   type ScoreEntry,
   type UpgradeCard,
-  type WeaponId,
-  type WeaponStatRow,
-  type SalvageShopInfo,
   type SalvageUpgradeId,
 } from "../game/engine";
 import { PlayerStatus } from "./PlayerStatus";
 import { FlightSettings } from "./FlightSettings";
 import { UpgradeIcon, UpgradeOption } from "./UpgradeOption";
-import { LevelPips } from "./LevelPips";
+import { ShopScreen } from "./ShopScreen";
 import { PauseMenu } from "./PauseMenu";
 import { DeveloperConsole } from "./DeveloperConsole";
 import { applyDeveloperCommand } from "../game/developer-command";
@@ -134,9 +130,8 @@ export default function GameShell({
   const [codeError, setCodeError] = useState(false);
   const [, forceTick] = useState(0);
   const [shopOpen, setShopOpen] = useState(false);
-  const [shopWeapon, setShopWeapon] = useState<WeaponId>("pulse");
-  const [shopTab, setShopTab] = useState<"weapons" | "drone">("weapons");
   const shopReturnMode = useRef<Mode>("playing");
+  const shopInputWasSuspended = useRef(false);
   const [devUnlocked, setDevUnlocked] = useState(false);
   const [devOpen, setDevOpen] = useState(false);
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
@@ -319,7 +314,7 @@ export default function GameShell({
   }, []);
   const pause = useCallback(() => {
     const g = gameRef.current;
-    if (!g) return;
+    if (!g || g.inputSuspended) return;
     if (g.mode === "playing") g.setMode("paused");
     else if (g.mode === "paused") {
       setPanel("none");
@@ -338,9 +333,20 @@ export default function GameShell({
 
   const openShop = useCallback(() => {
     const g = gameRef.current;
-    if (!g || g.mode === "menu" || g.mode === "gameover" || g.mode === "victory") return;
+    if (
+      !g ||
+      g.inputSuspended ||
+      g.mode === "menu" ||
+      g.mode === "gameover" ||
+      g.mode === "victory"
+    )
+      return;
     audio.play("ui");
     shopReturnMode.current = g.mode;
+    shopInputWasSuspended.current = g.inputSuspended;
+    g.inputSuspended = true;
+    g.keys = {};
+    g.mouseDown = g.touchFire = false;
     setDevOpen(false);
     setPanel("none");
     setShopOpen(true);
@@ -350,6 +356,7 @@ export default function GameShell({
   const closeShop = useCallback(() => {
     const g = gameRef.current;
     setShopOpen(false);
+    if (g) g.inputSuspended = shopInputWasSuspended.current;
     if (g && shopReturnMode.current !== "paused") g.setMode(shopReturnMode.current);
   }, []);
 
@@ -442,11 +449,18 @@ export default function GameShell({
   }, []);
 
   const best = scores[0]?.score ?? 0;
-  const shopInfo = gameRef.current?.weaponShopInfo(shopWeapon);
-  const droneInfo = gameRef.current?.salvageShopInfo();
-  const shopDef = WEAPON_DEFS[shopWeapon];
-  const shopAccent =
-    shopDef.rarity === "epic" ? "#ff3d6e" : shopDef.rarity === "rare" ? "#6fe7ff" : "#ffb03a";
+  const shopWeapons =
+    shopOpen && gameRef.current
+      ? WEAPON_ORDER.map((id) => gameRef.current!.weaponShopInfo(id))
+      : [];
+  const droneInfo = shopOpen ? gameRef.current?.salvageShopInfo() : undefined;
+  const refreshShop = () => {
+    const game = gameRef.current;
+    if (!game) return;
+    game.saveRun();
+    setHud(game.snapshot());
+    forceTick((v) => v + 1);
+  };
 
   return (
     <section className="relative h-dvh w-full overflow-y-auto overflow-x-hidden">
@@ -461,7 +475,10 @@ export default function GameShell({
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           {/* top telemetry strip */}
           {mode !== "menu" && (
-            <div className="flex shrink-0 flex-wrap items-end justify-between gap-2 border-b border-steel/25 px-3 py-2 sm:px-5">
+            <div
+              inert={shopOpen}
+              className="flex shrink-0 flex-wrap items-end justify-between gap-2 border-b border-steel/25 px-3 py-2 sm:px-5"
+            >
               <div>
                 <p className="legend">Score</p>
                 <p className="font-display text-[clamp(1.6rem,4.2vw,2.6rem)] leading-none text-amber-hot">
@@ -968,223 +985,41 @@ export default function GameShell({
 
             {/* Weapon shop always suspends the simulation and returns to its prior state. */}
             <AnimatePresence>
-              {shopOpen && shopInfo && (
+              {shopOpen && droneInfo && shopWeapons.length > 0 && (
                 <motion.div
                   key="weapon-shop"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.16 }}
-                  className="absolute inset-0 z-[60] overflow-y-auto bg-void/96 px-3 py-4 backdrop-blur-[3px] sm:px-6"
+                  className="campaign-shop-layer"
                 >
-                  <div className="mx-auto w-full max-w-[920px] border border-ice/40 bg-graphite/80">
-                    <div className="flex items-end justify-between gap-4 border-b border-steel/35 px-4 py-3 sm:px-5">
-                      <div>
-                        <p className="legend text-ice">Credit Armory · Simulation Suspended</p>
-                        <h3 className="mt-1 font-display text-[clamp(1.5rem,4vw,2.3rem)] leading-none text-amber-hot">
-                          WEAPON SHOP
-                        </h3>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <div className="text-right">
-                          <p className="legend">Balance</p>
-                          <p className="font-display text-xl leading-none text-amber">
-                            {hud.credits} CR
-                          </p>
-                        </div>
-                        <button
-                          onClick={closeShop}
-                          aria-label="Close weapon shop"
-                          className="border border-steel/50 px-3 py-2 text-[11px] text-amber/70 transition-colors hover:border-ice hover:text-ice focus:outline-none focus-visible:ring-2 focus-visible:ring-ice"
-                        >
-                          X
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="flex border-b border-steel/35">
-                      <button
-                        onClick={() => {
-                          setShopTab("weapons");
-                          audio.play("ui");
-                        }}
-                        className={`flex-1 border-r border-steel/35 px-4 py-2 text-[10px] uppercase tracking-[0.24em] transition-colors ${shopTab === "weapons" ? "bg-ice/10 text-ice" : "text-amber/45 hover:text-amber"}`}
-                      >
-                        Weapons
-                      </button>
-                      <button
-                        onClick={() => {
-                          setShopTab("drone");
-                          audio.play("ui");
-                        }}
-                        className={`flex-1 px-4 py-2 text-[10px] uppercase tracking-[0.24em] transition-colors ${shopTab === "drone" ? "bg-ice/10 text-ice" : "text-amber/45 hover:text-amber"}`}
-                      >
-                        Salvage Drone
-                      </button>
-                    </div>
-
-                    {shopTab === "weapons" ? (
-                      <div className="grid grid-cols-1 md:grid-cols-[250px_1fr]">
-                        <div className="thin-scroll max-h-[260px] overflow-y-auto border-b border-steel/35 p-2 md:max-h-[490px] md:border-b-0 md:border-r">
-                          {WEAPON_ORDER.map((w, i) => {
-                            const info = gameRef.current!.weaponShopInfo(w);
-                            const def = WEAPON_DEFS[w];
-                            const accent =
-                              def.rarity === "epic"
-                                ? "#ff3d6e"
-                                : def.rarity === "rare"
-                                  ? "#6fe7ff"
-                                  : "#ffb03a";
-                            return (
-                              <button
-                                key={w}
-                                onClick={() => {
-                                  setShopWeapon(w);
-                                  audio.play("ui");
-                                }}
-                                className={`mb-1 flex w-full items-center gap-3 border px-3 py-2.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ice ${
-                                  w === shopWeapon
-                                    ? "border-ice/70 bg-ice/10"
-                                    : "border-transparent hover:border-steel/60 hover:bg-white/[0.025]"
-                                }`}
-                              >
-                                <span className="legend w-5 shrink-0" style={{ color: accent }}>
-                                  {i + 1}
-                                </span>
-                                <span className="min-w-0 flex-1">
-                                  <span className="block truncate text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-hot">
-                                    {def.name}
-                                  </span>
-                                  <span className="mt-1 flex items-center justify-between gap-2">
-                                    <span className="legend" style={{ color: accent }}>
-                                      {def.rarity}
-                                    </span>
-                                    <span className="text-[9px] uppercase tracking-[0.14em] text-amber/45">
-                                      {info.owned ? `LV ${info.level}` : `${info.price} CR`}
-                                    </span>
-                                  </span>
-                                </span>
-                              </button>
-                            );
-                          })}
-                        </div>
-
-                        <motion.div
-                          key={shopWeapon}
-                          initial={{ opacity: 0, x: 12 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          className="p-4 sm:p-6"
-                        >
-                          <div className="flex flex-wrap items-start justify-between gap-4">
-                            <div>
-                              <p className="legend" style={{ color: shopAccent }}>
-                                {shopDef.rarity} Weapon
-                              </p>
-                              <h4 className="mt-1 text-[17px] font-semibold uppercase tracking-[0.08em] text-amber-hot">
-                                {shopDef.name}
-                              </h4>
-                              <p className="mt-2 max-w-xl text-[11px] leading-relaxed text-amber/58">
-                                {shopDef.desc}
-                              </p>
-                            </div>
-                            <div className="text-right">
-                              <p className="legend">Installed</p>
-                              <div className="mt-1">
-                                <LevelPips
-                                  level={shopInfo.level}
-                                  max={shopInfo.maxLevel}
-                                  color={shopAccent}
-                                />
-                              </div>
-                              <p
-                                className="mt-1 text-[10px] uppercase tracking-[0.16em]"
-                                style={{ color: shopAccent }}
-                              >
-                                {shopInfo.owned ? `Level ${shopInfo.level}` : "Locked"}
-                              </p>
-                            </div>
-                          </div>
-
-                          <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                            <ShopStats
-                              title={
-                                shopInfo.owned
-                                  ? `Current · LV ${shopInfo.level}`
-                                  : "Current · Not installed"
-                              }
-                              rows={shopInfo.current}
-                              empty="Purchase the weapon to install it."
-                              accent={shopAccent}
-                            />
-                            <ShopStats
-                              title={
-                                shopInfo.level >= shopInfo.maxLevel
-                                  ? "Maximum specification"
-                                  : shopInfo.owned
-                                    ? `After upgrade · LV ${shopInfo.level + 1}`
-                                    : "After purchase · LV 1"
-                              }
-                              rows={
-                                shopInfo.level >= shopInfo.maxLevel
-                                  ? shopInfo.current
-                                  : shopInfo.next
-                              }
-                              empty="Maximum level reached."
-                              accent={shopAccent}
-                              compare={shopInfo.current}
-                            />
-                          </div>
-
-                          <div className="mt-4 border-t border-steel/30 pt-4">
-                            <p className="text-[10px] leading-relaxed text-amber/45">
-                              {shopDef.perLevel}
-                            </p>
-                            <button
-                              disabled={shopInfo.price == null || hud.credits < shopInfo.price}
-                              onClick={() => {
-                                const g = gameRef.current;
-                                if (!g || !g.buyWeapon(shopWeapon)) return;
-                                setHud(g.snapshot());
-                                forceTick((v) => v + 1);
-                              }}
-                              className={`mt-3 w-full border px-5 py-3 text-[10px] font-semibold uppercase tracking-[0.26em] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ice ${
-                                shopInfo.price != null && hud.credits >= shopInfo.price
-                                  ? "border-ice bg-ice text-void hover:bg-ice/85"
-                                  : "cursor-not-allowed border-steel/30 text-amber/25"
-                              }`}
-                            >
-                              {shopInfo.price == null
-                                ? "Maximum Level Installed"
-                                : `${shopInfo.owned ? `Upgrade to LV ${shopInfo.level + 1}` : "Purchase Weapon"} · ${shopInfo.price} CR`}
-                            </button>
-                          </div>
-                        </motion.div>
-                      </div>
-                    ) : droneInfo ? (
-                      <SalvageShopPanel
-                        info={droneInfo}
-                        credits={hud.credits}
-                        onBuy={(id: SalvageUpgradeId | "base") => {
-                          const g = gameRef.current;
-                          if (!g) return;
-                          const purchased =
-                            id === "base" ? g.buySalvageDrone() : g.buySalvageUpgrade(id);
-                          if (purchased) {
-                            setHud(g.snapshot());
-                            forceTick((v) => v + 1);
-                          }
-                        }}
-                        onEquip={(id) => {
-                          const g = gameRef.current;
-                          if (!g) return;
-                          if (g.equipSalvageWeapon(id)) {
-                            setHud(g.snapshot());
-                            forceTick((v) => v + 1);
-                          }
-                        }}
-                      />
-                    ) : null}
-                  </div>
+                  <ShopScreen
+                    credits={hud.credits}
+                    weapons={shopWeapons}
+                    drone={droneInfo}
+                    activeWeapon={hud.primary}
+                    onClose={closeShop}
+                    onBuyWeapon={(id) => {
+                      if (gameRef.current?.buyWeapon(id)) refreshShop();
+                    }}
+                    onBuyDrone={(id: SalvageUpgradeId | "base") => {
+                      const game = gameRef.current;
+                      if (
+                        game &&
+                        (id === "base" ? game.buySalvageDrone() : game.buySalvageUpgrade(id))
+                      )
+                        refreshShop();
+                    }}
+                    onEquipWeapon={(id) => {
+                      gameRef.current?.selectWeapon(id);
+                      refreshShop();
+                    }}
+                    onEquipDrone={(id) => {
+                      if (gameRef.current?.equipSalvageWeapon(id)) refreshShop();
+                    }}
+                    notice="FLIGHT PAUSED · INSTALL YOUR NEXT ADVANTAGE"
+                  />
                 </motion.div>
               )}
             </AnimatePresence>
@@ -1208,7 +1043,7 @@ export default function GameShell({
               owned={hud.owned}
               active={hud.primary}
               blocked={gameRef.current?.salvageDrone.weapon}
-              enabled={mode === "playing" || mode === "paused"}
+              enabled={!shopOpen && (mode === "playing" || mode === "paused")}
               onSelect={(weapon) => {
                 const game = gameRef.current;
                 if (game) {
@@ -1220,6 +1055,7 @@ export default function GameShell({
           )}
           {/* touch controls */}
           <div
+            inert={shopOpen}
             className={`${mode === "menu" ? "hidden" : "flex"} shrink-0 items-center justify-between gap-3 px-3 pb-4 sm:hidden`}
           >
             <button
@@ -1272,227 +1108,5 @@ function ScoreList({ scores }: { scores: ScoreEntry[] }) {
         </li>
       ))}
     </ol>
-  );
-}
-
-function SalvageShopPanel({
-  info,
-  credits,
-  onBuy,
-  onEquip,
-}: {
-  info: SalvageShopInfo;
-  credits: number;
-  onBuy: (id: SalvageUpgradeId | "base") => void;
-  onEquip: (id: WeaponId | null) => void;
-}) {
-  const paths: {
-    id: "offense" | "support" | "utility";
-    label: string;
-    accent: string;
-    note: string;
-  }[] = [
-    {
-      id: "offense",
-      label: "Offense Path",
-      accent: "#ff3d6e",
-      note: "Weak support fire that compounds into a glass-cannon identity.",
-    },
-    {
-      id: "support",
-      label: "Defense / Support Path",
-      accent: "#6fe7ff",
-      note: "Keep the companion alive and let it slowly stabilize the ship.",
-    },
-    {
-      id: "utility",
-      label: "Utility Path",
-      accent: "#ffb03a",
-      note: "Turn the drone into a wider, faster salvage partner.",
-    },
-  ];
-  return (
-    <div className="p-4 sm:p-6">
-      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-steel/30 pb-4">
-        <div>
-          <p className="legend text-ice">Permanent chassis · build persists through destruction</p>
-          <h4 className="mt-1 font-display text-[clamp(1.35rem,4vw,2rem)] leading-none text-amber-hot">
-            SALVAGE DRONE
-          </h4>
-          <p className="mt-2 max-w-xl text-[11px] leading-relaxed text-amber/58">
-            A deliberately undertuned companion. It follows with lag, collects credit shards and
-            becomes useful only through the path you choose. Weapons are shared from your armory,
-            but the ship's currently active weapon cannot be mounted here.
-          </p>
-        </div>
-        <div className="text-right">
-          <p className="legend">Chassis</p>
-          <p
-            className={`mt-1 text-[11px] uppercase tracking-[0.16em] ${info.purchased ? (info.active ? "text-ice" : "text-magenta") : "text-amber/45"}`}
-          >
-            {info.purchased
-              ? info.active
-                ? "Online"
-                : info.rebuilding > 0
-                  ? `Rebuilding ${info.rebuilding.toFixed(1)}`
-                  : "Offline · Next wave rebuild"
-              : "Not assembled"}
-          </p>
-          {info.purchased && (
-            <p className="mt-1 text-[10px] text-amber/55">
-              Health {info.hp}/{info.maxHp}
-            </p>
-          )}
-        </div>
-      </div>
-
-      {!info.purchased ? (
-        <div className="mt-5 border border-ice/30 bg-ice/[0.04] p-4">
-          <p className="legend text-ice">Base chassis · one-time purchase</p>
-          <p className="mt-2 text-[11px] leading-relaxed text-amber/55">
-            The base frame has no weapons and low health. Buy it once, then shape it across the
-            three paths below. If it is destroyed, it rebuilds for free at the next wave.
-          </p>
-          <button
-            disabled={credits < info.basePrice}
-            onClick={() => onBuy("base")}
-            className={`mt-4 w-full border px-5 py-3 text-[10px] font-semibold uppercase tracking-[0.24em] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ice ${credits >= info.basePrice ? "border-ice bg-ice text-void hover:bg-ice/85" : "cursor-not-allowed border-steel/30 text-amber/25"}`}
-          >
-            Deploy Salvage Drone · {info.basePrice} CR
-          </button>
-        </div>
-      ) : (
-        <div className="mt-5 grid gap-5">
-          <div className="border border-ice/30 bg-ice/[0.04] p-3">
-            <div className="flex items-baseline justify-between gap-3">
-              <p className="legend text-ice">Drone hardpoint</p>
-              <p className="text-[10px] text-amber/40">
-                {info.weapon
-                  ? `Mounted · ${WEAPON_DEFS[info.weapon].name}`
-                  : "Level-0 cannon mounted"}
-              </p>
-            </div>
-            <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <button
-                onClick={() => onEquip(null)}
-                className={`border px-2 py-2 text-[9px] uppercase tracking-[0.12em] transition-colors ${info.weapon == null ? "border-ice bg-ice/10 text-ice" : "border-steel/40 text-amber/55 hover:border-ice"}`}
-              >
-                Base Cannon
-              </button>
-              {info.weaponOptions
-                .filter((o) => o.owned)
-                .map((o) => {
-                  const unavailable = o.equippedByPlayer;
-                  const active = info.weapon === o.id;
-                  return (
-                    <button
-                      key={o.id}
-                      disabled={unavailable}
-                      onClick={() => onEquip(o.id)}
-                      title={
-                        unavailable ? "Currently equipped by the player" : "Mount on salvage drone"
-                      }
-                      className={`border px-2 py-2 text-[9px] uppercase tracking-[0.12em] transition-colors ${active ? "border-ice bg-ice/10 text-ice" : unavailable ? "cursor-not-allowed border-steel/20 text-amber/20 line-through" : "border-steel/40 text-amber/65 hover:border-ice"}`}
-                    >
-                      {WEAPON_DEFS[o.id].short} · LV {o.level}
-                    </button>
-                  );
-                })}
-            </div>
-          </div>
-          {paths.map((path) => (
-            <div key={path.id}>
-              <div className="flex items-baseline justify-between gap-3">
-                <p className="legend" style={{ color: path.accent }}>
-                  {path.label}
-                </p>
-                <p className="text-[10px] text-amber/35">{path.note}</p>
-              </div>
-              <div className="mt-2 grid gap-2 sm:grid-cols-3">
-                {info.upgrades
-                  .filter((u) => u.path === path.id)
-                  .map((u) => {
-                    const canBuy = u.price != null && credits >= u.price;
-                    return (
-                      <button
-                        key={u.id}
-                        disabled={!canBuy}
-                        onClick={() => onBuy(u.id)}
-                        className={`border p-3 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ice ${canBuy ? "border-steel/55 hover:border-ice hover:bg-ice/[0.06]" : "cursor-not-allowed border-steel/25 opacity-55"}`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-amber-hot">
-                            {u.name}
-                          </span>
-                          <span
-                            className="text-[9px] uppercase tracking-[0.12em]"
-                            style={{ color: path.accent }}
-                          >
-                            {u.level}/{u.max}
-                          </span>
-                        </div>
-                        <p className="mt-2 text-[10px] leading-relaxed text-amber/48">{u.desc}</p>
-                        <div className="mt-3 flex items-center justify-between gap-2">
-                          <LevelPips level={u.level} max={u.max} color={path.accent} />
-                          <span className="text-[9px] uppercase tracking-[0.13em] text-amber/60">
-                            {u.price == null ? "MAX" : `${u.price} CR`}
-                          </span>
-                        </div>
-                      </button>
-                    );
-                  })}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ShopStats({
-  title,
-  rows,
-  empty,
-  accent,
-  compare = [],
-}: {
-  title: string;
-  rows: WeaponStatRow[];
-  empty: string;
-  accent: string;
-  compare?: WeaponStatRow[];
-}) {
-  const before = new Map(compare.map((r) => [r.label, r.value]));
-  return (
-    <div className="border border-steel/35 bg-black/20 p-3">
-      <p className="legend" style={{ color: accent }}>
-        {title}
-      </p>
-      {rows.length ? (
-        <dl className="mt-2 space-y-1.5">
-          {rows.map((row) => {
-            const old = before.get(row.label);
-            const changed = old != null && old !== row.value;
-            return (
-              <div
-                key={row.label}
-                className="flex items-baseline justify-between gap-3 border-b border-steel/20 pb-1 text-[10px]"
-              >
-                <dt className="uppercase tracking-[0.12em] text-amber/42">{row.label}</dt>
-                <dd className="text-right">
-                  {changed && <span className="mr-2 text-amber/30 line-through">{old}</span>}
-                  <span style={{ color: changed ? accent : "rgba(255,224,163,0.9)" }}>
-                    {row.value}
-                  </span>
-                </dd>
-              </div>
-            );
-          })}
-        </dl>
-      ) : (
-        <p className="mt-3 text-[10px] leading-relaxed text-amber/35">{empty}</p>
-      )}
-    </div>
   );
 }

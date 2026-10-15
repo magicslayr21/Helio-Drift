@@ -938,7 +938,8 @@ export class Game {
     if (s.extra > 0) rows.push({ label: "Shrapnel", value: s.extra.toString() });
     if (s.extraDmg > 0) rows.push({ label: "Shrapnel damage", value: s.extraDmg.toFixed(1) });
     if (s.turn > 0) rows.push({ label: "Homing turn", value: s.turn.toFixed(1) });
-    if (w === "rail") rows.push({ label: "Effective range", value: "2112" });
+    if (w === "rail")
+      rows.push({ label: "Effective range", value: Math.round(s.speed * s.life).toString() });
     return rows;
   }
 
@@ -1111,8 +1112,10 @@ export class Game {
       this.last = now;
       return;
     }
-    let dt = (now - this.last) / 1000;
-    this.last = now;
+    // Modal transitions can set last after a frame timestamp has already been queued.
+    // Never integrate physics or expanding effects backwards on that first frame.
+    let dt = Math.max(0, (now - this.last) / 1000);
+    this.last = Math.max(now, this.last);
     if (dt > GAME_CONFIG.simulation.frameDeltaCap) dt = GAME_CONFIG.simulation.frameDeltaCap;
     this.frame++;
     this.decayShake(dt);
@@ -7799,7 +7802,7 @@ export class Game {
         ctx.shadowColor = AMBER;
         ctx.fill();
         ctx.beginPath();
-        ctx.arc(b.x, b.y, 4.5 + (0.45 - b.fuse) * 30, 0, TAU);
+        ctx.arc(b.x, b.y, 4.5 + Math.max(0, 0.45 - b.fuse) * 30, 0, TAU);
         ctx.strokeStyle = AMBER;
         ctx.lineWidth = 1;
         ctx.globalAlpha = 0.35;
@@ -7927,7 +7930,7 @@ export class Game {
     // rings
     for (const r of this.rings) {
       ctx.beginPath();
-      ctx.arc(r.x, r.y, r.r, 0, TAU);
+      ctx.arc(r.x, r.y, Math.max(0, r.r), 0, TAU);
       ctx.strokeStyle = r.color;
       ctx.globalAlpha = clamp(r.life, 0, 1) * 0.85;
       ctx.lineWidth = r.w;

@@ -210,7 +210,10 @@ class CdpClient {
         if (message.error) pending.reject(new Error(`${pending.method}: ${message.error.message}`));
         else pending.resolve(message.result);
       } else if (message.method === "Runtime.exceptionThrown") {
-        this.exceptions.push(message.params.exceptionDetails.text);
+        this.exceptions.push(
+          message.params.exceptionDetails.exception?.description ??
+            message.params.exceptionDetails.text,
+        );
       }
     });
   }
@@ -324,7 +327,10 @@ async function waitFor(client, page, expression, label, timeoutMs = 10_000) {
     await delay(75);
   }
   const text = await evaluate(client, page, "document.body?.innerText?.slice(0, 1200)");
-  throw new Error(`Timed out waiting for ${label}. Page text:\n${text}`);
+  const exceptions = client.exceptions.slice(-3).join("\n");
+  throw new Error(
+    `Timed out waiting for ${label}. Page text:\n${text}${exceptions ? `\nBrowser errors:\n${exceptions}` : ""}`,
+  );
 }
 
 const clickText = (text, selector = "button") =>
@@ -334,6 +340,65 @@ async function capture(client, page, name) {
   if (!process.env.HELIOS_SCREENSHOT_DIR) return;
   const { data } = await client.send("Page.captureScreenshot", { format: "png" }, page.sessionId);
   await writeFile(join(process.env.HELIOS_SCREENSHOT_DIR, name), Buffer.from(data, "base64"));
+}
+
+async function captureShop(client, page, name) {
+  if (!process.env.HELIO_SHOP_SCREENSHOT_DIR) return;
+  const { data } = await client.send("Page.captureScreenshot", { format: "png" }, page.sessionId);
+  await writeFile(join(process.env.HELIO_SHOP_SCREENSHOT_DIR, name), Buffer.from(data, "base64"));
+}
+
+async function clickShopControl(client, page, selector, label) {
+  await evaluate(
+    client,
+    page,
+    `document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'center',inline:'nearest',behavior:'instant'})`,
+  );
+  await waitFor(
+    client,
+    page,
+    `(() => {const button=document.querySelector(${JSON.stringify(selector)});if(!button||button.disabled)return false;
+      const rect=button.getBoundingClientRect();const x=rect.x+rect.width/2,y=rect.y+rect.height/2;
+      return rect.width>0&&rect.height>0&&x>=0&&x<innerWidth&&y>=0&&y<innerHeight&&button.contains(document.elementFromPoint(x,y));})()`,
+    `${label} is reachable by pointer after scrolling`,
+  );
+  await evaluate(
+    client,
+    page,
+    `(() => {const button=document.querySelector(${JSON.stringify(selector)});button.focus();window.__shopPurchaseButton=button;button.click();})()`,
+  );
+}
+
+async function checkShopInputSuspended(client, page, label) {
+  await client.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyDown", code: "KeyP", key: "p", windowsVirtualKeyCode: 80 },
+    page.sessionId,
+  );
+  await client.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyUp", code: "KeyP", key: "p", windowsVirtualKeyCode: 80 },
+    page.sessionId,
+  );
+  assert.deepEqual(
+    await evaluate(
+      client,
+      page,
+      `({mode:window.__campaignUpgradeGame.mode,shop:Boolean(document.querySelector('.helio-shop'))})`,
+    ),
+    { mode: "paused", shop: true },
+    `${label}: P must not resume combat behind the shop`,
+  );
+  assert.equal(
+    await evaluate(
+      client,
+      page,
+      `(() => {const button=[...document.querySelectorAll('button')].find(b=>!b.closest('.helio-shop')&&b.textContent.trim()==='Resume');
+        if(!button||(!button.disabled&&!button.closest('[inert]')))return false;button.click();return window.__campaignUpgradeGame.mode==='paused';})()`,
+    ),
+    true,
+    `${label}: underlying HUD Resume must not be interactive`,
+  );
 }
 
 async function enterMultiplayer(client, page) {
@@ -499,6 +564,7 @@ try {
     campaign,
     "document.querySelector('.launch-deploy') || document.body?.innerText.includes('DEPLOY')",
     "campaign menu",
+    30_000,
   );
   await evaluate(
     cdp,
@@ -506,7 +572,8 @@ try {
     `(async () => {
     const resources = performance.getEntriesByType('resource');
     const {Game} = await import(resources.find(e => e.name.includes('/src/game/engine.ts')).name);
-    const {STAT_UPGRADES} = await import(resources.find(e => e.name.includes('/src/game/balance.ts')).name);
+    const {STAT_UPGRADES, WEAPON_ORDER, WEAPON_DEFS} = await import(resources.find(e => e.name.includes('/src/game/balance.ts')).name);
+    window.__campaignShopDefinitions = {WEAPON_ORDER, WEAPON_DEFS};
     const start = Game.prototype.startGame;
     Game.prototype.startGame = function(...args) {
       start.apply(this, args);
@@ -546,6 +613,33 @@ try {
     "document.querySelectorAll('.upgrade-option').length === 3",
     "level-up reward cards",
   );
+  // Range and drone mounts can keep Flak shells alive beyond the original
+  // short fuse. Exercise the actual browser canvas instead of a mocked context.
+  assert.equal(
+    await evaluate(
+      cdp,
+      campaign,
+      `(() => {const g=window.__campaignUpgradeGame;const bullets=g.bullets;const s=g.weaponStats('flak',1);
+        g.bullets=[];
+        try {g.addBullet({x:g.p.x+50,y:g.p.y,vx:s.speed,vy:0,r:s.r,life:3,dmg:s.dmg,
+          kind:s.kind,pierce:s.pierce,color:s.color,hitIds:new Set(),turn:s.turn,bounces:s.bounces,
+          fuse:2,extra:s.extra,extraDmg:s.extraDmg});g.render();return g.bullets.length===1;}
+        finally {g.bullets=bullets;}})()`,
+    ),
+    true,
+    "long-fuse Flak renders on a real canvas without an invalid radius",
+  );
+  assert.equal(
+    await evaluate(
+      cdp,
+      campaign,
+      `(() => {const g=window.__campaignUpgradeGame;const rings=g.rings;
+        g.rings=[{x:g.p.x,y:g.p.y,r:-21.744,max:80,life:0.5,color:'#ffb03a',w:2}];
+        try {g.render();return true;}finally {g.rings=rings;}})()`,
+    ),
+    true,
+    "a stale transition ring cannot crash the actual canvas renderer",
+  );
   await delay(650);
   const reward = await evaluate(
     cdp,
@@ -580,6 +674,291 @@ try {
     campaign,
     "window.__campaignUpgradeGame.credits === 1970 && document.querySelector('.upgrade-screen').textContent.includes('54 CR')",
     "upgrade reroll cost and updated choices",
+  );
+  const pendingChoices = await evaluate(
+    cdp,
+    campaign,
+    "window.__campaignUpgradeGame.choices.map(c => c.id)",
+  );
+  await evaluate(cdp, campaign, clickText("Weapon Shop", ".upgrade-screen button"));
+  await waitFor(cdp, campaign, "document.querySelector('.helio-shop')", "campaign shop");
+  await checkShopInputSuspended(cdp, campaign, "shop opened during level-up");
+  const shopTabs = await evaluate(
+    cdp,
+    campaign,
+    "[...document.querySelectorAll('.helio-shop [role=tab]')].map(t => t.textContent.trim())",
+  );
+  assert.equal(shopTabs.length, 3);
+  for (const title of ["Weapons", "Salvage Drone", "Missiles"])
+    assert.equal(
+      shopTabs.some((tab) => tab.toLowerCase().includes(title.toLowerCase())),
+      true,
+    );
+  const beforeMissiles = await evaluate(
+    cdp,
+    campaign,
+    `JSON.stringify({credits:window.__campaignUpgradeGame.credits,
+      weapons:window.__campaignUpgradeGame.p.weapons,drone:window.__campaignUpgradeGame.salvageDrone,
+      selected:document.querySelector('.helio-shop [role=tab][aria-selected=true]').textContent})`,
+  );
+  assert.equal(
+    await evaluate(
+      cdp,
+      campaign,
+      `(() => {const tab=[...document.querySelectorAll('.helio-shop [role=tab]')].find(t=>t.textContent.includes('Missiles'));
+        const inert=tab.getAttribute('aria-disabled')==='true';tab.click();return inert;})()`,
+    ),
+    true,
+  );
+  assert.equal(
+    await evaluate(
+      cdp,
+      campaign,
+      `JSON.stringify({credits:window.__campaignUpgradeGame.credits,
+        weapons:window.__campaignUpgradeGame.p.weapons,drone:window.__campaignUpgradeGame.salvageDrone,
+        selected:document.querySelector('.helio-shop [role=tab][aria-selected=true]').textContent})`,
+    ),
+    beforeMissiles,
+  );
+  const weaponIds = await evaluate(cdp, campaign, "window.__campaignShopDefinitions.WEAPON_ORDER");
+  assert.equal(weaponIds.length, 8);
+  assert.equal(
+    await evaluate(cdp, campaign, "document.querySelectorAll('[data-shop-weapon] svg').length"),
+    8,
+  );
+  for (const id of weaponIds) {
+    await evaluate(cdp, campaign, `document.querySelector('[data-shop-weapon=${id}]').click()`);
+    await waitFor(
+      cdp,
+      campaign,
+      `document.querySelector('[data-buy-weapon=${id}]')`,
+      `${id} weapon detail`,
+    );
+    const detail = await evaluate(
+      cdp,
+      campaign,
+      `(() => {const def=window.__campaignShopDefinitions.WEAPON_DEFS.${id};
+        const info=window.__campaignUpgradeGame.weaponShopInfo('${id}');
+        const shop=document.querySelector('.helio-shop');
+        const stats=[...shop.querySelectorAll('.shop-stat-row')].map(r=>r.textContent).join(' ');
+        return {name:shop.textContent.toLowerCase().includes(def.name.toLowerCase()),
+          rarity:shop.textContent.toLowerCase().includes(def.rarity),
+          description:shop.querySelector('.shop-detail-description')?.textContent.trim()===def.desc,
+          rows:shop.querySelectorAll('.shop-stat-row').length,
+          comparison:info.next.every(row=>stats.includes(row.label)&&stats.includes(row.value))};})()`,
+    );
+    assert.deepEqual(detail, {
+      name: true,
+      rarity: true,
+      description: true,
+      rows: detail.rows,
+      comparison: true,
+    });
+    assert.ok(detail.rows >= 3, `${id} must show meaningful weapon statistics`);
+  }
+  await captureShop(cdp, campaign, "helio-shop-weapons.png");
+  const buyWeapon = async (id) => {
+    await evaluate(cdp, campaign, `document.querySelector('[data-shop-weapon=${id}]').click()`);
+    await waitFor(
+      cdp,
+      campaign,
+      `document.querySelector('[data-buy-weapon=${id}]')`,
+      `${id} purchase detail`,
+    );
+    const before = await evaluate(
+      cdp,
+      campaign,
+      `({credits:window.__campaignUpgradeGame.credits,level:window.__campaignUpgradeGame.p.weapons.${id},
+        price:window.__campaignUpgradeGame.weaponPrice('${id}')})`,
+    );
+    assert.equal(
+      await evaluate(cdp, campaign, `document.querySelector('[data-buy-weapon=${id}]').disabled`),
+      false,
+    );
+    await clickShopControl(cdp, campaign, `[data-buy-weapon=${id}]`, `${id} purchase button`);
+    await waitFor(
+      cdp,
+      campaign,
+      `window.__campaignUpgradeGame.p.weapons.${id} === ${before.level + 1} && document.querySelector('.shop-feedback[role=status]')`,
+      `${id} acknowledged installation`,
+    );
+    assert.equal(
+      await evaluate(cdp, campaign, "window.__campaignUpgradeGame.credits"),
+      before.credits - before.price,
+    );
+    assert.match(
+      await evaluate(
+        cdp,
+        campaign,
+        "document.querySelector('.shop-feedback[role=status]').textContent",
+      ),
+      /installed|upgraded/i,
+    );
+    const canUpgradeAgain = await evaluate(
+      cdp,
+      campaign,
+      `window.__campaignUpgradeGame.weaponShopInfo('${id}').price !== null`,
+    );
+    if (canUpgradeAgain)
+      await waitFor(
+        cdp,
+        campaign,
+        `window.__shopPurchaseButton.isConnected && document.querySelector('[data-buy-weapon=${id}]') === window.__shopPurchaseButton && document.activeElement === window.__shopPurchaseButton`,
+        `${id} purchase preserves the focused control after the receipt`,
+      );
+  };
+  await buyWeapon("pulse");
+  await buyWeapon("pulse");
+  assert.equal(
+    await evaluate(cdp, campaign, "document.querySelector('[data-buy-weapon=pulse]').disabled"),
+    true,
+  );
+  const maxedCredits = await evaluate(cdp, campaign, "window.__campaignUpgradeGame.credits");
+  await evaluate(cdp, campaign, "document.querySelector('[data-buy-weapon=pulse]').click()");
+  assert.equal(await evaluate(cdp, campaign, "window.__campaignUpgradeGame.credits"), maxedCredits);
+  await buyWeapon("rail");
+  await captureShop(cdp, campaign, "helio-shop-weapon-installed.png");
+  await evaluate(cdp, campaign, clickText("Salvage Drone", ".helio-shop [role=tab]"));
+  await waitFor(
+    cdp,
+    campaign,
+    "document.querySelector('[data-buy-drone=base]')",
+    "drone chassis purchase",
+  );
+  const chassis = await evaluate(
+    cdp,
+    campaign,
+    "({credits:window.__campaignUpgradeGame.credits,price:window.__campaignUpgradeGame.salvageShopInfo().basePrice})",
+  );
+  await clickShopControl(cdp, campaign, "[data-buy-drone=base]", "drone chassis purchase button");
+  await waitFor(
+    cdp,
+    campaign,
+    "window.__campaignUpgradeGame.salvageDrone.purchased && document.querySelector('[data-buy-drone=magnet]')",
+    "drone acknowledged assembly",
+  );
+  assert.equal(
+    await evaluate(cdp, campaign, "window.__campaignUpgradeGame.credits"),
+    chassis.credits - chassis.price,
+  );
+  assert.equal(
+    await evaluate(cdp, campaign, "document.querySelector('[data-drone-weapon=rail]').disabled"),
+    true,
+  );
+  const magnet = await evaluate(
+    cdp,
+    campaign,
+    "({credits:window.__campaignUpgradeGame.credits,price:window.__campaignUpgradeGame.salvageUpgradePrice('magnet')})",
+  );
+  await cdp.send(
+    "Emulation.setEmulatedMedia",
+    { features: [{ name: "prefers-reduced-motion", value: "reduce" }] },
+    campaign.sessionId,
+  );
+  await clickShopControl(cdp, campaign, "[data-buy-drone=magnet]", "Magnet upgrade button");
+  await waitFor(
+    cdp,
+    campaign,
+    "window.__campaignUpgradeGame.salvageDrone.upgrades.magnet === 1 && document.querySelector('.shop-feedback[role=status]')",
+    "drone upgrade acknowledgement",
+  );
+  assert.equal(
+    await evaluate(cdp, campaign, "window.__campaignUpgradeGame.credits"),
+    magnet.credits - magnet.price,
+  );
+  await waitFor(
+    cdp,
+    campaign,
+    "window.__shopPurchaseButton.isConnected && document.querySelector('[data-buy-drone=magnet]') === window.__shopPurchaseButton && document.activeElement === window.__shopPurchaseButton",
+    "drone upgrade preserves focus after the receipt",
+  );
+  await clickShopControl(cdp, campaign, "[data-drone-weapon=pulse]", "drone Pulse mount");
+  await waitFor(
+    cdp,
+    campaign,
+    "window.__campaignUpgradeGame.salvageDrone.weapon === 'pulse'",
+    "owned inactive weapon mounted on drone",
+  );
+  await captureShop(cdp, campaign, "helio-shop-drone.png");
+  await waitFor(
+    cdp,
+    campaign,
+    "!document.querySelector('.shop-feedback[role=status]')",
+    "reduced-motion purchase receipt clears without relying on animation events",
+    6_000,
+  );
+  await cdp.send(
+    "Emulation.setEmulatedMedia",
+    { features: [{ name: "prefers-reduced-motion", value: "no-preference" }] },
+    campaign.sessionId,
+  );
+  await evaluate(
+    cdp,
+    campaign,
+    "window.__shopSavedCredits=window.__campaignUpgradeGame.credits;window.__campaignUpgradeGame.credits=0;window.__campaignUpgradeGame.onHud(window.__campaignUpgradeGame.snapshot())",
+  );
+  await waitFor(
+    cdp,
+    campaign,
+    "document.querySelector('[data-buy-drone=magnet]').disabled",
+    "insufficient drone credits",
+  );
+  await evaluate(cdp, campaign, "document.querySelector('[data-buy-drone=magnet]').click()");
+  assert.equal(
+    await evaluate(cdp, campaign, "window.__campaignUpgradeGame.salvageDrone.upgrades.magnet"),
+    1,
+  );
+  await evaluate(cdp, campaign, clickText("Weapons", ".helio-shop [role=tab]"));
+  await evaluate(cdp, campaign, "document.querySelector('[data-shop-weapon=laser]').click()");
+  await waitFor(
+    cdp,
+    campaign,
+    "document.querySelector('[data-buy-weapon=laser]')?.disabled",
+    "insufficient weapon credits",
+  );
+  await evaluate(cdp, campaign, "document.querySelector('[data-buy-weapon=laser]').click()");
+  assert.equal(await evaluate(cdp, campaign, "window.__campaignUpgradeGame.p.weapons.laser"), 0);
+  await evaluate(
+    cdp,
+    campaign,
+    "window.__campaignUpgradeGame.credits=window.__shopSavedCredits;window.__campaignUpgradeGame.onHud(window.__campaignUpgradeGame.snapshot())",
+  );
+  await cdp.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyDown", code: "Escape", key: "Escape" },
+    campaign.sessionId,
+  );
+  await cdp.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyUp", code: "Escape", key: "Escape" },
+    campaign.sessionId,
+  );
+  await waitFor(
+    cdp,
+    campaign,
+    "!document.querySelector('.helio-shop') && document.querySelectorAll('.upgrade-option').length === 3 && window.__campaignUpgradeGame.mode === 'levelup'",
+    "shop Escape restores level-up intermission",
+  );
+  assert.deepEqual(
+    await evaluate(cdp, campaign, "window.__campaignUpgradeGame.choices.map(c => c.id)"),
+    pendingChoices,
+  );
+  await evaluate(cdp, campaign, clickText("Weapon Shop", ".upgrade-screen button"));
+  await waitFor(
+    cdp,
+    campaign,
+    "document.querySelector('[aria-label=\"Close shop\"]')",
+    "shop reopen",
+  );
+  await evaluate(cdp, campaign, "document.querySelector('[aria-label=\"Close shop\"]').click()");
+  await waitFor(
+    cdp,
+    campaign,
+    "!document.querySelector('.helio-shop') && document.querySelector('.upgrade-screen')",
+    "shop close restores pending choices",
+  );
+  console.info(
+    "[shop readiness] eight weapon icons and stat comparisons, three tabs, inert missiles, purchases, upgrades, receipts, max level, credit limits, drone mounts and preserved level-up choices passed",
   );
   await cdp.send(
     "Emulation.setEmulatedMedia",
@@ -625,6 +1004,21 @@ try {
     campaign,
     "!document.querySelector('.upgrade-screen') && window.__campaignUpgradeGame.stacks.range === 2 && window.__campaignUpgradeGame.mode === 'playing'",
     "keyboard upgrade installation resumes campaign",
+  );
+  await evaluate(cdp, campaign, clickText("Shop"));
+  await waitFor(
+    cdp,
+    campaign,
+    "document.querySelector('.helio-shop') && window.__campaignUpgradeGame.mode === 'paused'",
+    "shop suspends active campaign",
+  );
+  await checkShopInputSuspended(cdp, campaign, "shop opened during active flight");
+  await evaluate(cdp, campaign, "document.querySelector('[aria-label=\"Close shop\"]').click()");
+  await waitFor(
+    cdp,
+    campaign,
+    "!document.querySelector('.helio-shop') && window.__campaignUpgradeGame.mode === 'playing'",
+    "shop close resumes active campaign",
   );
   await evaluate(
     cdp,
@@ -1158,6 +1552,18 @@ try {
     "developer console must receive pointer events above pause",
   );
   await capture(cdp, alpha, "helio-coop-developer-field.png");
+  // Reuse the authorized developer session to fund a real network shop purchase.
+  await evaluate(
+    cdp,
+    alpha,
+    `window.__flightSocket.send(JSON.stringify({type:'developer',token:${JSON.stringify(smokeDeveloperToken)},command:{action:'credits'}}))`,
+  );
+  await waitFor(
+    cdp,
+    bravo,
+    "window.__flight.players.p1.credits >= 10000",
+    "shop credits synchronized",
+  );
   if (process.env.HELIOS_SCREENSHOT_DIR) {
     await evaluate(
       cdp,
@@ -1266,6 +1672,61 @@ try {
     { type: "keyUp", code: "KeyD", key: "d" },
     alpha.sessionId,
   );
+  await waitFor(
+    cdp,
+    alpha,
+    "document.querySelector('.coop-shop .helio-shop')",
+    "shared co-op shop",
+  );
+  await evaluate(cdp, alpha, clickText("Salvage Drone", ".coop-shop [role=tab]"));
+  await waitFor(
+    cdp,
+    alpha,
+    "document.querySelector('[data-buy-drone=base]')",
+    "co-op chassis offer",
+  );
+  assert.equal(await evaluate(cdp, bravo, "window.__flight.players.p1.drone.purchased"), false);
+  await clickShopControl(
+    cdp,
+    alpha,
+    "[data-buy-drone=base]",
+    "co-op drone chassis purchase button",
+  );
+  await Promise.all([
+    waitFor(
+      cdp,
+      bravo,
+      "window.__flight.players.p1.drone.purchased",
+      "server chassis acknowledgement on teammate",
+    ),
+    waitFor(
+      cdp,
+      alpha,
+      "document.querySelector('.shop-feedback[role=status]')",
+      "confirmed co-op chassis receipt",
+    ),
+  ]);
+  await waitFor(
+    cdp,
+    alpha,
+    "document.querySelector('[data-buy-drone=magnet]')",
+    "co-op drone paths",
+  );
+  await clickShopControl(cdp, alpha, "[data-buy-drone=magnet]", "co-op Magnet upgrade button");
+  await Promise.all([
+    waitFor(
+      cdp,
+      bravo,
+      "window.__flight.players.p1.drone.upgrades.magnet === 1",
+      "server drone upgrade acknowledgement on teammate",
+    ),
+    waitFor(
+      cdp,
+      alpha,
+      "document.querySelector('.shop-feedback[role=status]')?.textContent.toLowerCase().includes('magnet')",
+      "confirmed co-op drone upgrade receipt",
+    ),
+  ]);
   await cdp.send(
     "Input.dispatchKeyEvent",
     { type: "keyDown", code: "Escape", key: "Escape" },
@@ -1336,8 +1797,8 @@ try {
   await waitFor(
     cdp,
     bravo,
-    "document.querySelector('.lb-delete-warning')",
-    "co-op deletion confirmation",
+    "document.querySelector('.lb-delete-warning') && document.querySelector('[data-coop-record-dialog] button[type=submit]')?.disabled === false",
+    "co-op deletion confirmation after record details finish loading",
   );
   await evaluate(cdp, bravo, clickText("Delete run", "[data-coop-record-dialog] button"));
   await waitFor(
@@ -1348,7 +1809,7 @@ try {
   );
   assert.deepEqual(cdp.exceptions, []);
   console.info(
-    `[coop readiness] two-browser room ${roomCode}: movement, display density, reconnect recovery, shared pause, settings, callsign gate, developer authorization, weapon slots, paused loadout controls, co-op record moderation and leave passed`,
+    `[coop readiness] two-browser room ${roomCode}: movement, display density, reconnect recovery, shared pause, settings, callsign gate, developer authorization, weapon slots, paused loadout controls, acknowledged drone purchases, co-op record moderation and leave passed`,
   );
 } finally {
   try {

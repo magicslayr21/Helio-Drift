@@ -1,24 +1,7 @@
 import { Heart, Rocket } from "lucide-react";
 import { weaponMaxLevel, WEAPON_DEFS } from "../game/balance";
-import type { Hud, WeaponId } from "../game/types";
-
-// Silhouettes follow each weapon's firing pattern so colour is not the only cue.
-const WEAPON_ICONS: Record<WeaponId, { color: string; path: string }> = {
-  pulse: { color: "#ffe0a3", path: "M11 29V15h10v14M12 11V3m8 8V3M16 20v5" },
-  spread: {
-    color: "#ffad66",
-    path: "M12 29 14 20h4l2 9M16 15V3M10 16 5 5m17 11 5-11M6 20l-4-5m24 5 4-5",
-  },
-  seeker: { color: "#ff8fb0", path: "M12 23V12l4-8 4 8v11ZM12 18l-5 7h5m8-7 5 7h-5M14 27v3m4-3v3" },
-  ricochet: { color: "#6fe7ff", path: "m3 26 12-9-6-7L26 4m-7-1 7 1-1 7M3 30h8" },
-  flak: {
-    color: "#ff7759",
-    path: "M12 29V19h8v10M16 13V3M10 14 4 8m18 6 6-6M7 20H2m23 0h5M12 7l-1-3m9 3 1-3",
-  },
-  arc: { color: "#c59aff", path: "M18 2 7 18h8l-1 12 11-17h-8ZM3 10l3 2m20 10 3 2" },
-  laser: { color: "#ff4d8d", path: "M11 30V21h10v9M16 18V1M11 16V4m10 12V4M8 21h16" },
-  rail: { color: "#b4f4ce", path: "M8 29V8m16 21V8M12 29V15m8 14V15M16 25V2m-4 5 4-5 4 5" },
-};
+import type { Hud } from "../game/types";
+import { WeaponIcon, WEAPON_ICONS } from "./ShopIcons";
 
 function Bar({
   label,
@@ -88,19 +71,7 @@ export function PlayerStatus({ hud }: { hud: Hud }) {
         aria-label={`Equipped ${weapon.name}, weapon level ${hud.weaponLevel}`}
         style={{ color: icon.color }}
       >
-        <svg
-          data-weapon={hud.primary}
-          viewBox="0 0 32 32"
-          className="h-9 w-9 shrink-0"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <path d={icon.path} />
-        </svg>
+        <WeaponIcon id={hud.primary} />
         <div className="min-w-0 flex-1">
           <p className="mb-1 flex items-center justify-between gap-2 text-xs font-semibold">
             <span className="truncate">{weapon.short}</span>

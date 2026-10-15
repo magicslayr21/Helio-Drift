@@ -8,15 +8,10 @@ import {
   type ReactNode,
 } from "react";
 import { ArrowLeft, ArrowRight, RefreshCw, Radio, Shield, Users } from "lucide-react";
-import {
-  SALVAGE_BASE_PRICE,
-  SALVAGE_UPGRADES,
-  SALVAGE_UPGRADE_ORDER,
-  WEAPON_DEFS,
-  WEAPON_ORDER,
-  weaponMaxLevel,
-} from "../game/balance";
+import { WEAPON_ORDER } from "../game/balance";
+import { Game } from "../game/engine";
 import { UpgradeOption } from "./UpgradeOption";
+import { ShopScreen } from "./ShopScreen";
 import { audio } from "../game/audio";
 import type {
   AuthoritativeSnapshot,
@@ -26,8 +21,6 @@ import type {
   PublicRoomSummary,
 } from "../game/network/protocol";
 import type { CoopEvent, CoopPlayerId } from "../game/simulation/coop-types";
-import { salvageUpgradePrice, weaponPrice } from "../game/simulation/weapons";
-import type { SalvageUpgradeId } from "../game/types";
 import {
   authenticateDeveloper,
   clearDeveloperSession,
@@ -535,6 +528,7 @@ export function MultiplayerExperience({
           <CoopShop
             player={me}
             paused={Boolean(pause)}
+            notice={notice}
             onClose={() => setShopOpen(false)}
             send={sendCommand}
           />
@@ -1178,123 +1172,91 @@ function CoopForm({
 function CoopShop({
   player,
   paused,
+  notice,
   onClose,
   send,
 }: {
   player: AuthoritativeSnapshot["state"]["players"][CoopPlayerId];
   paused: boolean;
+  notice: string;
   onClose: () => void;
   send: (message: UiCommand) => boolean;
 }) {
+  // Presentation only: reuse campaign shop statistics without advancing either simulation.
+  const presentation = useMemo(
+    () => new Game(null, { onHud() {}, onMode() {} }, { headless: true }),
+    [],
+  );
+  presentation.p = { ...player.ship, weapons: { ...player.ship.weapons } };
+  presentation.salvageDrone = { ...player.drone, upgrades: { ...player.drone.upgrades } };
+  presentation.credits = player.credits;
+  presentation.stacks = { ...player.upgrades };
+  const weapons = WEAPON_ORDER.map((id) => presentation.weaponShopInfo(id));
+  const drone = presentation.salvageShopInfo();
+
   return (
     <div className="coop-modal">
-      <div className="coop-shop">
-        <div className="coop-section-title">
-          <div>
-            <p className="deploy-eyebrow">Personal credits · {player.credits} CR</p>
-            <h2>CO-OP LOADOUT</h2>
-          </div>
-          <button onClick={onClose}>Close</button>
-        </div>
-        <h3>Weapons</h3>
-        <div className="coop-shop-grid">
-          {WEAPON_ORDER.map((id) => {
-            const level = player.ship.weapons[id];
-            const price = weaponPrice(player.ship, id);
-            return (
-              <div className="coop-shop-card" key={id}>
-                <strong>{WEAPON_DEFS[id].short}</strong>
-                <span>{level ? `Level ${level}/${weaponMaxLevel(id)}` : "Not owned"}</span>
-                <div>
+      <div
+        className="coop-shop"
+        style={{
+          width: "min(1240px, 98vw)",
+          maxHeight: "94dvh",
+          padding: 0,
+          border: 0,
+          background: "transparent",
+          boxShadow: "none",
+        }}
+      >
+        <ShopScreen
+          credits={player.credits}
+          weapons={weapons}
+          drone={drone}
+          activeWeapon={player.ship.primary}
+          onClose={onClose}
+          onBuyWeapon={(id) => {
+            send({ type: "buyWeapon", weapon: id });
+          }}
+          onBuyDrone={(id) => {
+            send(id === "base" ? { type: "buyDrone" } : { type: "buyDroneUpgrade", upgrade: id });
+          }}
+          onEquipDrone={(id) => {
+            send({ type: "equipDroneWeapon", weapon: id });
+          }}
+          onEquipWeapon={(id) => {
+            send({ type: "selectWeapon", weapon: id });
+          }}
+          notice={notice}
+          extra={
+            <>
+              {player.upgradePoints > 0 && (
+                <section className="shop-level-choices">
+                  <h3>Upgrade points · {player.upgradePoints}</h3>
+                  <div className="upgrade-choices">
+                    {(player.campaign?.choices ?? []).map((card, i) => (
+                      <UpgradeOption
+                        key={card.id}
+                        card={{ ...card, level: player.upgrades[card.id] ?? 0 }}
+                        index={i}
+                        onChoose={() => send({ type: "chooseUpgrade", upgrade: card.id })}
+                      />
+                    ))}
+                  </div>
                   <button
-                    disabled={!level || player.ship.primary === id}
-                    onClick={() => send({ type: "selectWeapon", weapon: id })}
+                    disabled={player.credits < (player.campaign?.rerollCost ?? Infinity)}
+                    onClick={() => send({ type: "rerollUpgrades" })}
                   >
-                    {player.ship.primary === id ? "Equipped" : "Equip"}
+                    Reroll · {player.campaign?.rerollCost ?? 0} CR
                   </button>
-                  <button
-                    disabled={price === null || player.credits < price}
-                    onClick={() => send({ type: "buyWeapon", weapon: id })}
-                  >
-                    {price === null ? "Max" : `${level ? "Upgrade" : "Acquire"} · ${price}`}
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-        {player.upgradePoints > 0 && (
-          <>
-            <h3>Upgrade points · {player.upgradePoints}</h3>
-            <div className="upgrade-choices">
-              {(player.campaign?.choices ?? []).map((card, i) => (
-                <UpgradeOption
-                  key={card.id}
-                  card={{ ...card, level: player.upgrades[card.id] ?? 0 }}
-                  index={i}
-                  onChoose={() => send({ type: "chooseUpgrade", upgrade: card.id })}
-                />
-              ))}
-            </div>
-            <button
-              disabled={player.credits < (player.campaign?.rerollCost ?? Infinity)}
-              onClick={() => send({ type: "rerollUpgrades" })}
-            >
-              Reroll · {player.campaign?.rerollCost ?? 0} CR
-            </button>
-          </>
-        )}
-        <h3>Salvage drone</h3>
-        {!player.drone.purchased ? (
-          <button className="coop-shop-wide" onClick={() => send({ type: "buyDrone" })}>
-            Deploy salvage drone · {SALVAGE_BASE_PRICE} CR
-          </button>
-        ) : (
-          <div className="coop-shop-grid">
-            {SALVAGE_UPGRADE_ORDER.map((id: SalvageUpgradeId) => (
-              <button
-                key={id}
-                disabled={
-                  player.drone.upgrades[id] >= SALVAGE_UPGRADES[id].max ||
-                  player.credits < (salvageUpgradePrice(player.drone, id) ?? Infinity)
-                }
-                onClick={() => send({ type: "buyDroneUpgrade", upgrade: id })}
-              >
-                <strong>{SALVAGE_UPGRADES[id].name}</strong>
-                <span>{SALVAGE_UPGRADES[id].desc}</span>
-                <small>
-                  {player.drone.upgrades[id]}/{SALVAGE_UPGRADES[id].max} ·{" "}
-                  {salvageUpgradePrice(player.drone, id) ?? "MAX"} CR
-                </small>
-              </button>
-            ))}
-          </div>
-        )}
-        {player.drone.purchased && (
-          <>
-            <h3>Drone weapon mount</h3>
-            <div className="coop-drone-mounts">
-              <button onClick={() => send({ type: "equipDroneWeapon", weapon: null })}>
-                Unarmed
-              </button>
-              {WEAPON_ORDER.filter((id) => player.ship.weapons[id] > 0).map((id) => (
-                <button
-                  key={id}
-                  disabled={player.drone.weapon === id}
-                  onClick={() => send({ type: "equipDroneWeapon", weapon: id })}
-                >
-                  {WEAPON_DEFS[id].short}
-                  {player.drone.weapon === id ? " · Mounted" : ""}
-                </button>
-              ))}
-            </div>
-          </>
-        )}
-        <p className="coop-help">
-          {paused
-            ? "Both pilots are paused. The shared 30-second countdown still applies."
-            : "Combat continues while this panel is open."}
-        </p>
+                </section>
+              )}
+              <p className="shop-combat-notice">
+                {paused
+                  ? "Both pilots are paused. The shared 30-second countdown still applies."
+                  : "Combat continues while this panel is open."}
+              </p>
+            </>
+          }
+        />
       </div>
     </div>
   );
