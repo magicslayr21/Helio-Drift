@@ -1117,11 +1117,69 @@ try {
     bravo,
     `(() => { const input = document.querySelector('.coop-code-input'); const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; setter.call(input, ${JSON.stringify(roomCode)}); input.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`,
   );
+  // Exercise both kinds of interrupted joins: a request that never reaches the
+  // Worker and a committed join whose response never reaches the caller. Keep
+  // capability bodies inside this test browser; diagnostics expose no tokens.
+  await evaluate(
+    cdp,
+    bravo,
+    `(() => {
+      const originalFetch = window.fetch;
+      window.__joinFault = {bodies:[], committed:false};
+      window.__restoreJoinFetch = () => { window.fetch = originalFetch; };
+      window.fetch = async (...args) => {
+        const [input, options] = args;
+        const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+        if (options?.method !== 'POST' ||
+            !url.pathname.endsWith('/rooms/' + ${JSON.stringify(roomCode)} + '/join'))
+          return originalFetch.apply(window, args);
+        const fault = window.__joinFault;
+        fault.bodies.push(JSON.parse(options.body));
+        if (fault.bodies.length === 1) throw new TypeError('Failed to fetch');
+        const response = await originalFetch.apply(window, args);
+        if (fault.bodies.length === 2) {
+          await response.text();
+          fault.committed = response.ok;
+          throw new TypeError('Failed to fetch');
+        }
+        return response;
+      };
+    })()`,
+  );
   assert.equal(await evaluate(cdp, bravo, clickText("Join room")), true);
   await Promise.all([
     waitFor(cdp, alpha, "document.body.innerText.includes('Smoke Bravo')", "second pilot in room"),
     waitFor(cdp, bravo, "document.body.innerText.includes('Smoke Alpha')", "first pilot in room"),
   ]);
+  const joinRecovery = await evaluate(
+    cdp,
+    bravo,
+    `(() => {
+      window.__restoreJoinFetch();
+      const {bodies, committed} = window.__joinFault;
+      return {attempts:bodies.length, committed,
+        validTokens:bodies.every(body => /^[A-Za-z0-9_-]{43}$/.test(body.joinToken)),
+        sameToken:new Set(bodies.map(body => body.joinToken)).size === 1,
+        correctCallsign:bodies.every(body => body.callsign === 'Smoke Bravo')};
+    })()`,
+  );
+  assert.deepEqual(joinRecovery, {
+    attempts: 3,
+    committed: true,
+    validTokens: true,
+    sameToken: true,
+    correctCallsign: true,
+  });
+  const joinedRoomResponse = await multiplayer.dispatchFetch(
+    `https://multiplayer.example/api/rooms/${roomCode}`,
+  );
+  assert.equal(joinedRoomResponse.status, 200);
+  const { room: joinedRoom } = await joinedRoomResponse.json();
+  assert.equal(joinedRoom.playerCount, 2);
+  assert.equal(joinedRoom.capacity, 2);
+  assert.equal(joinedRoom.joinable, false);
+  assert.equal(joinedRoom.players.p1.callsign, "Smoke Alpha");
+  assert.equal(joinedRoom.players.p2.callsign, "Smoke Bravo");
   await Promise.all([
     waitFor(
       cdp,
@@ -1809,7 +1867,7 @@ try {
   );
   assert.deepEqual(cdp.exceptions, []);
   console.info(
-    `[coop readiness] two-browser room ${roomCode}: movement, display density, reconnect recovery, shared pause, settings, callsign gate, developer authorization, weapon slots, paused loadout controls, acknowledged drone purchases, co-op record moderation and leave passed`,
+    `[coop readiness] two-browser room ${roomCode}: interrupted join recovery, movement, display density, reconnect recovery, shared pause, settings, callsign gate, developer authorization, weapon slots, paused loadout controls, acknowledged drone purchases, co-op record moderation and leave passed`,
   );
 } finally {
   try {

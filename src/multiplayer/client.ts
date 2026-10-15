@@ -7,7 +7,7 @@ import type {
 import type { CoopPlayerId } from "../game/simulation/coop-types";
 
 const viteEnvironment = import.meta.env ?? ({} as ImportMetaEnv);
-const configuredUrl = (viteEnvironment.VITE_MULTIPLAYER_URL || "").trim().replace(/\/$/, "");
+const configuredUrl = (viteEnvironment.VITE_MULTIPLAYER_URL || "").trim().replace(/\/+$/, "");
 const API = configuredUrl || (viteEnvironment.DEV ? "/multiplayer-api" : "");
 const SESSION_KEY = "helios-coop-session-v1";
 
@@ -36,12 +36,44 @@ export class MultiplayerError extends Error {
 
 export const isMultiplayerConfigured = () => Boolean(API);
 
-async function request<T>(path: string, options: RequestInit = {}, token?: string): Promise<T> {
-  if (!API) throw new Error("Online co-op is not connected yet.");
+const RETRY_DELAYS = [500, 1000];
+const PENDING_JOIN_KEY = "helios-coop-pending-joins-v1";
+const JOIN_LIFETIME_MS = 10 * 60_000;
+const JOIN_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+interface PendingJoin {
+  target: string;
+  callsign: string;
+  joinToken: string;
+  createdAt: number;
+}
+let pendingJoins: PendingJoin[] = [];
+
+class MultiplayerTransportError extends Error {}
+
+const abortReason = (signal?: AbortSignal | null) =>
+  signal?.reason ?? new DOMException("The request was cancelled.", "AbortError");
+
+function pauseBeforeRetry(ms: number, signal?: AbortSignal | null): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortReason(signal));
+  return new Promise((resolve, reject) => {
+    const cancel = () => {
+      window.clearTimeout(timer);
+      signal?.removeEventListener("abort", cancel);
+      reject(abortReason(signal));
+    };
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener("abort", cancel);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", cancel, { once: true });
+  });
+}
+
+async function requestOnce<T>(path: string, options: RequestInit, token?: string): Promise<T> {
+  if (options.signal?.aborted) throw abortReason(options.signal);
   const controller = new AbortController();
   const abort = () => controller.abort();
   options.signal?.addEventListener("abort", abort, { once: true });
-  if (options.signal?.aborted) controller.abort();
   const timeout = window.setTimeout(abort, 15_000);
   try {
     const response = await fetch(`${API}${path}`, {
@@ -55,23 +87,149 @@ async function request<T>(path: string, options: RequestInit = {}, token?: strin
         ...options.headers,
       },
     });
-    const body = await response.json().catch(() => null);
+    let body;
+    try {
+      body = await response.json();
+    } catch {
+      // A gateway page or a dropped response body can arrive after a valid
+      // request has committed. Preserve its retry identity instead of claiming
+      // that the room is invalid or creating another player slot.
+      if (response.ok)
+        throw new MultiplayerTransportError(
+          "Online co-op returned an incomplete response. Please try again.",
+        );
+    }
     if (!response.ok) {
       throw new MultiplayerError(
-        typeof body?.error === "string" ? body.error : "Online co-op request failed.",
+        typeof body?.error === "string"
+          ? body.error
+          : "Online co-op is temporarily unavailable. Please try again.",
         response.status,
       );
     }
-    if (body === null) throw new Error("Online co-op returned an invalid response.");
+    if (body === null || body === undefined)
+      throw new MultiplayerTransportError(
+        "Online co-op returned an incomplete response. Please try again.",
+      );
     return body as T;
   } catch (error) {
-    if (options.signal?.aborted) throw error;
-    if (controller.signal.aborted) throw new Error("Online co-op took too long to respond.");
-    if (error instanceof TypeError) throw new Error("Unable to reach the online co-op service.");
+    if (options.signal?.aborted) throw abortReason(options.signal);
+    if (controller.signal.aborted)
+      throw new MultiplayerTransportError(
+        "Online co-op took too long to respond. Please try again.",
+      );
+    if (
+      error instanceof TypeError ||
+      (error instanceof DOMException && error.name === "NetworkError")
+    )
+      throw new MultiplayerTransportError(
+        "Unable to reach the online co-op service. Check your connection and try again.",
+      );
     throw error;
   } finally {
     window.clearTimeout(timeout);
     options.signal?.removeEventListener("abort", abort);
+  }
+}
+
+async function request<T>(
+  path: string,
+  options: RequestInit = {},
+  token?: string,
+  retrySafe = false,
+): Promise<T> {
+  if (!API) throw new Error("Online co-op is not connected yet.");
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await requestOnce<T>(path, options, token);
+    } catch (error) {
+      if (options.signal?.aborted) throw abortReason(options.signal);
+      const transient =
+        error instanceof MultiplayerTransportError ||
+        (error instanceof MultiplayerError && (error.status === 408 || error.status >= 500));
+      if (!retrySafe || !transient || attempt >= RETRY_DELAYS.length) throw error;
+      await pauseBeforeRetry(RETRY_DELAYS[attempt], options.signal);
+    }
+  }
+}
+
+function writePendingJoins(entries: PendingJoin[]) {
+  pendingJoins = entries;
+  try {
+    localStorage.setItem(PENDING_JOIN_KEY, JSON.stringify(entries));
+  } catch {
+    /* Memory still protects retries when storage is unavailable. */
+  }
+}
+
+function readPendingJoins() {
+  let saved: unknown = [];
+  try {
+    saved = JSON.parse(localStorage.getItem(PENDING_JOIN_KEY) ?? "[]");
+  } catch {
+    /* Use the live attempt if storage is unavailable. */
+  }
+  const merged = new Map<string, PendingJoin>();
+  for (const entry of [...(Array.isArray(saved) ? saved : []), ...pendingJoins]) {
+    if (
+      !entry ||
+      typeof entry.target !== "string" ||
+      entry.target.length > 128 ||
+      typeof entry.callsign !== "string" ||
+      entry.callsign.length > 24 ||
+      typeof entry.joinToken !== "string" ||
+      !JOIN_TOKEN.test(entry.joinToken) ||
+      !Number.isFinite(entry.createdAt)
+    )
+      continue;
+    const age = Date.now() - entry.createdAt;
+    if (age < 0 || age >= JOIN_LIFETIME_MS) continue;
+    const key = JSON.stringify([entry.target, entry.callsign]);
+    const previous = merged.get(key);
+    if (!previous || previous.createdAt <= entry.createdAt) merged.set(key, entry);
+  }
+  return [...merged.values()].sort((a, b) => b.createdAt - a.createdAt).slice(0, 8);
+}
+
+function pendingJoin(target: string, callsign: string): PendingJoin {
+  const entries = readPendingJoins();
+  const existing = entries.find((entry) => entry.target === target && entry.callsign === callsign);
+  if (existing) return existing;
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  const joinToken = btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=/g, "");
+  const next = { target, callsign, joinToken, createdAt: Date.now() };
+  writePendingJoins([next, ...entries].slice(0, 8));
+  return next;
+}
+
+function finishJoin(attempt: PendingJoin) {
+  writePendingJoins(readPendingJoins().filter((entry) => entry.joinToken !== attempt.joinToken));
+}
+
+async function join(path: string, target: string, callsign: string): Promise<CoopSession> {
+  const attempt = pendingJoin(target, callsign.trim().replace(/\s+/g, " "));
+  try {
+    const session = await request<CoopSession>(
+      path,
+      {
+        method: "POST",
+        body: JSON.stringify({ callsign: attempt.callsign, joinToken: attempt.joinToken }),
+      },
+      undefined,
+      true,
+    );
+    saveCoopSession(session);
+    finishJoin(attempt);
+    return session;
+  } catch (error) {
+    // A rate limit or access check can fail before the room sees a replay.
+    // Keep its capability so a later manual retry can recover a committed slot.
+    if (error instanceof MultiplayerError && [400, 404, 409, 410, 422].includes(error.status))
+      finishJoin(attempt);
+    throw error;
   }
 }
 
@@ -87,13 +245,20 @@ export const createPrivateRoom = (callsign: string, developerToken: string) =>
   create("/rooms/private", { callsign }, developerToken);
 export const createPublicRoom = (callsign: string, name: string, developerToken: string) =>
   create("/rooms/public", { callsign, name }, developerToken);
-export const quickJoinRoom = (callsign: string) => create("/rooms/quick", { callsign });
+export const quickJoinRoom = (callsign: string) => join("/rooms/quick", "quick", callsign);
 export const joinRoom = (callsign: string, code: string) =>
-  create(`/rooms/${encodeURIComponent(code.trim().toUpperCase())}/join`, { callsign });
+  join(
+    `/rooms/${encodeURIComponent(code.trim().toUpperCase())}/join`,
+    `room:${code.trim().toUpperCase()}`,
+    callsign,
+  );
 export const getPublicRooms = (cursor = "", limit = 20, signal?: AbortSignal) =>
-  request<PublicRoomPage>(`/rooms/public?limit=${limit}&cursor=${encodeURIComponent(cursor)}`, {
-    signal,
-  });
+  request<PublicRoomPage>(
+    `/rooms/public?limit=${limit}&cursor=${encodeURIComponent(cursor)}`,
+    { signal },
+    undefined,
+    true,
+  );
 
 export function saveCoopSession(session: CoopSession) {
   try {

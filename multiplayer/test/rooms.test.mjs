@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { multiplayerFixture } from "./fixture.mjs";
+import { MatchRoom } from "../../multiplayer-dist/worker.js";
 
 const send = (socket, message) => socket.send(JSON.stringify(message));
 
@@ -454,6 +455,240 @@ test("room storage survives process restart and reconnect tokens reclaim the sam
   const welcome = await app.nextMessage(socket, (message) => message.type === "welcome");
   assert.equal(welcome.playerId, "p1");
   assert.equal(welcome.room.players.p1.callsign, "Persistent Pilot");
+});
+
+test("a lost direct join response replays the same private slot after restart", async (t) => {
+  const app = await multiplayerFixture(t);
+  const first = await app.create("Original Pilot");
+  const joinToken = "J".repeat(43);
+  const body = { callsign: "Retry Pilot", joinToken };
+  const firstJoin = await app.request(`/rooms/${first.roomCode}/join`, { method: "POST", body });
+  assert.equal(firstJoin.status, 200);
+  assert.equal(firstJoin.data.reconnectToken, joinToken);
+  await app.restart();
+  const repeated = await app.request(`/rooms/${first.roomCode}/join`, { method: "POST", body });
+  assert.equal(repeated.status, 200);
+  assert.deepEqual(repeated.data, firstJoin.data);
+  const [parallelOne, parallelTwo] = await Promise.all([
+    app.request(`/rooms/${first.roomCode}/join`, { method: "POST", body }),
+    app.request(`/rooms/${first.roomCode}/join`, { method: "POST", body }),
+  ]);
+  assert.deepEqual(parallelOne.data, repeated.data);
+  assert.deepEqual(parallelTwo.data, repeated.data);
+  const intruder = await app.request(`/rooms/${first.roomCode}/join`, {
+    method: "POST",
+    body: { callsign: "Retry Pilot", joinToken: "K".repeat(43) },
+  });
+  assert.equal(intruder.status, 409);
+  const wrongCallsign = await app.request(`/rooms/${first.roomCode}/join`, {
+    method: "POST",
+    body: { ...body, callsign: "Other Pilot" },
+  });
+  assert.equal(wrongCallsign.status, 409);
+  const status = await app.request(`/rooms/${first.roomCode}`);
+  assert.equal(status.data.room.players.p2.callsign, "Retry Pilot");
+  assert.equal(JSON.stringify(status.data).includes(joinToken), false);
+  assert.equal(JSON.stringify(status.data).includes("joinAttempts"), false);
+
+  const a = await app.connect(first),
+    b = await app.connect(repeated.data);
+  send(a.socket, { type: "ready", ready: true });
+  send(b.socket, { type: "ready", ready: true });
+  await app.nextMessage(
+    a.socket,
+    (m) => m.type === "room" && m.room.players.p1.ready && m.room.players.p2?.ready,
+  );
+  send(a.socket, { type: "start" });
+  await app.nextMessage(a.socket, (m) => m.type === "snapshot");
+  const runningReplay = await app.request(`/rooms/${first.roomCode}/join`, {
+    method: "POST",
+    body,
+  });
+  assert.equal(runningReplay.status, 200);
+  assert.equal(runningReplay.data.playerId, "p2");
+  assert.equal(runningReplay.data.reconnectToken, joinToken);
+  assert.equal(runningReplay.data.room.phase, "running");
+});
+
+test("join tokens cannot reclaim a departed or replaced player", async (t) => {
+  const app = await multiplayerFixture(t);
+  const first = await app.create("Original Pilot");
+  const body = { callsign: "Departing Pilot", joinToken: "L".repeat(43) };
+  const joined = await app.request(`/rooms/${first.roomCode}/join`, { method: "POST", body });
+  const { socket } = await app.connect(joined.data);
+  await app.nextMessage(socket, (m) => m.type === "welcome");
+  const closed = app.nextClose(socket);
+  send(socket, { type: "leave" });
+  await closed;
+  let repeated = await app.request(`/rooms/${first.roomCode}/join`, { method: "POST", body });
+  assert.equal(repeated.status, 409);
+  assert.equal(repeated.data.code, "join_unavailable");
+  const replacement = await app.joinRoom(first.roomCode, "Replacement Pilot");
+  assert.equal(replacement.status, 200);
+  await app.restart();
+  repeated = await app.request(`/rooms/${first.roomCode}/join`, { method: "POST", body });
+  assert.equal(repeated.status, 409);
+  const status = await app.request(`/rooms/${first.roomCode}`);
+  assert.equal(status.data.room.players.p2.callsign, "Replacement Pilot");
+});
+
+test("malformed join tokens are rejected before claiming any room slot", async (t) => {
+  const app = await multiplayerFixture(t);
+  const first = await app.create();
+  for (const joinToken of [null, 123, "short", "!".repeat(43)]) {
+    const response = await app.request(`/rooms/${first.roomCode}/join`, {
+      method: "POST",
+      body: { callsign: "Retry Pilot", joinToken },
+      headers: { Origin: "http://localhost:5173" },
+    });
+    assert.equal(response.status, 400);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "http://localhost:5173");
+  }
+  assert.equal((await app.request(`/rooms/${first.roomCode}`)).data.room.playerCount, 1);
+});
+
+test("a failed join checkpoint rolls back the uncommitted slot before retry", async () => {
+  const actor = new MatchRoom(
+    {
+      storage: { get: async () => undefined },
+      blockConcurrencyWhile: (operation) => operation(),
+      getWebSockets: () => [],
+    },
+    {},
+  );
+  await actor.ready;
+  actor.room = {
+    code: "ABC234",
+    phase: "waiting",
+    visibility: "private",
+    players: { p1: { id: "p1", callsign: "Original Pilot" }, p2: null },
+    updatedAt: 123,
+  };
+  let committed = false;
+  actor.persist = async () => {
+    if (!committed) throw new Error("injected checkpoint failure");
+  };
+  const join = () =>
+    actor.fetch(
+      new Request("https://room.internal/internal/join", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ callsign: "Retry Pilot", joinToken: "X".repeat(43) }),
+      }),
+    );
+  assert.equal((await join()).status, 500);
+  assert.equal(actor.room.players.p2, null);
+  assert.equal(actor.room.updatedAt, 123);
+  assert.deepEqual(actor.room.joinAttempts, {});
+  committed = true;
+  const retried = await join();
+  assert.equal(retried.status, 200);
+  assert.equal((await retried.json()).reconnectToken, "X".repeat(43));
+});
+
+test("leaving a room never holds its operation lock waiting for the lobby", async () => {
+  const background = [];
+  const actor = new MatchRoom(
+    {
+      storage: { get: async () => undefined },
+      blockConcurrencyWhile: (operation) => operation(),
+      getWebSockets: () => [],
+      waitUntil: (promise) => background.push(promise),
+    },
+    {},
+  );
+  await actor.ready;
+  actor.room = {
+    code: "ABC234",
+    phase: "waiting",
+    visibility: "public",
+    tickets: [],
+    players: {
+      p1: { id: "p1", callsign: "Original Pilot" },
+      p2: { id: "p2", callsign: "Departing Pilot" },
+    },
+  };
+  actor.persist = async () => {};
+  actor.scheduleAlarm = async () => {};
+  let unblock;
+  actor.syncLobby = () =>
+    new Promise((resolve) => {
+      unblock = resolve;
+    });
+  const leaving = actor.exclusive(() => actor.leave({ close() {} }, "p2"));
+  let timeout;
+  try {
+    const completed = await Promise.race([
+      leaving.then(() => true),
+      new Promise((resolve) => {
+        timeout = setTimeout(() => resolve(false), 500);
+      }),
+    ]);
+    assert.equal(completed, true, "The room must release its lock before the lobby responds");
+    assert.equal(background.length, 1);
+    assert.equal(actor.room.players.p2, null);
+  } finally {
+    clearTimeout(timeout);
+    unblock?.();
+    await leaving;
+    await Promise.all(background);
+  }
+});
+
+test("a blocked lobby cannot deadlock concurrent room start and join", async () => {
+  const background = [];
+  const actor = new MatchRoom(
+    {
+      storage: { get: async () => undefined },
+      blockConcurrencyWhile: (operation) => operation(),
+      getWebSockets: () => [],
+      waitUntil: (promise) => background.push(promise),
+    },
+    {},
+  );
+  await actor.ready;
+  actor.room = {
+    code: "ABC234",
+    phase: "waiting",
+    visibility: "public",
+    seed: 10,
+    players: {
+      p1: { id: "p1", callsign: "Alpha", ready: true },
+      p2: { id: "p2", callsign: "Bravo", ready: true },
+    },
+  };
+  actor.persist = async () => {};
+  actor.ensureClock = () => {};
+  let unblock;
+  actor.syncLobby = () =>
+    new Promise((resolve) => {
+      unblock = resolve;
+    });
+  const started = actor.exclusive(() => actor.startMatch({ send() {} }));
+  const joined = actor.fetch(
+    new Request("https://room.internal/internal/join", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callsign: "Third Pilot", joinToken: "Z".repeat(43) }),
+    }),
+  );
+  let timeout;
+  try {
+    const result = await Promise.race([
+      joined,
+      new Promise((resolve) => {
+        timeout = setTimeout(() => resolve(null), 500);
+      }),
+    ]);
+    assert.equal(result?.status, 409, "Room join must resolve while discovery remains blocked");
+    assert.equal(actor.room.phase, "running");
+  } finally {
+    clearTimeout(timeout);
+    unblock?.();
+    await started;
+    await joined;
+    await Promise.all(background);
+  }
 });
 
 test("creator disconnect does not grant host authority or prevent player two starting", async (t) => {

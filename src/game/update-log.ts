@@ -1,5 +1,21 @@
 export const UPDATE_LOG = [
   {
+    version: "0.6.5-alpha.1",
+    date: "2026-10-16",
+    title: "Reliable boarding",
+    sections: [
+      {
+        title: "MULTIPLAYER",
+        items: [
+          "Joining and room browsing recover from temporary connection failures.",
+          "Lost join replies recover the same pilot slot instead of leaving a full room.",
+          "Quick Join and room updates no longer block each other.",
+          "Unfinished join attempts can recover after refreshing.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.6.4-alpha.1",
     date: "2026-10-15",
     title: "The equipment exchange",

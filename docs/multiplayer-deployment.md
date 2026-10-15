@@ -393,3 +393,21 @@ The redesigned equipment shop is a frontend update. No Worker redeployment or da
 migration is required for its tabs, icons, comparisons and purchase confirmations. Campaign
 and co-op continue to use the existing purchase and equipment commands. The Missiles tab
 is visibly in development and inactive.
+
+## Updating to 0.6.5-alpha.1
+
+Deploy the multiplayer Worker and publish the frontend together. The Worker accepts a stable
+join capability so retries recover an already-claimed slot, including Quick Join. It also moves
+room-discovery updates out of the critical room-operation path to avoid a cross-object wait cycle.
+No new D1 migration or leaderboard Worker deployment is required. Existing rooms and legacy
+clients continue to work. Deploy the multiplayer Worker before testing the new retry behaviour.
+
+```powershell
+git fetch origin
+git merge origin/main --no-edit
+npm.cmd ci
+npx.cmd wrangler deploy --config wrangler.multiplayer.jsonc
+```
+
+Wait for GitHub Pages to finish publishing, then refresh the game with Ctrl + F5. Keep your
+existing database bindings, service URL and allowed origins.

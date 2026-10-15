@@ -39,8 +39,17 @@ globalThis.localStorage = {
   removeItem: (key) => values.delete(key),
 };
 
-const { CoopConnection, apiToWebSocketUrl, clearCoopSession, loadCoopSession, saveCoopSession } =
-  await import("../src/multiplayer/client.ts");
+const {
+  CoopConnection,
+  apiToWebSocketUrl,
+  clearCoopSession,
+  createPrivateRoom,
+  getPublicRooms,
+  joinRoom,
+  loadCoopSession,
+  quickJoinRoom,
+  saveCoopSession,
+} = await import("../src/multiplayer/client.ts");
 
 const room = {
   code: "ABC234",
@@ -151,9 +160,294 @@ function connectionFixture(t, fetchTicket) {
   return { connection, sockets, states, messages, session, requests: () => requests };
 }
 const flush = async () => {
-  for (let i = 0; i < 12; i++) await Promise.resolve();
+  for (let i = 0; i < 24; i++) await Promise.resolve();
+};
+const advance = async (t, duration = 3_000) => {
+  for (let elapsed = 0; elapsed < duration; elapsed += 250) {
+    t.mock.timers.tick(Math.min(250, duration - elapsed));
+    await flush();
+  }
 };
 const welcome = { type: "welcome", playerId: "p1", room };
+
+function requestFixture(t, responder) {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
+  const previous = globalThis.window;
+  globalThis.window = { ...previous, setTimeout, clearTimeout };
+  values.clear();
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    const request = { url, ...options, body: options.body && JSON.parse(options.body) };
+    requests.push(request);
+    return responder(request, requests.length);
+  });
+  t.after(() => {
+    globalThis.window = previous;
+    values.clear();
+  });
+  return requests;
+}
+
+const successfulJoin = () => ({
+  ok: true,
+  json: async () => ({
+    roomCode: room.code,
+    playerId: "p2",
+    reconnectToken: "B".repeat(43),
+    room,
+  }),
+});
+
+test("joining recovers from a dropped response with the same secure admission token", async (t) => {
+  const requests = requestFixture(t, (_request, attempt) => {
+    if (attempt === 1) throw new TypeError("Failed to fetch");
+    return successfulJoin();
+  });
+  const joining = joinRoom("Retry Alpha", " abc234 ");
+  await flush();
+  assert.equal(requests.length, 1);
+  await advance(t);
+  const session = await joining;
+  assert.equal(requests.length, 2);
+  assert.match(requests[0].url, /\/rooms\/ABC234\/join$/);
+  assert.match(requests[0].body.joinToken, /^[A-Za-z0-9_-]{43}$/);
+  assert.deepEqual(requests[1].body, requests[0].body);
+  assert.equal(loadCoopSession().reconnectToken, session.reconnectToken);
+});
+
+test("an exhausted join can be tried again without losing its reserved identity", async (t) => {
+  let available = false;
+  const requests = requestFixture(t, () => {
+    if (!available) throw new TypeError("Failed to fetch");
+    return successfulJoin();
+  });
+  const first = assert.rejects(joinRoom("Lost Alpha", "ABC235"), /reach|connection|network/i);
+  await flush();
+  await advance(t);
+  await first;
+  assert.equal(requests.length, 3);
+  const token = requests[0].body.joinToken;
+  assert.equal(requests.every((request) => request.body.joinToken === token), true);
+  available = true;
+  await joinRoom(" Lost Alpha ", " abc235 ");
+  assert.equal(requests.length, 4);
+  assert.equal(requests[3].body.joinToken, token);
+});
+
+test("manual retry after a rate-limited replay keeps the original reserved identity", async (t) => {
+  const requests = requestFixture(t, (_request, attempt) => {
+    if (attempt === 1) throw new TypeError("The join response was lost after admission.");
+    if (attempt === 2)
+      return {
+        ok: false,
+        status: 429,
+        json: async () => ({ error: "Please wait before trying again." }),
+      };
+    return successfulJoin();
+  });
+  const interrupted = assert.rejects(joinRoom("Rate Limited Pilot", "ABC239"), {
+    status: 429,
+    message: "Please wait before trying again.",
+  });
+  await flush();
+  await advance(t);
+  await interrupted;
+  assert.equal(requests.length, 2);
+  const token = requests[0].body.joinToken;
+  assert.equal(requests[1].body.joinToken, token);
+  await joinRoom("Rate Limited Pilot", "ABC239");
+  assert.equal(requests.length, 3);
+  assert.equal(requests[2].body.joinToken, token);
+});
+
+test("an expired pending admission rotates its capability before a later join", async (t) => {
+  let available = false;
+  const requests = requestFixture(t, () => {
+    if (!available) throw new TypeError("Failed to fetch");
+    return successfulJoin();
+  });
+  const interrupted = assert.rejects(joinRoom("Expired Pilot", "ABC23A"), /reach|connection/i);
+  await flush();
+  await advance(t);
+  await interrupted;
+  assert.equal(requests.length, 3);
+  const expiredToken = requests[0].body.joinToken;
+  t.mock.timers.tick(10 * 60_000);
+  available = true;
+  await joinRoom("Expired Pilot", "ABC23A");
+  assert.equal(requests.length, 4);
+  assert.match(requests[3].body.joinToken, /^[A-Za-z0-9_-]{43}$/);
+  assert.notEqual(requests[3].body.joinToken, expiredToken);
+});
+
+test("quick join preserves admission identity while recovering a lost response", async (t) => {
+  const requests = requestFixture(t, (_request, attempt) => {
+    if (attempt < 3) throw new TypeError("Load failed");
+    return successfulJoin();
+  });
+  const joining = quickJoinRoom("Quick Alpha");
+  await flush();
+  await advance(t);
+  await joining;
+  assert.equal(requests.length, 3);
+  assert.match(requests[0].url, /\/rooms\/quick$/);
+  assert.match(requests[0].body.joinToken, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(
+    requests.every((request) => request.body.joinToken === requests[0].body.joinToken),
+    true,
+  );
+});
+
+test("pending admissions do not share a capability between different pilots or rooms", async (t) => {
+  const requests = requestFixture(t, () => {
+    throw new TypeError("Failed to fetch");
+  });
+  for (const [callsign, code] of [
+    ["First Pilot", "ABC237"],
+    ["Second Pilot", "ABC237"],
+    ["First Pilot", "ABC238"],
+  ]) {
+    const rejected = assert.rejects(joinRoom(callsign, code), /reach|connection|network/i);
+    await flush();
+    await advance(t);
+    await rejected;
+  }
+  assert.equal(requests.length, 9);
+  assert.equal(new Set([requests[0], requests[3], requests[6]].map((r) => r.body.joinToken)).size, 3);
+});
+
+test("permanent join errors retain the server explanation and are never retried", async (t) => {
+  let status = 409;
+  const requests = requestFixture(t, () => ({
+    ok: false,
+    status,
+    json: async () => ({ error: `Room admission rejected (${status}).` }),
+  }));
+  for (status of [400, 401, 403, 404, 409, 410, 422, 429]) {
+    const count = requests.length;
+    const rejected = assert.rejects(joinRoom(`Rejected ${status}`, "ABC236"), (error) => {
+      assert.equal(error.status, status);
+      assert.equal(error.message, `Room admission rejected (${status}).`);
+      return true;
+    });
+    await flush();
+    await advance(t);
+    await rejected;
+    assert.equal(requests.length, count + 1);
+  }
+});
+
+test("room browsing retries temporary gateway responses even when the body is HTML", async (t) => {
+  const page = { rooms: [], nextCursor: "next-page" };
+  const requests = requestFixture(t, (_request, attempt) =>
+    attempt === 1
+      ? {
+          ok: false,
+          status: 502,
+          json: async () => {
+            throw new SyntaxError("Unexpected token '<'");
+          },
+        }
+      : { ok: true, json: async () => page },
+  );
+  const browsing = getPublicRooms("cursor /?", 10);
+  await flush();
+  await advance(t);
+  assert.deepEqual(await browsing, page);
+  assert.equal(requests.length, 2);
+  assert.match(requests[0].url, /limit=10&cursor=cursor%20%2F%3F$/);
+  assert.equal(requests[1].url, requests[0].url);
+});
+
+test("safe room requests retry transient HTTP errors but stop after three attempts", async (t) => {
+  let status = 408;
+  const requests = requestFixture(t, () => ({
+    ok: false,
+    status,
+    json: async () => ({ error: "Temporary relay outage." }),
+  }));
+  for (status of [408, 500, 502, 503, 504]) {
+    const count = requests.length;
+    const rejected = assert.rejects(getPublicRooms(), (error) => {
+      assert.equal(error.status, status);
+      return true;
+    });
+    await flush();
+    await advance(t);
+    await rejected;
+    assert.equal(requests.length, count + 3);
+  }
+});
+
+test("an invalid successful gateway body can recover without exposing a JSON error", async (t) => {
+  const page = { rooms: [], nextCursor: null };
+  const requests = requestFixture(t, (_request, attempt) =>
+    attempt === 1
+      ? {
+          ok: true,
+          json: async () => {
+            throw new SyntaxError("Unexpected token '<'");
+          },
+        }
+      : { ok: true, json: async () => page },
+  );
+  const browsing = getPublicRooms();
+  await flush();
+  await advance(t);
+  assert.deepEqual(await browsing, page);
+  assert.equal(requests.length, 2);
+});
+
+test("room request timeouts retry within a bounded window and report a useful error", async (t) => {
+  const requests = requestFixture(
+    t,
+    ({ signal }) =>
+      new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
+  );
+  const browsing = assert.rejects(getPublicRooms(), /too long|timed out/i);
+  await flush();
+  await advance(t, 48_000);
+  await browsing;
+  assert.equal(requests.length, 3);
+  assert.equal(requests.every((request) => request.signal.aborted), true);
+});
+
+test("aborting a browse during retry backoff prevents further requests", async (t) => {
+  const requests = requestFixture(t, () => {
+    throw new TypeError("Failed to fetch");
+  });
+  const controller = new AbortController();
+  const browsing = assert.rejects(getPublicRooms("", 20, controller.signal), {
+    name: "AbortError",
+  });
+  await flush();
+  assert.equal(requests.length, 1);
+  controller.abort();
+  await browsing;
+  await advance(t);
+  assert.equal(requests.length, 1);
+});
+
+test("an already cancelled room browser never sends a network request", async (t) => {
+  const requests = requestFixture(t, () => ({ ok: true, json: async () => ({ rooms: [] }) }));
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(getPublicRooms("", 20, controller.signal), { name: "AbortError" });
+  assert.equal(requests.length, 0);
+});
+
+test("room creation does not repeat an operation whose result was lost", async (t) => {
+  const requests = requestFixture(t, () => {
+    throw new TypeError("Failed to fetch");
+  });
+  const creating = assert.rejects(createPrivateRoom("Host", "developer-token"), /reach|connection/i);
+  await flush();
+  await advance(t);
+  await creating;
+  assert.equal(requests.length, 1);
+});
 
 test("stalled handshakes retry with a fresh ticket and require welcome before connected", async (t) => {
   const f = connectionFixture(t);

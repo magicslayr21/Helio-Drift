@@ -124,6 +124,14 @@ function bearer(request) {
   return TOKEN_PATTERN.test(token) ? token : null;
 }
 
+function joinTokenFrom(body) {
+  if (body.joinToken === undefined) return null;
+  if (typeof body.joinToken !== "string" || !TOKEN_PATTERN.test(body.joinToken)) {
+    throw new RequestError(400, "Join token is invalid.");
+  }
+  return body.joinToken;
+}
+
 async function requireDeveloperSession(request, env) {
   const token = bearer(request);
   if (!token) throw new RequestError(401, "Developer authorization is required to host a room.");
@@ -162,6 +170,7 @@ async function lobbyRequest(env, path, init) {
 
 function withCors(response, headers) {
   const merged = new Headers(response.headers);
+  merged.delete("X-Helio-Room-Revision");
   for (const [name, value] of headers) merged.set(name, value);
   return new Response(response.body, {
     status: response.status,
@@ -252,12 +261,13 @@ export async function handleRequest(request, env) {
       rateLimit(`quick:${address}`, 40, 60_000);
       const body = await readJson(request);
       const callsign = normalizeCallsign(body.callsign);
+      const joinToken = joinTokenFrom(body);
       if (!callsign) throw new RequestError(400, "Callsign must be 2–24 safe characters.");
       return withCors(
         await lobbyRequest(env, "/internal/quick", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ callsign }),
+          body: JSON.stringify({ callsign, ...(joinToken ? { joinToken } : {}) }),
         }),
         headers,
       );
@@ -276,12 +286,13 @@ export async function handleRequest(request, env) {
       rateLimit(`join:${address}`, 40, 60_000);
       const body = await readJson(request);
       const callsign = normalizeCallsign(body.callsign);
+      const joinToken = joinTokenFrom(body);
       if (!callsign) throw new RequestError(400, "Callsign must be 2–24 safe characters.");
       return withCors(
         await roomRequest(env, code, "/internal/join", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ callsign }),
+          body: JSON.stringify({ callsign, ...(joinToken ? { joinToken } : {}) }),
         }),
         headers,
       );
@@ -332,6 +343,7 @@ export class MatchRoom {
     this.resultSubmission = null;
     this.messageBuckets = new Map();
     this.operationTail = Promise.resolve();
+    this.lobbySyncTail = Promise.resolve();
     this.ready = state.blockConcurrencyWhile(async () => {
       this.room = await readRoomCheckpoint(state.storage);
       if (!this.room) return;
@@ -401,36 +413,60 @@ export class MatchRoom {
         };
         await this.persist();
         await this.scheduleAlarm();
-        return json(201, { roomCode: code, playerId: "p1", reconnectToken, room: this.view() });
+        return this.sessionResponse(201, "p1", reconnectToken);
       }
       if (!this.room) return json(404, { error: "Room not found." });
       if (request.method === "GET" && url.pathname === "/internal/status") {
         return json(200, { room: this.view() });
       }
       if (request.method === "POST" && url.pathname === "/internal/join") {
-        if (this.room.phase !== "waiting") return json(409, { error: "Match already started." });
-        const playerId = !this.room.players.p1 ? "p1" : !this.room.players.p2 ? "p2" : null;
-        if (!playerId) return json(409, { error: "Room is full." });
         const body = await readJson(request);
         const callsign = normalizeCallsign(body.callsign);
         if (!callsign) throw new RequestError(400, "Callsign is invalid.");
-        const reconnectToken = newToken();
+        const joinToken = joinTokenFrom(body);
+        const tokenHash = joinToken ? await hash(joinToken) : null;
+        const previousAttempt = tokenHash ? this.room.joinAttempts?.[tokenHash] : null;
+        if (previousAttempt) {
+          const player = this.room.players[previousAttempt];
+          if (!player || player.left || player.tokenHash !== tokenHash) {
+            return json(409, { error: "This player has left the room.", code: "join_unavailable" });
+          }
+          if (player.callsign !== callsign) {
+            return json(409, { error: "Join details do not match.", code: "join_conflict" });
+          }
+          return this.sessionResponse(200, player.id, joinToken);
+        }
+        if (this.room.phase !== "waiting") return json(409, { error: "Match already started." });
+        const playerId = !this.room.players.p1 ? "p1" : !this.room.players.p2 ? "p2" : null;
+        if (!playerId) return json(409, { error: "Room is full." });
+        const reconnectToken = joinToken ?? newToken();
+        const previousUpdatedAt = this.room.updatedAt;
         this.room.players[playerId] = await this.makePlayer(
           playerId,
           callsign,
           reconnectToken,
           Date.now(),
         );
+        if (tokenHash) {
+          this.room.joinAttempts ??= {};
+          this.room.joinAttempts[tokenHash] = playerId;
+        }
         this.touch();
-        await this.persist();
-        if (this.room.visibility === "public" && !body.managedByLobby) await this.syncLobby();
+        try {
+          await this.persist();
+        } catch (error) {
+          // A retry must not recover an in-memory slot that was never committed.
+          this.room.players[playerId] = null;
+          if (tokenHash) delete this.room.joinAttempts[tokenHash];
+          this.room.updatedAt = previousUpdatedAt;
+          throw error;
+        }
+        if (this.room.visibility === "public" && !body.managedByLobby) {
+          // Lobby contention must not hold up a successfully committed direct join.
+          this.state.waitUntil(this.syncLobby());
+        }
         this.broadcastRoom();
-        return json(200, {
-          roomCode: this.room.code,
-          playerId,
-          reconnectToken,
-          room: this.view(),
-        });
+        return this.sessionResponse(200, playerId, reconnectToken);
       }
       if (request.method === "POST" && url.pathname === "/internal/ticket") {
         const token = bearer(request);
@@ -672,7 +708,7 @@ export class MatchRoom {
     this.lastPersistedTick = this.room.match.tick;
     this.touch();
     await this.persist();
-    await this.syncLobby();
+    this.state.waitUntil(this.syncLobby());
     this.broadcastRoom();
     this.broadcastSnapshot();
     this.ensureClock();
@@ -760,7 +796,11 @@ export class MatchRoom {
     }
     if (this.room.pause) {
       if (!this.simulation.pausedCommand(command))
-        return this.sendError(socket, "rejected_command", "Command was stale or not permitted while paused.");
+        return this.sendError(
+          socket,
+          "rejected_command",
+          "Command was stale or not permitted while paused.",
+        );
       this.room.match = this.simulation.snapshot(false);
       await this.persist();
       this.broadcastSnapshot();
@@ -799,7 +839,7 @@ export class MatchRoom {
       this.room.expiresAt = Date.now() + NETWORK_CONFIG.completedRoomLifetimeMs;
       this.stopClock();
     }
-    await this.syncLobby();
+    this.state.waitUntil(this.syncLobby());
     await this.persist();
     if (this.room.match && this.room.phase === "closed") await this.submitResult("abandoned");
     await this.scheduleAlarm(this.room.resultSubmittedAt ? undefined : 1000);
@@ -892,7 +932,7 @@ export class MatchRoom {
     const now = Date.now();
     if (this.room.expiresAt <= now) {
       this.stopClock();
-      await this.syncLobby(true);
+      this.state.waitUntil(this.syncLobby(true));
       await this.state.storage.deleteAll();
       this.room = null;
       this.simulation = null;
@@ -986,21 +1026,57 @@ export class MatchRoom {
     };
   }
 
+  sessionResponse(status, playerId, reconnectToken) {
+    return json(
+      status,
+      {
+        roomCode: this.room.code,
+        playerId,
+        reconnectToken,
+        room: this.view(),
+      },
+      new Headers({ "X-Helio-Room-Revision": String(this.room.updatedAt) }),
+    );
+  }
+
   async syncLobby(remove = false) {
     if (!this.room || (this.room.visibility ?? "private") !== "public") return;
-    try {
-      await lobbyRequest(this.env, remove ? "/internal/delete" : "/internal/upsert", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(remove ? { code: this.room.code } : { room: this.view() }),
-      });
-    } catch (error) {
-      console.error("lobby synchronization failed", error);
-    }
+    // Never await this while holding the room's operation lock: Quick Join
+    // holds the lobby lock while asking a room to allocate its final slot.
+    const body = JSON.stringify(
+      remove
+        ? { code: this.room.code, revision: this.room.updatedAt }
+        : { room: { ...this.view(), revision: this.room.updatedAt } },
+    );
+    const synchronize = this.lobbySyncTail.then(async () => {
+      let timeout;
+      try {
+        const response = await Promise.race([
+          lobbyRequest(this.env, remove ? "/internal/delete" : "/internal/upsert", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body,
+          }),
+          new Promise((_, reject) => {
+            timeout = setTimeout(() => reject(new Error("Lobby timeout")), 5000);
+          }),
+        ]);
+        if (!response.ok) throw new Error("Lobby update rejected");
+      } catch (error) {
+        console.error(
+          "lobby synchronization failed",
+          error instanceof Error ? error.name : "Error",
+        );
+      } finally {
+        clearTimeout(timeout);
+      }
+    });
+    this.lobbySyncTail = synchronize;
+    return synchronize;
   }
 
   touch() {
-    if (this.room) this.room.updatedAt = Date.now();
+    if (this.room) this.room.updatedAt = Math.max(Date.now(), (this.room.updatedAt ?? 0) + 1);
   }
 
   async persist() {
@@ -1180,7 +1256,10 @@ export class LobbyIndex {
           if (response.status === 409) continue;
           const data = await response.json();
           if (!response.ok) return json(response.status, data);
-          this.upsert(data.room);
+          this.upsert({
+            ...data.room,
+            revision: Number(response.headers.get("X-Helio-Room-Revision")),
+          });
           await this.persist();
           return json(201, data);
         }
@@ -1191,21 +1270,70 @@ export class LobbyIndex {
         const body = await readJson(request);
         const callsign = normalizeCallsign(body.callsign);
         if (!callsign) throw new RequestError(400, "Callsign is invalid.");
+        const joinToken = joinTokenFrom(body);
+        const attemptKey = joinToken ? `join:${await hash(joinToken)}` : null;
+        const previous = attemptKey ? await this.state.storage.get(attemptKey) : null;
+        if (previous && previous.callsign !== callsign) {
+          return json(409, { error: "Join details do not match.", code: "join_conflict" });
+        }
         await this.pruneAndPersist();
-        for (const room of this.sortedRooms().filter((candidate) => candidate.joinable)) {
+        const rooms = this.sortedRooms().filter((candidate) => candidate.joinable);
+        // The target is durable before allocation. A lost response or a Worker
+        // restart therefore resumes this room instead of claiming another slot.
+        if (previous) rooms.unshift({ code: previous.roomCode });
+        const tried = new Set();
+        for (const room of rooms) {
+          if (tried.has(room.code)) continue;
+          tried.add(room.code);
+          let expiresAt = previous?.expiresAt;
+          if (attemptKey && room.code !== previous?.roomCode) {
+            expiresAt = Date.now() + NETWORK_CONFIG.waitingRoomLifetimeMs;
+            await this.state.storage.put(attemptKey, {
+              roomCode: room.code,
+              callsign,
+              expiresAt,
+            });
+          }
+          if (attemptKey) {
+            const alarm = await this.state.storage.getAlarm();
+            if (!alarm || alarm > expiresAt) await this.state.storage.setAlarm(expiresAt);
+          }
           const response = await roomRequest(this.env, room.code, "/internal/join", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ callsign, managedByLobby: true }),
+            body: JSON.stringify({
+              callsign,
+              managedByLobby: true,
+              ...(joinToken ? { joinToken } : {}),
+            }),
           });
           const data = await response.json();
           if (response.ok) {
-            this.upsert(data.room);
-            await this.persist();
+            this.upsert({
+              ...data.room,
+              revision: Number(response.headers.get("X-Helio-Room-Revision")),
+            });
+            try {
+              await this.persist();
+            } catch (error) {
+              // The room owns the allocation, and its retry target is already
+              // durable. A stale discovery summary cannot invalidate the join.
+              console.error("joined room listing update failed", error);
+            }
             return json(200, data);
           }
+          if (data.code === "join_unavailable" || data.code === "join_conflict") {
+            return json(response.status, data);
+          }
           if (response.status === 404 || response.status === 409) {
-            delete this.rooms[room.code];
+            if (attemptKey) await this.state.storage.delete(attemptKey);
+            if (this.rooms[room.code]?.phase === "waiting") {
+              this.upsert({
+                code: room.code,
+                phase: "closed",
+                revision: this.rooms[room.code].revision,
+              });
+            }
             await this.persist();
             continue;
           }
@@ -1225,7 +1353,7 @@ export class LobbyIndex {
         const body = await readJson(request);
         const code = normalizeRoomCode(body.code);
         if (!code) throw new RequestError(400, "Room code is invalid.");
-        delete this.rooms[code];
+        this.upsert({ code, phase: "closed", revision: body.revision });
         await this.persist();
         return new Response(null, { status: 204 });
       }
@@ -1240,8 +1368,26 @@ export class LobbyIndex {
   upsert(room) {
     const code = normalizeRoomCode(room?.code);
     const name = normalizeRoomName(room?.name);
+    if (!code) return;
+    const revision = Number.isSafeInteger(room.revision)
+      ? room.revision
+      : Number(room.createdAt) || 0;
+    const previous = this.rooms[code];
+    if (
+      previous &&
+      (revision < (previous.revision ?? 0) ||
+        (revision === (previous.revision ?? 0) &&
+          (previous.phase !== "waiting" || room.phase === "waiting")))
+    )
+      return;
     if (!code || !name || room.visibility !== "public" || room.phase !== "waiting") {
-      if (code) delete this.rooms[code];
+      // A late waiting-room RPC cannot resurrect a newer started/deleted room.
+      this.rooms[code] = {
+        code,
+        phase: "closed",
+        revision,
+        expiresAt: Date.now() + NETWORK_CONFIG.waitingRoomLifetimeMs,
+      };
       return;
     }
     const playerCount = Math.max(
@@ -1252,6 +1398,7 @@ export class LobbyIndex {
       code,
       name,
       phase: "waiting",
+      revision,
       playerCount,
       capacity: NETWORK_CONFIG.maximumPlayers,
       joinable: playerCount < NETWORK_CONFIG.maximumPlayers,
@@ -1264,10 +1411,11 @@ export class LobbyIndex {
 
   sortedRooms() {
     return Object.values(this.rooms)
+      .filter((room) => room.phase === "waiting")
       .sort(
         (left, right) => left.createdAt - right.createdAt || left.code.localeCompare(right.code),
       )
-      .map(({ expiresAt: _expiresAt, ...room }) => room);
+      .map(({ expiresAt: _expiresAt, revision: _revision, ...room }) => room);
   }
 
   async pruneAndPersist() {
@@ -1283,6 +1431,30 @@ export class LobbyIndex {
 
   async persist() {
     await this.state.storage.put("rooms", this.rooms);
+  }
+
+  async alarm() {
+    await this.ready;
+    await this.exclusive(async () => {
+      await this.pruneAndPersist();
+      const now = Date.now();
+      let nextExpiry = Infinity;
+      let startAfter;
+      while (true) {
+        const attempts = await this.state.storage.list({
+          prefix: "join:",
+          startAfter,
+          limit: 1000,
+        });
+        for (const [key, attempt] of attempts) {
+          if (attempt.expiresAt <= now) await this.state.storage.delete(key);
+          else nextExpiry = Math.min(nextExpiry, attempt.expiresAt);
+          startAfter = key;
+        }
+        if (attempts.size < 1000) break;
+      }
+      if (Number.isFinite(nextExpiry)) await this.state.storage.setAlarm(nextExpiry);
+    });
   }
 
   async exclusive(operation) {
