@@ -1,5 +1,40 @@
 export const UPDATE_LOG = [
   {
+    version: "0.6.2-alpha.1",
+    date: "2026-10-15",
+    title: "Mine warning",
+    sections: [
+      {
+        title: "VISIBILITY",
+        items: [
+          "Mine Warden mines now have large red spiked shells, pulsing rings and danger markers.",
+        ],
+      },
+    ],
+  },
+  {
+    version: "0.6.1-alpha.1",
+    date: "2026-10-15",
+    title: "Fixed flight view",
+    sections: [
+      {
+        title: "CO-OP",
+        items: [
+          "Fixed camera shows the whole arena without panning.",
+          "New patrols use a wider 1920×1080 arena.",
+          "Specialist hulls retain the original Sentinel and Warden shapes.",
+        ],
+      },
+      {
+        title: "RIFT SPIKER",
+        items: [
+          "Available in the campaign developer console.",
+          "Four-shot stage becomes eight shots at wave 20, with additional spikes.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.6.0-alpha.1",
     date: "2026-10-15",
     title: "A wider frontier",

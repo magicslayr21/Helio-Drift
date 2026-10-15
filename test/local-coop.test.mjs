@@ -686,11 +686,31 @@ test("Rift Spikers unlock only in co-op, warn before gravity pulses and survive 
   assert.ok(sim.state.players.p1.ship.vx > 0);
   rift.fire = 0;
   g.updateSpiker(rift, 0.01);
+  assert.equal(g.bullets.filter((b) => b.damageCause === "Rift Spiker spiral volley").length, 4);
+  g.bullets = [];
+  g.wave = 20;
+  rift.fire = 0;
+  g.updateSpiker(rift, 0.01);
   assert.equal(g.bullets.filter((b) => b.damageCause === "Rift Spiker spiral volley").length, 8);
   g.wave = 21;
   g.spawnCoopEscorts();
   assert.equal(g.drones.filter((d) => d.coop?.kind === "riftSpiker").length, 2);
   const campaign = new Game(null, { onHud() {}, onMode() {} }, { headless: true });
   campaign.devSpawnMob("riftSpiker");
-  assert.equal(campaign.drones.length, 0);
+  assert.equal(campaign.drones[0].coop.kind, "riftSpiker");
+  campaign.mode = "playing";
+  const devRift = campaign.drones[0];
+  for (const [wave, shots] of [
+    [19, 4],
+    [20, 8],
+  ]) {
+    campaign.wave = wave;
+    campaign.bullets = [];
+    devRift.fire = 0;
+    campaign.updateSpiker(devRift, 0.01);
+    assert.equal(campaign.bullets.length, shots);
+  }
+  devRift.coop.timer = 0;
+  campaign.updateDroneSpecial(devRift, 0.01);
+  assert.ok(devRift.coop.warning > 0);
 });

@@ -19,7 +19,6 @@ export function DeveloperConsole({
   send,
   onClose,
   onRestart,
-  multiplayer = false,
 }: {
   view: DeveloperView;
   send: (command: DeveloperCommand) => void;
@@ -126,10 +125,9 @@ export function DeveloperConsole({
                 ["spiker", "Spiker"],
                 ["tetherSentinel", "Tether Sentinel"],
                 ["mineWarden", "Mine Warden"],
+                ["riftSpiker", "Rift Spiker"],
               ] as [DeveloperEnemy, string][]
             ).map(([kind, label]) => btn(label, { action: "enemy", kind, count, size }))}
-            {multiplayer &&
-              btn("Rift Spiker", { action: "enemy", kind: "riftSpiker", count, size })}
           </DevRow>
           <DevRow label="Shower">
             {btn(

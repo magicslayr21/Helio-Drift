@@ -372,3 +372,11 @@ Existing room checkpoints retain their original arena dimensions and pilot equip
 new co-op patrol after deploying to use the larger arena. Both browsers fill the available viewport
 with a uniform camera scale; pointer aim and prediction use the room's actual dimensions. Campaign
 saves migrate the new Range multiplier, and the visibility slider is a local preference.
+
+## Updating to 0.6.1-alpha.1
+
+Publish the frontend and redeploy the multiplayer Worker. No leaderboard Worker change or
+new database migration is required. New patrols use a 1920×1080 arena; existing checkpoints
+keep their dimensions. The fixed camera fits the entire arena without panning or stretching.
+Rift Spikers fire four shots before wave 20 and eight from wave 20, and can also be spawned
+in the campaign developer console.

@@ -3,7 +3,12 @@ import { TAU } from "./math";
 import { COOP_CONFIG } from "./simulation/coop-config";
 
 /** Co-op specialists keep the cabinet's vector armor but have distinct silhouettes. */
-export function renderSpecialist(ctx: CanvasRenderingContext2D, d: Drone, frame: number) {
+export function renderSpecialist(
+  ctx: CanvasRenderingContext2D,
+  d: Drone,
+  frame: number,
+  spikes: 4 | 8 = 4,
+) {
   if (!d.coop) return false;
   const kind = d.coop.kind,
     r = d.r;
@@ -21,80 +26,68 @@ export function renderSpecialist(ctx: CanvasRenderingContext2D, d: Drone, frame:
   ctx.strokeStyle = color;
   ctx.fillStyle = "#090d18";
   ctx.lineWidth = 2;
-  if (kind === "tetherSentinel") {
+  if (kind === "tetherSentinel" || kind === "mineWarden") {
+    // Preserve the original swept Sentinel and horned Warden armor profiles.
+    const warden = kind === "mineWarden";
+    const s = r / 21;
+    const points = warden
+      ? [
+          [30, 0],
+          [10, -8],
+          [14, -19],
+          [-4, -16],
+          [-14, -20],
+          [-20, -9],
+          [-13, 0],
+          [-20, 9],
+          [-14, 20],
+          [-4, 16],
+          [14, 19],
+          [10, 8],
+        ]
+      : [
+          [22, 0],
+          [6, -13],
+          [-16, -11],
+          [-10, 0],
+          [-16, 11],
+          [6, 13],
+        ];
     ctx.beginPath();
-    for (let i = 0; i < 6; i++) {
-      const a = (i * TAU) / 6;
-      const x = Math.cos(a) * r * 0.8,
-        y = Math.sin(a) * r * 0.8;
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
+    points.forEach(([x, y], i) => (i ? ctx.lineTo(x * s, y * s) : ctx.moveTo(x * s, y * s)));
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
-    for (let i = 0; i < 4; i++) {
-      const a = (i * TAU) / 4;
-      ctx.save();
-      ctx.rotate(a);
+    ctx.strokeStyle = "#ff3d6e";
+    for (const rib of [-1, 0, 1]) {
       ctx.beginPath();
-      ctx.moveTo(r * 0.55, -r * 0.27);
-      ctx.lineTo(r * 1.3, -r * 0.18);
-      ctx.lineTo(r * 1.5, 0);
-      ctx.lineTo(r * 1.3, r * 0.18);
-      ctx.lineTo(r * 0.55, r * 0.27);
+      ctx.moveTo(-10 * s, rib * 7 * s);
+      ctx.lineTo(8 * s, rib * 4.5 * s);
       ctx.stroke();
-      ctx.restore();
     }
-    ctx.beginPath();
-    ctx.arc(0, 0, r * 0.35, 0, TAU);
-    ctx.stroke();
     ctx.fillStyle = color;
-    ctx.fillRect(-3, -3, 6, 6);
-    ctx.setLineDash([5, 9]);
-    ctx.globalAlpha = 0.45;
     ctx.beginPath();
-    ctx.arc(0, 0, r * 1.6, frame * 0.02, frame * 0.02 + TAU);
-    ctx.stroke();
-    ctx.setLineDash([]);
-  } else if (kind === "mineWarden") {
-    for (let i = 0; i < 3; i++) {
-      ctx.save();
-      ctx.rotate((i * TAU) / 3);
-      ctx.beginPath();
-      ctx.moveTo(r * 0.2, -r * 0.42);
-      ctx.lineTo(r * 1.3, -r * 0.34);
-      ctx.lineTo(r * 1.5, 0);
-      ctx.lineTo(r * 1.3, r * 0.34);
-      ctx.lineTo(r * 0.2, r * 0.42);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(r * 0.95, 0, r * 0.18, 0, TAU);
-      ctx.stroke();
-      ctx.strokeStyle = "#ff3d6e";
-      for (let j = 0; j < 3; j++) {
-        ctx.beginPath();
-        ctx.moveTo(r * 0.53 + j * 4, -r * 0.24);
-        ctx.lineTo(r * 0.4 + j * 4, 0);
-        ctx.stroke();
-      }
-      ctx.strokeStyle = color;
-      ctx.restore();
-    }
-    ctx.fillStyle = "#171321";
-    ctx.beginPath();
-    ctx.arc(0, 0, r * 0.5, 0, TAU);
+    ctx.ellipse(6 * s, 0, warden ? 6 * s : 3 * s, 3 * s, 0, 0, TAU);
     ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = color;
-    ctx.fillRect(-r * 0.2, -r * 0.2, r * 0.4, r * 0.4);
+    ctx.strokeStyle = color;
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      if (warden) {
+        // Paired mine drums sit inside the familiar mandibles.
+        ctx.arc(-3 * s, side * 11 * s, 4 * s, 0, TAU);
+      } else {
+        // Twin shield emitters extend the swept wings without replacing the hull.
+        ctx.moveTo(-12 * s, side * 13 * s);
+        ctx.lineTo(0, side * 18 * s);
+        ctx.lineTo(8 * s, side * 14 * s);
+      }
+      ctx.stroke();
+    }
   } else {
     const warning = d.coop.warning / COOP_CONFIG.riftSpiker.telegraphSeconds;
     ctx.beginPath();
-    for (let i = 0; i < 24; i++) {
-      const a = (i * TAU) / 24,
+    for (let i = 0; i < spikes * 2; i++) {
+      const a = (i * TAU) / (spikes * 2),
         radius = i % 2 ? r * 0.56 : r * (1.2 + warning * 0.3);
       const x = Math.cos(a) * radius,
         y = Math.sin(a) * radius;

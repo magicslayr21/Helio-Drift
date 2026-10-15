@@ -3,7 +3,7 @@ export const COOP_CONFIG = {
   snapshotRate: 15,
   maximumCatchUpSeconds: 0.25,
   maximumPlayers: 2,
-  arena: { width: 1600, height: 1000 },
+  arena: { width: 1920, height: 1080 },
   /** Hard safety ceilings for one authoritative room and one wire snapshot. */
   entityCaps: {
     rocks: 96,

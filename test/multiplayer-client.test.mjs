@@ -181,7 +181,7 @@ test("wrapped native asteroids and ships snap at edges without crossing the aren
   assert.equal(first.state.campaign.rocks[0].x, -20);
 });
 
-test("co-op projection fills wide and portrait viewports without stretching gameplay", async () => {
+test("co-op projection shows the entire arena without stretching or following pilots", async () => {
   const { coopCamera } = await import("../src/game/coop-camera.ts");
   for (const [width, height] of [
     [1440, 700],
@@ -190,9 +190,10 @@ test("co-op projection fills wide and portrait viewports without stretching game
   ]) {
     const c = coopCamera(width, height, 1600, 1000, { x: 1200, y: 800 });
     assert.ok(c.scale > 0);
-    assert.ok(c.x >= 0 && c.y >= 0);
-    assert.ok(c.x + width / c.scale <= 1600 + 1e-8);
-    assert.ok(c.y + height / c.scale <= 1000 + 1e-8);
+    assert.ok(c.x <= 0 && c.y <= 0);
+    assert.deepEqual(c, coopCamera(width, height, 1600, 1000, { x: 0, y: 0 }));
+    assert.ok(c.x + width / c.scale >= 1600 - 1e-8);
+    assert.ok(c.y + height / c.scale >= 1000 - 1e-8);
     const sx = (1200 - c.x) * c.scale,
       sy = (800 - c.y) * c.scale;
     assert.ok(sx >= 0 && sx <= width);

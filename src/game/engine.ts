@@ -178,7 +178,7 @@ export class Game {
       }
       return;
     }
-    if (extra.kind === "riftSpiker" && this.cooperative) {
+    if (extra.kind === "riftSpiker") {
       const c = COOP_CONFIG.riftSpiker;
       if (extra.warning > 0) {
         extra.warning -= dt;
@@ -2284,7 +2284,7 @@ export class Game {
     d.fire -= dt;
     if (d.fire > 0) return;
     const rift = d.coop?.kind === "riftSpiker";
-    const shots = rift ? 8 : this.spikerShots();
+    const shots = this.spikerShots();
     for (let i = 0; i < shots; i++) {
       const a = d.angle + (i * TAU) / shots + (rift ? this.frame * 0.018 : 0);
       this.addBullet({
@@ -5998,7 +5998,6 @@ export class Game {
 
   /** Medium enemies retain their normal size and health. */
   devSpawnMob(kind: DeveloperEnemy, count = 1, size: 1 | 2 | 3 = 2) {
-    if (kind === "riftSpiker" && !this.cooperative) return;
     const tuningWave = scaledWave(this.wave);
     const hpScale = size === 1 ? 0.65 : size === 3 ? 1.6 : 1;
     const radiusScale = size === 1 ? 0.75 : size === 3 ? 1.35 : 1;
@@ -6847,6 +6846,44 @@ export class Game {
 
     // rocks
     for (const r of this.rocks) {
+      if (r.coopMine) {
+        const triggered = r.coopMine.triggerTimer >= 0;
+        const pulse = 0.5 + 0.5 * Math.sin(this.frame * (triggered ? 0.4 : 0.12));
+        const radius = Math.max(25, r.r * 1.9);
+        ctx.save();
+        ctx.translate(r.x, r.y);
+        ctx.strokeStyle = "#ff263d";
+        ctx.fillStyle = "#7d1023";
+        ctx.lineWidth = 3;
+        ctx.shadowColor = "#ff263d";
+        ctx.shadowBlur = 16 + pulse * 10;
+        ctx.beginPath();
+        for (let i = 0; i < 16; i++) {
+          const angle = (i * TAU) / 16;
+          const size = radius * (i % 2 ? 0.7 : 1);
+          if (i === 0) ctx.moveTo(Math.cos(angle) * size, Math.sin(angle) * size);
+          else ctx.lineTo(Math.cos(angle) * size, Math.sin(angle) * size);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.globalAlpha = 0.4 + pulse * 0.4;
+        ctx.beginPath();
+        ctx.arc(0, 0, radius + 7 + pulse * 4, 0, TAU);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = "#fff1ed";
+        ctx.font = "bold 24px monospace";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("!", 0, 1);
+        ctx.font = "bold 9px monospace";
+        ctx.fillStyle = "#ff6675";
+        ctx.fillText(triggered ? "DETONATING" : "MINE", 0, radius + 23);
+        ctx.restore();
+        continue;
+      }
       const dmg = 1 - clamp(r.hp / r.maxHp, 0, 1);
       const special = r.trait !== "none";
       const col = TRAIT_COLOR[r.trait];
@@ -6982,7 +7019,7 @@ export class Game {
 
     // Enemy silhouettes share the same magenta vector armor language.
     for (const d of this.drones) {
-      if (renderSpecialist(ctx, d, this.frame)) continue;
+      if (renderSpecialist(ctx, d, this.frame, this.spikerShots())) continue;
       if (d.kind === "spiker") {
         this.renderSpiker(ctx, d);
         continue;
