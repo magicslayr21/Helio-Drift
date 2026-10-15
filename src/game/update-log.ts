@@ -1,5 +1,38 @@
 export const UPDATE_LOG = [
   {
+    version: "0.6.0-alpha.1",
+    date: "2026-10-15",
+    title: "A wider frontier",
+    sections: [
+      {
+        title: "CO-OP FLIGHT",
+        items: [
+          "Full-screen playfield with a wider view and teammate edge markers.",
+          "Fixed asteroids streaking across the map when wrapping at edges.",
+          "Redesigned flight deck, rooms, records, settings and end-of-run screens.",
+        ],
+      },
+      {
+        title: "SPECIALIST ENEMIES",
+        items: [
+          "Tether Sentinels now shield nearby asteroids and enemies; bosses stay unshielded.",
+          "Distinct new hulls for Tether Sentinels and Mine Wardens.",
+          "Co-op-only Rift Spiker: spiral volleys and a warned gravity pulse.",
+          "Rift Spiker added to the co-op developer console.",
+        ],
+      },
+      {
+        title: "ARSENAL & VISIBILITY",
+        items: [
+          "Ship visibility slider adds glow and hull fill.",
+          "Reduced Railgun aim assist while retaining gentle correction.",
+          "Beam width scales with level; redline heat adds red beams and 35% damage.",
+          "New common Range upgrade: up to 40% more weapon and drone reach.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.5.6-alpha.1",
     date: "2026-10-15",
     title: "Shared flight controls and co-op records",

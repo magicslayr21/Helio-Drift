@@ -150,6 +150,26 @@ export default function SpecSection({
           </div>
         </div>
 
+        {multiplayer && (
+          <div className="mt-6 border border-steel/40 plate p-4">
+            <p className="legend">Co-op specialist signatures</p>
+            <ul className="mt-3 space-y-2 text-[11px] text-amber-hot/75">
+              <li>
+                <strong className="text-ice">Tether Sentinel:</strong> shields nearby asteroids and
+                enemies. Destroy the emitter to collapse its links. Bosses are never shielded.
+              </li>
+              <li>
+                <strong className="text-amber">Mine Warden:</strong> a three-pronged siege hull that
+                leaves armed mines behind.
+              </li>
+              <li>
+                <strong className="text-magenta">Rift Spiker:</strong> from wave 16, rotating
+                volleys and a purple gravity warning. Leave the marked ring before it detonates.
+              </li>
+            </ul>
+          </div>
+        )}
+
         {developer && (
           <details className="border border-steel/40 bg-graphite/40">
             <summary className="cursor-pointer px-4 py-3 text-[11px] uppercase tracking-[0.2em] text-amber focus-visible:outline-amber">

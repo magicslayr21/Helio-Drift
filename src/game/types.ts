@@ -42,6 +42,7 @@ export interface Player {
   fireRateMul: number;
   damageMul: number;
   bulletSpeed: number;
+  rangeMul: number;
   extraShots: number;
   pierce: number;
   crit: number;
@@ -168,6 +169,7 @@ export interface SalvageShopInfo {
 /* ------------------------------------------------------------ entities */
 
 export interface Bullet {
+  guidanceOrigin?: number;
   /** Room-owned identity; absent for offline campaign shots. */
   id?: number;
   ownerId?: "p1" | "p2";
@@ -221,6 +223,7 @@ export interface Crack {
 }
 
 export interface Rock {
+  supportShield?: SupportShield;
   coopMine?: { ownerId: number; armTimer: number; triggerTimer: number; life: number };
   id: number;
   x: number;
@@ -247,9 +250,16 @@ export interface Rock {
 }
 
 /* Sentinels hunt, wardens snipe, and spikers drift while firing radial volleys. */
+export interface SupportShield {
+  hp: number;
+  maxHp: number;
+  sourceId: number;
+}
+
 export interface Drone {
+  supportShield?: SupportShield;
   coop?: {
-    kind: "tetherSentinel" | "mineWarden";
+    kind: "tetherSentinel" | "mineWarden" | "riftSpiker";
     timer: number;
     warning: number;
     target: "p1" | "p2" | null;

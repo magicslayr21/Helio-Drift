@@ -100,7 +100,8 @@ export type CoopEnemyKind =
   | "spiker"
   | "wardenTurret"
   | "tetherSentinel"
-  | "mineWarden";
+  | "mineWarden"
+  | "riftSpiker";
 
 export interface CoopEnemyState {
   id: number;

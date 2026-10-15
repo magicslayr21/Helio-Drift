@@ -23,6 +23,7 @@ export const freshPilotCampaign = () => ({
 
 /** Only multiplayer context, ownership and team rules live here. Combat stays in Game. */
 export class CoopCampaign extends Game {
+  override cooperative = true;
   activeId: CoopPlayerId = "p1";
   private bound = false;
   constructor(
@@ -366,23 +367,28 @@ export class CoopCampaign extends Game {
   }
 
   spawnCoopEscorts() {
-    for (const kind of ["tetherSentinel", "mineWarden"] as const) {
+    for (const kind of ["tetherSentinel", "mineWarden", "riftSpiker"] as const) {
       const config = COOP_CONFIG[kind];
       const unlock = this.boss ? config.bossEscortFromWave : config.unlockWave;
       if (this.wave < unlock) continue;
-      if (this.drones.filter((d) => d.coop?.kind === kind).length >= config.cap) continue;
+      const cap =
+        kind === "riftSpiker" && this.wave >= 21 ? COOP_CONFIG.riftSpiker.lateCap : config.cap;
+      if (this.drones.filter((d) => d.coop?.kind === kind).length >= cap) continue;
       const d = this.spawnDrone(
         this.w * 0.8,
         this.h * 0.2,
         config.baseHp + this.wave * config.hpPerWave,
-        kind === "mineWarden" ? "warden" : "sentinel",
+        kind === "mineWarden" ? "warden" : kind === "riftSpiker" ? "spiker" : "sentinel",
       );
+      d.r = config.radius;
       d.coop = {
         kind,
         timer:
           kind === "mineWarden"
             ? COOP_CONFIG.mineWarden.deploymentMin
-            : COOP_CONFIG.tetherSentinel.cooldownSeconds,
+            : kind === "riftSpiker"
+              ? COOP_CONFIG.riftSpiker.cooldownSeconds
+              : COOP_CONFIG.tetherSentinel.cooldownSeconds,
         warning: 0,
         target: null,
       };

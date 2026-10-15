@@ -4,6 +4,8 @@ import type { Bullet } from "./types";
 
 /** The actual campaign world, shared by room persistence and the campaign renderer. */
 const WORLD_FIELDS = [
+  "w",
+  "h",
   "rocks",
   "drones",
   "boss",

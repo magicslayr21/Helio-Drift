@@ -23,6 +23,7 @@ export function boostSummary(
   const pct = (mul: number) => `${mul >= 1 ? "+" : ""}${Math.round((mul - 1) * 100)}%`;
   const totals: { label: string; value: string }[] = [];
   if (attackRate !== 1) totals.push({ label: "Fire rate", value: pct(attackRate) });
+  if ((p.rangeMul ?? 1) !== 1) totals.push({ label: "Range", value: pct(p.rangeMul) });
   if (p.damageMul !== 1) totals.push({ label: "Damage", value: pct(p.damageMul) });
   if (p.extraShots > 0) totals.push({ label: "Extra projectiles", value: `+${p.extraShots}` });
   if (p.pierce > 0) totals.push({ label: "Pierce", value: `+${p.pierce}` });

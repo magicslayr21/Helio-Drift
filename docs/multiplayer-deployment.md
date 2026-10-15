@@ -349,3 +349,26 @@ GitHub Pages workflow, then refresh both browsers. Prefer completing active matc
 Co-op leaderboard rows have **View stats**, **Edit run**, and **Delete run** actions. Enter the
 existing leaderboard developer code when prompted. Editing names and team progress updates the
 rankings; original pilot telemetry remains intact. Conflicting edits require reloading the record.
+
+## Updating to 0.6.0-alpha.1
+
+Publish the frontend and both Workers. The multiplayer Worker supplies the larger 1600×1000
+arena, allied shields, Rift Spikers and bounded Railgun guidance. The leaderboard Worker must
+accept the new `range` upgrade in campaign reports. No new D1 migration is introduced in this
+release; keep the migrations from 0.5.6 applied.
+
+```powershell
+git fetch origin
+git merge origin/main --no-edit
+npm.cmd ci
+npx.cmd wrangler deploy --config wrangler.jsonc
+npx.cmd wrangler deploy --config wrangler.multiplayer.jsonc
+```
+
+The fetch-and-merge steps also support checkouts with local configuration commits. Keep your
+existing Cloudflare database bindings when resolving any configuration conflict.
+
+Existing room checkpoints retain their original arena dimensions and pilot equipment. Start a
+new co-op patrol after deploying to use the larger arena. Both browsers fill the available viewport
+with a uniform camera scale; pointer aim and prediction use the room's actual dimensions. Campaign
+saves migrate the new Range multiplier, and the visibility slider is a local preference.

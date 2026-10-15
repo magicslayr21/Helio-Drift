@@ -541,6 +541,7 @@ export function MultiplayerExperience({
         )}
         {devOpen && developerSession && (
           <DeveloperConsole
+            multiplayer
             view={{
               p: me.ship,
               stacks: me.upgrades,
@@ -704,10 +705,19 @@ export function MultiplayerExperience({
           </div>
         )}
         {ended && (
-          <div className="coop-modal">
-            <div className="coop-results">
-              <p className="deploy-eyebrow">Authoritative flight record finalized</p>
+          <div
+            className={`coop-modal coop-endcap scanlines ${state.phase === "victory" ? "is-victory" : "is-defeat"}`}
+          >
+            <div className="coop-results plate">
+              <p className="legend">
+                System state / {state.phase === "victory" ? "Patrol complete" : "Flight terminated"}
+              </p>
               <h2>{state.phase === "victory" ? "CO-OP VICTORY" : "SIGNAL LOST"}</h2>
+              <p className="coop-result-status">
+                {room.assisted
+                  ? "SERVICE FLIGHT · COMPETITIVE RECORDS DISABLED"
+                  : "TEAM FLIGHT RECORD / COOPERATIVE CAMPAIGN"}
+              </p>
               <dl>
                 <div>
                   <dt>Team score</dt>
@@ -725,15 +735,30 @@ export function MultiplayerExperience({
                   <dt>Bosses</dt>
                   <dd>{state.team.bossesDefeated}</dd>
                 </div>
-                <div>
-                  <dt>{me.callsign} damage</dt>
-                  <dd>{Math.floor(me.stats.damage).toLocaleString()}</dd>
-                </div>
-                <div>
-                  <dt>{teammate?.callsign} revives</dt>
-                  <dd>{teammate?.stats.revives ?? 0}</dd>
-                </div>
               </dl>
+              <div className="coop-result-pilots">
+                {[me, teammate]
+                  .filter((p) => p != null)
+                  .map((p) => (
+                    <section key={p.id}>
+                      <p className="legend">{p.callsign}</p>
+                      <dl>
+                        <div>
+                          <dt>Damage dealt</dt>
+                          <dd>{Math.floor(p.stats.damage).toLocaleString()}</dd>
+                        </div>
+                        <div>
+                          <dt>Enemy kills</dt>
+                          <dd>{p.stats.kills}</dd>
+                        </div>
+                        <div>
+                          <dt>Revives</dt>
+                          <dd>{p.stats.revives}</dd>
+                        </div>
+                      </dl>
+                    </section>
+                  ))}
+              </div>
               <button onClick={leave}>Return to flight deck</button>
             </div>
           </div>
@@ -743,7 +768,7 @@ export function MultiplayerExperience({
   }
 
   return (
-    <section className="coop-menu" aria-label="Online co-op deployment">
+    <section className="coop-menu scanlines" aria-label="Online co-op deployment">
       {warningOpen && (
         <div
           className="coop-modal"
@@ -803,8 +828,20 @@ export function MultiplayerExperience({
         />
       ) : screen === "home" ? (
         <div className="coop-home">
-          <div className="coop-home-copy">
-            <p className="deploy-eyebrow">Helios flight systems / cooperative patrol</p>
+          <header className="coop-mission-header">
+            <div>
+              <p className="legend">Mission control / online operations</p>
+              <h2>CO-OP FLIGHT DECK</h2>
+            </div>
+            <div>
+              <span className="legend">Patrol capacity</span>
+              <strong>
+                02 <small>PILOTS</small>
+              </strong>
+            </div>
+          </header>
+          <div className="coop-home-copy plate">
+            <p className="legend">Pilot registry / relay access</p>
             <h1>
               FLY TOGETHER.
               <br />
@@ -849,7 +886,7 @@ export function MultiplayerExperience({
               </button>
             )}
           </div>
-          <div className="coop-actions-grid">
+          <div className="coop-actions-grid" aria-label="Flight operations">
             <button
               onClick={() =>
                 void run(() => createPrivateRoom(callsign, developerSession?.token ?? ""))

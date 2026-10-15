@@ -96,12 +96,13 @@ export class LocalCoopSimulation {
 
   static restore(
     snapshot: CoopMatchState,
-    width = COOP_CONFIG.arena.width,
-    height = COOP_CONFIG.arena.height,
+    width = snapshot.campaign?.w ?? 1000,
+    height = snapshot.campaign?.h ?? 700,
   ) {
     const sim = new LocalCoopSimulation({ seed: snapshot.seed, width, height });
     sim.state = structuredClone(snapshot);
     for (const p of Object.values(sim.state.players)) {
+      p.ship.rangeMul ??= 1;
       p.campaign ??= freshPilotCampaign();
       p.input.missile ??= false;
       p.supportQuietTimer ??= 0;
@@ -147,7 +148,7 @@ export class LocalCoopSimulation {
           d.maxHp,
           d.kind === "warden" || d.kind === "mineWarden"
             ? "warden"
-            : d.kind === "spiker"
+            : d.kind === "spiker" || d.kind === "riftSpiker"
               ? "spiker"
               : "sentinel",
         ),
@@ -160,7 +161,7 @@ export class LocalCoopSimulation {
         vy: d.vy,
         angle: d.angle,
       });
-      if (d.kind === "tetherSentinel" || d.kind === "mineWarden")
+      if (d.kind === "tetherSentinel" || d.kind === "mineWarden" || d.kind === "riftSpiker")
         g.drones[g.drones.length - 1].coop = {
           kind: d.kind,
           timer: d.fireTimer,

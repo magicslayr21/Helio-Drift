@@ -119,7 +119,7 @@ export function DeployMenu({
   return createPortal(
     <dialog
       ref={dialog}
-      className="deploy-screen"
+      className={`deploy-screen${stage === "multiplayer" ? " deploy-screen--cooperative" : ""}`}
       aria-labelledby="deploy-title"
       style={{
         backgroundImage: `linear-gradient(110deg,rgba(8,10,18,.94),rgba(8,10,18,.84)),url(${nebula})`,

@@ -71,6 +71,8 @@ import type {
   SalvageClone,
   SectorTheme,
 } from "./types";
+import { renderSpecialist } from "./render-specialists";
+import { DEFAULT_SETTINGS } from "./preferences";
 import { boostSummary } from "./boost-summary";
 import { COOP_CONFIG } from "./simulation/coop-config";
 import type { CoopEvent, CoopTetherState, CoopPlayerId } from "./simulation/coop-types";
@@ -117,6 +119,7 @@ export interface GameRuntime {
 }
 
 export class Game {
+  cooperative = false;
   readonly headless: boolean;
   readonly random: () => number;
   readonly sound: GameSound;
@@ -147,6 +150,12 @@ export class Game {
   updateDroneSpecial(d: Drone, dt: number) {
     const extra = d.coop;
     if (!extra) return;
+    if (extra.kind === "tetherSentinel") {
+      extra.timer = 0;
+      extra.warning = 0;
+      extra.target = null;
+      return;
+    }
     extra.timer -= dt;
     if (extra.kind === "mineWarden") {
       if (
@@ -169,42 +178,37 @@ export class Game {
       }
       return;
     }
-    const config = COOP_CONFIG.tetherSentinel;
-    if (extra.warning > 0) {
-      extra.warning -= dt;
-      if (
-        extra.warning <= 0 &&
-        extra.target &&
-        !this.specialPilots().find((p) => p.id === extra.target)!.disabled
-      ) {
-        this.specialTethers().push({
-          id: this.nextId++,
-          sourceId: d.id,
-          targetPlayerId: extra.target,
-          strength: config.strength,
-          minimumDistance: config.minimumDistance,
-          maximumDistance: config.maximumDistance,
-        });
-        this.specialEvent({
-          type: "tetherStarted",
-          tick: this.specialTick(),
-          entityId: d.id,
-          playerId: extra.target,
-        });
-        extra.timer = config.cooldownSeconds;
+    if (extra.kind === "riftSpiker" && this.cooperative) {
+      const c = COOP_CONFIG.riftSpiker;
+      if (extra.warning > 0) {
+        extra.warning -= dt;
+        for (const pilot of this.specialPilots()) {
+          if (pilot.disabled) continue;
+          const dx = d.x - pilot.ship.x,
+            dy = d.y - pilot.ship.y,
+            distance = Math.hypot(dx, dy);
+          if (distance > 30 && distance < c.pullRadius) {
+            pilot.ship.vx += (dx / distance) * c.pullStrength * dt;
+            pilot.ship.vy += (dy / distance) * c.pullStrength * dt;
+          }
+        }
+        if (extra.warning <= 0) {
+          this.enemyBlast(d.x, d.y, c.pulseRadius, c.damage, "Rift Spiker gravity pulse");
+          for (const pilot of this.specialPilots()) {
+            const dx = pilot.ship.x - d.x,
+              dy = pilot.ship.y - d.y,
+              distance = Math.hypot(dx, dy);
+            if (!pilot.disabled && distance < c.pulseRadius) {
+              pilot.ship.vx += (distance ? dx / distance : 1) * c.knockback;
+              pilot.ship.vy += (distance ? dy / distance : 0) * c.knockback;
+            }
+          }
+          extra.timer = c.cooldownSeconds;
+        }
+      } else if (extra.timer <= 0) {
+        extra.warning = c.telegraphSeconds;
+        this.sound.play("bossCharge");
       }
-    } else if (extra.timer <= 0 && !this.specialTethers().some((t) => t.sourceId === d.id)) {
-      extra.target = this.specialPilotId();
-      extra.warning = config.telegraphSeconds;
-      this.rings.push({
-        x: d.x,
-        y: d.y,
-        r: d.r,
-        max: d.r * 2,
-        life: config.telegraphSeconds,
-        color: "#6fe7ff",
-        w: 2,
-      });
     }
   }
 
@@ -247,26 +251,51 @@ export class Game {
   }
 
   updateTethers(dt: number) {
-    const remaining = this.specialTethers().filter((t) => {
-      const source = this.drones.find((d) => d.id === t.sourceId),
-        p = this.specialPilots().find((p) => p.id === t.targetPlayerId)!;
-      const distance = source ? Math.hypot(source.x - p.ship.x, source.y - p.ship.y) : Infinity;
-      if (!source || p.disabled || distance > t.maximumDistance) {
-        this.specialEvent({
-          type: "tetherBroken",
-          tick: this.specialTick(),
-          entityId: t.sourceId,
-          playerId: p.id,
-        });
-        return false;
+    // Retire saved player tethers from older co-op rooms. This unit now shields allies.
+    this.specialTethers().length = 0;
+    const c = COOP_CONFIG.tetherSentinel;
+    const sources = this.drones.filter((d) => d.coop?.kind === "tetherSentinel" && d.hp > 0);
+    for (const target of [...this.rocks, ...this.drones]) {
+      let source: Drone | undefined,
+        nearest: number = c.shieldRange;
+      for (const candidate of sources) {
+        if (candidate.id === target.id) continue;
+        const distance = Math.hypot(candidate.x - target.x, candidate.y - target.y);
+        if (distance <= nearest) {
+          source = candidate;
+          nearest = distance;
+        }
       }
-      if (distance > t.minimumDistance) {
-        p.ship.vx += ((source.x - p.ship.x) / distance) * t.strength * dt;
-        p.ship.vy += ((source.y - p.ship.y) / distance) * t.strength * dt;
+      if (!source) {
+        delete target.supportShield;
+        continue;
       }
-      return true;
-    });
-    this.specialTethers().splice(0, this.specialTethers().length, ...remaining);
+      const maxHp = clamp(target.maxHp * c.shieldFraction, c.shieldMin, c.shieldMax);
+      if (!target.supportShield) target.supportShield = { hp: maxHp, maxHp, sourceId: source.id };
+      else {
+        target.supportShield.sourceId = source.id;
+        target.supportShield.maxHp = maxHp;
+        target.supportShield.hp = Math.min(maxHp, target.supportShield.hp + c.shieldRecharge * dt);
+      }
+    }
+  }
+
+  absorbSupportShield(target: Rock | Drone, amount: number) {
+    const shield = target.supportShield;
+    if (!shield) return amount;
+    const source = this.drones.find(
+      (d) => d.id === shield.sourceId && d.hp > 0 && d.coop?.kind === "tetherSentinel",
+    );
+    if (
+      !source ||
+      Math.hypot(source.x - target.x, source.y - target.y) > COOP_CONFIG.tetherSentinel.shieldRange
+    ) {
+      delete target.supportShield;
+      return amount;
+    }
+    const absorbed = Math.min(shield.hp, Math.max(0, amount));
+    shield.hp -= absorbed;
+    return amount - absorbed;
   }
 
   mineBoom(r: Rock) {
@@ -290,7 +319,7 @@ export class Game {
   }
   pickupCollected(_pickup: Pickup) {}
   loseRockHp(rock: Rock, amount: number) {
-    rock.hp -= amount;
+    rock.hp -= this.absorbSupportShield(rock, amount);
   }
   addBullet(...bullets: Bullet[]) {
     this.bullets.push(...bullets);
@@ -385,14 +414,7 @@ export class Game {
 
   reduced = false;
   god = false;
-  settings = {
-    autoFire: false,
-    mouseControl: false,
-    hybridAim: true,
-    trackpad: false,
-    legacyMovement: false,
-    shake: true,
-  };
+  settings = { ...DEFAULT_SETTINGS };
   mouse = { x: 0, y: 0 };
   mouseDown = false;
 
@@ -883,7 +905,15 @@ export class Game {
       return [
         { label: "Beam DPS", value: Math.round(s.dps).toString() },
         { label: "Heat / sec", value: s.heatRate.toFixed(2) },
-        { label: "Range", value: "1100" },
+        { label: "Range", value: Math.round(s.range).toString() },
+        { label: "Beam width", value: Math.round(s.width).toString() },
+        {
+          label: "Redline DPS",
+          value: Math.round(
+            s.dps *
+              (s.redline ? 1 : GAME_CONFIG.weaponProgression.weapons.laser.redlineDamageMultiplier),
+          ).toString(),
+        },
         { label: "Overheat lock", value: level >= MAX_WEAPON_LEVEL ? "None · max level" : "15%" },
       ];
     }
@@ -1035,8 +1065,9 @@ export class Game {
     const lv = Math.max(0, L - 1);
     return {
       range:
-        GAME_CONFIG.weaponProgression.weapons.arc.baseRange +
-        GAME_CONFIG.weaponProgression.weapons.arc.rangePerLevel * lv,
+        (GAME_CONFIG.weaponProgression.weapons.arc.baseRange +
+          GAME_CONFIG.weaponProgression.weapons.arc.rangePerLevel * lv) *
+        (this.p.rangeMul ?? 1),
       chains:
         GAME_CONFIG.weaponProgression.weapons.arc.baseChains +
         Math.floor(lv / GAME_CONFIG.weaponProgression.weapons.arc.chainsEveryLevels),
@@ -1050,8 +1081,15 @@ export class Game {
 
   laserStats(L: number, drone = false) {
     const lv = Math.max(0, L - 1);
+    const tuning = GAME_CONFIG.weaponProgression.weapons.laser;
+    const redline = !drone && L < MAX_WEAPON_LEVEL && this.p.heat >= tuning.redlineThreshold;
     return {
+      range: tuning.range * (this.p.rangeMul ?? 1),
+      width: tuning.baseWidth + lv * tuning.widthPerLevel,
+      color: redline ? "#ff3d45" : ICE,
+      redline,
       dps:
+        (redline ? tuning.redlineDamageMultiplier : 1) *
         GAME_CONFIG.weaponProgression.weapons.laser.baseDps *
         (1 + GAME_CONFIG.weaponProgression.weapons.laser.dpsPerLevel * lv) *
         this.p.damageMul *
@@ -1241,7 +1279,7 @@ export class Game {
           p.beamOn = false;
           this.sound.play("overheat");
         }
-        this.beamDamage(dt, ls.dps);
+        this.beamDamage(dt, this.laserStats(L).dps);
       } else {
         if (p.beamOn) {
           this.sound.play("beamStop");
@@ -1952,17 +1990,23 @@ export class Game {
     const attached = d.weapon;
     const attachedLevel = attached ? this.p.weapons[attached] : 0;
     const range =
-      GAME_CONFIG.salvage.targetRangeBase +
-      d.upgrades.scan * GAME_CONFIG.salvage.targetRangePerScan +
-      (d.upgrades.scan >= 3 ? GAME_CONFIG.salvage.scanLevel3TargetBonus : 0) +
-      (attached ? GAME_CONFIG.salvage.attachedWeaponRangeBonus : 0);
+      (this.p.rangeMul ?? 1) *
+      (GAME_CONFIG.salvage.targetRangeBase +
+        d.upgrades.scan * GAME_CONFIG.salvage.targetRangePerScan +
+        (d.upgrades.scan >= 3 ? GAME_CONFIG.salvage.scanLevel3TargetBonus : 0) +
+        (attached ? GAME_CONFIG.salvage.attachedWeaponRangeBonus : 0));
     const finalSurge = over === 3 ? 1.65 : 1;
     const overMul = (1 + over * 0.28) * (1 - Math.max(0, over - 1) * 0.08) * finalSurge;
 
     // ---- continuous beam mount ----
     if (attached === "laser") {
       u.fireTimer = 0;
-      const target = this.nearestTarget(u.x, u.y, range + 200, (r) => r.trait !== "meteor");
+      const target = this.nearestTarget(
+        u.x,
+        u.y,
+        range + 200 * (this.p.rangeMul ?? 1),
+        (r) => r.trait !== "meteor",
+      );
       if (!target) {
         u.beamOn = false;
         return;
@@ -1974,7 +2018,13 @@ export class Game {
         : desired;
       u.beamOn = true;
       const dps = this.laserStats(attachedLevel, true).dps * 0.18 * overMul * (1 + twin * 0.2);
-      u.beamLen = this.droneBeamDamage(u.x, u.y, u.beamAngle, range + 200, dps * dt);
+      u.beamLen = this.droneBeamDamage(
+        u.x,
+        u.y,
+        u.beamAngle,
+        range + 200 * (this.p.rangeMul ?? 1),
+        dps * dt,
+      );
       if (this.frame % 6 === 0) this.sound.play("arc");
       return;
     }
@@ -2026,7 +2076,7 @@ export class Game {
         vx: Math.cos(a) * speed,
         vy: Math.sin(a) * speed,
         r: weaponStats ? weaponStats.r : 3,
-        life: weaponStats ? weaponStats.life : 1.4,
+        life: weaponStats ? weaponStats.life : 1.4 * (this.p.rangeMul ?? 1),
         dmg: damage,
         kind: shotKind,
         pierce: weaponStats ? weaponStats.pierce : 0,
@@ -2176,7 +2226,9 @@ export class Game {
   /** Natural reinforcements share a live cap; developer batches remain explicit overrides. */
   spawnSpikers(count = 1) {
     if (this.wave < GAME_CONFIG.enemies.spikers.unlockWave) return 0;
-    const live = this.drones.filter((d) => d.kind === "spiker").length;
+    const live = this.drones.filter(
+      (d) => d.kind === "spiker" && d.coop?.kind !== "riftSpiker",
+    ).length;
     const amount = Math.max(0, Math.min(count, this.spikerCap() - live));
     for (let i = 0; i < amount; i++) {
       // Choose the edge furthest from the ship to leave a clear entry path.
@@ -2231,9 +2283,10 @@ export class Game {
     if (this.mode !== "playing") return;
     d.fire -= dt;
     if (d.fire > 0) return;
-    const shots = this.spikerShots();
+    const rift = d.coop?.kind === "riftSpiker";
+    const shots = rift ? 8 : this.spikerShots();
     for (let i = 0; i < shots; i++) {
-      const a = d.angle + (i * TAU) / shots;
+      const a = d.angle + (i * TAU) / shots + (rift ? this.frame * 0.018 : 0);
       this.addBullet({
         x: d.x + Math.cos(a) * (d.r + 6),
         y: d.y + Math.sin(a) * (d.r + 6),
@@ -2243,9 +2296,9 @@ export class Game {
         life: tuning.boltLifetime,
         dmg: tuning.boltDamage,
         kind: "enemy",
-        damageCause: "Spiker radial volley",
+        damageCause: rift ? "Rift Spiker spiral volley" : "Spiker radial volley",
         pierce: 0,
-        color: "#ff7aa0",
+        color: rift ? "#b68cff" : "#ff7aa0",
         hitIds: new Set(),
         turn: 0,
         bounces: 0,
@@ -2689,7 +2742,8 @@ export class Game {
   /* ------------------------------------------------------------ bullets */
 
   guide(b: Bullet, dt: number) {
-    const range = b.kind === "missile" ? 900 : b.kind === "rail" ? 1500 : 520;
+    const range =
+      (b.kind === "missile" ? 900 : b.kind === "rail" ? 1500 : 520) * (this.p.rangeMul ?? 1);
     let target: Hostile | undefined;
     if (b.kind === "seeker") target = this.nearestTarget(b.x, b.y, range);
     else {
@@ -2697,6 +2751,15 @@ export class Game {
       if (!target) target = this.nearestTarget(b.x, b.y, range);
     }
     if (!target) return;
+    if (b.kind === "rail") {
+      const origin = (b.guidanceOrigin ??= Math.atan2(b.vy, b.vx));
+      const angle = Math.atan2(target.y - b.y, target.x - b.x);
+      if (
+        Math.abs(wrapAngle(angle - origin)) >
+        GAME_CONFIG.weaponProgression.weapons.rail.aimAssistCone
+      )
+        return;
+    }
     b.target = target.id;
     const spd = Math.hypot(b.vx, b.vy) || 1;
     const dist = Math.hypot(target.x - b.x, target.y - b.y);
@@ -2708,7 +2771,12 @@ export class Game {
       ly = target.y + target.vy * tt;
     const desired = Math.atan2(ly - b.y, lx - b.x);
     const cur = Math.atan2(b.vy, b.vx);
-    const na = cur + clamp(wrapAngle(desired - cur), -b.turn * dt, b.turn * dt);
+    let na = cur + clamp(wrapAngle(desired - cur), -b.turn * dt, b.turn * dt);
+    if (b.kind === "rail") {
+      const origin = b.guidanceOrigin!;
+      const cap = GAME_CONFIG.weaponProgression.weapons.rail.maxAimCorrection;
+      na = origin + clamp(wrapAngle(na - origin), -cap, cap);
+    }
     b.vx = Math.cos(na) * spd;
     b.vy = Math.sin(na) * spd;
   }
@@ -3123,10 +3191,10 @@ export class Game {
     return best;
   }
 
-  assistAngle(base: number): number {
-    const CONE = 0.2,
-      MAX_NUDGE = 0.085,
-      RANGE = 920;
+  assistAngle(base: number, strength = 1): number {
+    const CONE = 0.2 * strength,
+      MAX_NUDGE = 0.085 * strength,
+      RANGE = 920 * (this.p.rangeMul ?? 1);
     let bestDiff = CONE,
       bestAngle = base;
     const consider = (tx: number, ty: number, tvx: number, tvy: number, radius: number) => {
@@ -3158,7 +3226,7 @@ export class Game {
     const W = p.primary;
     const s = this.weaponStats(W, p.weapons[W] || 1);
     p.fireTimer = 1 / s.rate;
-    const aim = this.assistAngle(p.angle);
+    const aim = this.assistAngle(p.angle, W === "rail" ? 0.3 : 1);
     this.sound.play(s.sfx);
     const mx = p.x + Math.cos(p.angle) * 22,
       my = p.y + Math.sin(p.angle) * 22;
@@ -3213,8 +3281,9 @@ export class Game {
     this.beamAngle = a;
     const dx = Math.cos(a),
       dy = Math.sin(a);
-    const range = 1100,
-      TOL = 7;
+    const beam = this.laserStats(p.weapons.laser || 1);
+    const range = beam.range,
+      TOL = beam.width / 2;
     // A boom chain reaction may remove several rocks at once. Work from the
     // original targets, skipping removed ones and leaving new shards for the next tick.
     for (const r of [...this.rocks].reverse()) {
@@ -3361,7 +3430,7 @@ export class Game {
     const p = this.p;
     p.missiles--;
     p.missileTimer = 0.35;
-    const lock = this.nearestTarget(p.x, p.y, 900);
+    const lock = this.nearestTarget(p.x, p.y, 900 * (p.rangeMul ?? 1));
     const a = lock ? Math.atan2(lock.y - p.y, lock.x - p.x) : this.assistAngle(p.angle);
     // launch along the ship's nose but bend hard toward the lock straight away
     const la = p.angle + clamp(wrapAngle(a - p.angle), -0.6, 0.6);
@@ -3371,7 +3440,7 @@ export class Game {
       vx: Math.cos(la) * 380,
       vy: Math.sin(la) * 380,
       r: 7,
-      life: 4.5,
+      life: 4.5 * (p.rangeMul ?? 1),
       dmg: 0,
       kind: "missile",
       pierce: 0,
@@ -3405,7 +3474,7 @@ export class Game {
   damageDrone(index: number, dmg: number, crit: boolean, quiet = false) {
     const d = this.drones[index];
     if (!d) return;
-    d.hp -= dmg;
+    d.hp -= this.absorbSupportShield(d, dmg);
     d.flash = 1;
     if (!quiet) {
       this.burst(d.x, d.y, crit ? 10 : 6, crit ? AMBER_HOT : ICE);
@@ -5929,6 +5998,7 @@ export class Game {
 
   /** Medium enemies retain their normal size and health. */
   devSpawnMob(kind: DeveloperEnemy, count = 1, size: 1 | 2 | 3 = 2) {
+    if (kind === "riftSpiker" && !this.cooperative) return;
     const tuningWave = scaledWave(this.wave);
     const hpScale = size === 1 ? 0.65 : size === 3 ? 1.6 : 1;
     const radiusScale = size === 1 ? 0.75 : size === 3 ? 1.35 : 1;
@@ -5936,9 +6006,16 @@ export class Game {
       const a = this.random() * TAU;
       const x = clamp(this.p.x + Math.cos(a) * 520, 50, this.w - 50);
       const y = clamp(this.p.y + Math.sin(a) * 520, 50, this.h - 50);
-      const special = kind === "tetherSentinel" || kind === "mineWarden" ? kind : null;
+      const special =
+        kind === "tetherSentinel" || kind === "mineWarden" || kind === "riftSpiker" ? kind : null;
       const baseKind =
-        kind === "tetherSentinel" ? "sentinel" : kind === "mineWarden" ? "warden" : kind;
+        kind === "tetherSentinel"
+          ? "sentinel"
+          : kind === "mineWarden"
+            ? "warden"
+            : kind === "riftSpiker"
+              ? "spiker"
+              : kind;
       const mob = this.spawnDrone(
         x,
         y,
@@ -5958,7 +6035,9 @@ export class Game {
           timer:
             special === "mineWarden"
               ? COOP_CONFIG.mineWarden.deploymentMin
-              : COOP_CONFIG.tetherSentinel.cooldownSeconds,
+              : special === "riftSpiker"
+                ? COOP_CONFIG.riftSpiker.cooldownSeconds
+                : COOP_CONFIG.tetherSentinel.cooldownSeconds,
           warning: 0,
           target: null,
         };
@@ -5981,6 +6060,7 @@ export class Game {
     const keepMissiles = p.missiles;
     p.fireRateMul = base.fireRateMul;
     p.damageMul = base.damageMul;
+    p.rangeMul = base.rangeMul;
     p.thrust = base.thrust;
     p.maxSpeed = base.maxSpeed;
     p.turn = base.turn;
@@ -6469,7 +6549,8 @@ export class Game {
       ctx.moveTo(bx, by);
       ctx.lineTo(ex, ey);
       ctx.strokeStyle = ICE;
-      ctx.lineWidth = 2.6 + (this.random() - 0.5) * 1.6;
+      ctx.lineWidth =
+        this.laserStats(this.p.weapons.laser || 1, true).width * 0.55 + (this.random() - 0.5);
       ctx.shadowBlur = 18;
       ctx.shadowColor = ICE;
       ctx.globalAlpha = 0.9;
@@ -6589,6 +6670,36 @@ export class Game {
     ctx.restore();
   }
 
+  renderSupportShields(ctx: CanvasRenderingContext2D) {
+    ctx.save();
+    ctx.strokeStyle = "#6fe7ff";
+    ctx.lineWidth = 1.5;
+    let links = 0;
+    for (const target of [...this.rocks, ...this.drones]) {
+      const shield = target.supportShield;
+      if (!shield || shield.hp <= 0) continue;
+      const source = this.drones.find((d) => d.id === shield.sourceId);
+      if (
+        !source ||
+        Math.hypot(source.x - target.x, source.y - target.y) >
+          COOP_CONFIG.tetherSentinel.shieldRange
+      )
+        continue;
+      ctx.globalAlpha = 0.25 + 0.4 * (shield.hp / shield.maxHp);
+      ctx.beginPath();
+      ctx.arc(target.x, target.y, target.r + 5, 0, TAU);
+      ctx.stroke();
+      if (links++ < 24) {
+        ctx.globalAlpha = 0.18;
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
   renderPilot(ctx: CanvasRenderingContext2D) {
     // salvage companion sits between the hostile field and the player
     this.renderSalvageDrone(ctx);
@@ -6638,11 +6749,12 @@ export class Game {
       ctx.lineTo(-7, 0);
       ctx.lineTo(-13, 13);
       ctx.closePath();
-      ctx.fillStyle = "rgba(12,14,22,0.85)";
+      const visibility = clamp(this.settings.shipVisibility ?? 0, 0, 1);
+      ctx.fillStyle = visibility > 0 ? `rgba(255,224,163,${visibility})` : "rgba(12,14,22,0.85)";
       ctx.fill();
       ctx.lineWidth = 2.2;
       ctx.strokeStyle = this.god ? MAGENTA : AMBER_HOT;
-      ctx.shadowBlur = 16;
+      ctx.shadowBlur = 16 + visibility * 30;
       ctx.shadowColor = AMBER;
       ctx.stroke();
       ctx.shadowBlur = 0;
@@ -6655,16 +6767,17 @@ export class Game {
     if (this.p.primary === "laser" && this.p.beamOn && this.mode === "playing") {
       const p = this.p,
         ba = this.beamAngle;
+      const beam = this.laserStats(p.weapons.laser || 1);
       ctx.beginPath();
       ctx.moveTo(p.x + Math.cos(ba) * 22, p.y + Math.sin(ba) * 22);
-      ctx.lineTo(p.x + Math.cos(ba) * 1100, p.y + Math.sin(ba) * 1100);
-      ctx.strokeStyle = ICE;
-      ctx.lineWidth = 4 + (this.random() - 0.5) * 3;
+      ctx.lineTo(p.x + Math.cos(ba) * beam.range, p.y + Math.sin(ba) * beam.range);
+      ctx.strokeStyle = beam.color;
+      ctx.lineWidth = beam.width + (this.random() - 0.5) * 2;
       ctx.shadowBlur = 26;
-      ctx.shadowColor = ICE;
+      ctx.shadowColor = beam.color;
       ctx.globalAlpha = 0.95;
       ctx.stroke();
-      ctx.lineWidth = 1.2;
+      ctx.lineWidth = Math.max(1.2, beam.width * 0.18);
       ctx.strokeStyle = "#ffffff";
       ctx.stroke();
       ctx.globalAlpha = 1;
@@ -6672,11 +6785,15 @@ export class Game {
     }
   }
 
+  prepareFrame(ctx: CanvasRenderingContext2D) {
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.clearRect(0, 0, this.w, this.h);
+  }
+
   render() {
     const ctx = this.ctx;
     const { w, h } = this;
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
+    this.prepareFrame(ctx);
 
     const shakeAmt = this.screenShakeAmount();
     ctx.save();
@@ -6861,22 +6978,11 @@ export class Game {
       ctx.shadowBlur = 0;
     }
 
-    ctx.save();
-    ctx.strokeStyle = "#6fe7ff";
-    ctx.setLineDash([6, 5]);
-    ctx.lineWidth = 2;
-    for (const tether of this.campaignTethers) {
-      const source = this.drones.find((d) => d.id === tether.sourceId);
-      if (!source) continue;
-      ctx.beginPath();
-      ctx.moveTo(source.x, source.y);
-      ctx.lineTo(this.p.x, this.p.y);
-      ctx.stroke();
-    }
-    ctx.restore();
+    this.renderSupportShields(ctx);
 
     // Enemy silhouettes share the same magenta vector armor language.
     for (const d of this.drones) {
+      if (renderSpecialist(ctx, d, this.frame)) continue;
       if (d.kind === "spiker") {
         this.renderSpiker(ctx, d);
         continue;

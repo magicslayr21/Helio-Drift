@@ -161,3 +161,42 @@ test("invalid local samples are normalized before they reach the network", () =>
   assert.equal(message.moveY, 0);
   assert.ok(message.aimAngle >= -Math.PI && message.aimAngle <= Math.PI);
 });
+
+test("wrapped native asteroids and ships snap at edges without crossing the arena", () => {
+  const sim = new LocalCoopSimulation({ seed: 33 });
+  sim.game.rocks = [sim.game.makeRock(-20, 300, 2, 0, 0, "none")];
+  const first = snapshot(sim);
+  sim.state.tick = 2;
+  sim.game.frame += 4;
+  sim.game.rocks[0].x = sim.width + 20;
+  sim.state.players.p1.ship.x = sim.width - 1;
+  const second = snapshot(sim);
+  first.state.players.p1.ship.x = 1;
+  const buffer = new SnapshotInterpolator();
+  buffer.push(first);
+  buffer.push(second);
+  const middle = buffer.sample(1);
+  assert.ok(middle.campaign.rocks[0].x > sim.width);
+  assert.equal(middle.players.p1.ship.x, sim.width - 1);
+  assert.equal(first.state.campaign.rocks[0].x, -20);
+});
+
+test("co-op projection fills wide and portrait viewports without stretching gameplay", async () => {
+  const { coopCamera } = await import("../src/game/coop-camera.ts");
+  for (const [width, height] of [
+    [1440, 700],
+    [2560, 900],
+    [390, 700],
+  ]) {
+    const c = coopCamera(width, height, 1600, 1000, { x: 1200, y: 800 });
+    assert.ok(c.scale > 0);
+    assert.ok(c.x >= 0 && c.y >= 0);
+    assert.ok(c.x + width / c.scale <= 1600 + 1e-8);
+    assert.ok(c.y + height / c.scale <= 1000 + 1e-8);
+    const sx = (1200 - c.x) * c.scale,
+      sy = (800 - c.y) * c.scale;
+    assert.ok(sx >= 0 && sx <= width);
+    assert.ok(sy >= 0 && sy <= height);
+    assert.ok(Math.abs(c.x + sx / c.scale - 1200) < 1e-8);
+  }
+});

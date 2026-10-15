@@ -583,7 +583,8 @@
   width: 100%;
   max-width: 100%;
   max-height: 100%;
-  aspect-ratio: 10 / 7;
+  height: 100%;
+  object-fit: fill;
   touch-action: none;
   cursor: crosshair;
 }
@@ -1058,4 +1059,289 @@
 }
 .campaign-pause-overlay {
   color: #ffe0a3;
+}
+
+.coop-game {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  z-index: 5;
+}
+.coop-arena-shell {
+  width: 100%;
+  overflow: hidden;
+}
+
+/* Mission-control surfaces use the same plates and engraved legends as campaign. */
+.coop-menu {
+  background: radial-gradient(ellipse at 65% -10%, #ffb03a0c, transparent 60%), #070911;
+}
+.coop-menu.scanlines::after {
+  position: fixed;
+  z-index: 250;
+  opacity: 0.5;
+}
+.coop-home {
+  max-width: 1700px;
+  grid-template-columns: minmax(300px, 0.8fr) minmax(420px, 1.2fr);
+  gap: 28px;
+  padding: clamp(24px, 4vw, 60px);
+  align-items: stretch;
+}
+.coop-mission-header {
+  grid-column: 1/-1;
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 20px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid #3a3f5580;
+}
+.coop-mission-header h2 {
+  margin-top: 8px;
+  font-family: var(--font-display);
+  font-size: clamp(28px, 4vw, 58px);
+  line-height: 1;
+  font-weight: 900;
+}
+.coop-mission-header > div:last-child {
+  text-align: right;
+}
+.coop-mission-header strong {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 36px;
+  color: #ffb03a;
+}
+.coop-mission-header small {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+}
+.coop-home-copy {
+  padding: clamp(20px, 3vw, 36px);
+  border: 1px solid #3a3f5580;
+}
+.coop-home h1 {
+  font-size: clamp(24px, 3vw, 42px);
+  font-weight: 900;
+}
+.coop-actions-grid {
+  counter-reset: operation;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.coop-actions-grid > button {
+  counter-increment: operation;
+  padding: 24px;
+  min-height: 160px;
+  display: flex;
+  flex-direction: column;
+  align-items: start;
+  justify-content: end;
+  gap: 10px;
+  text-align: left;
+  border: 1px solid #3a3f5599;
+  background: linear-gradient(180deg, #3a3f5525, #0a0c14c7);
+}
+.coop-actions-grid > button::after {
+  content: "HD / 0" counter(operation);
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: #ffb03a80;
+}
+.coop-actions-grid > button > svg {
+  width: 30px;
+  height: 30px;
+  color: #ffb03a;
+}
+.coop-actions-grid > button strong {
+  font-family: var(--font-display);
+  font-size: 19px;
+  text-transform: uppercase;
+  color: #ffe0a3;
+}
+.coop-actions-grid > button:disabled {
+  opacity: 0.45;
+}
+.coop-actions-grid > button:not(:disabled):hover {
+  border-color: #ffb03a;
+  background: linear-gradient(180deg, #ffb03a10, #12151f);
+}
+.coop-host-gate,
+.coop-callsign .launch-profile {
+  background: #07091166;
+  border-color: #3a3f5580;
+}
+.coop-form,
+.coop-ready,
+.coop-room-browser {
+  width: min(1100px, calc(100% - 40px));
+  margin: 32px auto;
+  padding: clamp(22px, 4vw, 44px);
+  border: 1px solid #3a3f5580;
+  background: linear-gradient(180deg, #3a3f5525, #0a0c14c7);
+}
+.coop-form h2,
+.coop-ready h1,
+.coop-browser h2 {
+  font-weight: 900;
+  color: #ffe0a3;
+  text-transform: uppercase;
+}
+.coop-ready-pilot {
+  background: #07091180;
+  border-color: #3a3f5580;
+}
+.coop-ready-actions button.primary {
+  background: #ffb03a;
+  color: #070911;
+  border-color: #ffb03a;
+}
+.coop-records {
+  width: min(1380px, calc(100% - 40px));
+  max-width: none;
+  margin: 32px auto;
+  padding: clamp(20px, 3vw, 40px);
+  border: 1px solid #3a3f5580;
+}
+.coop-pause .coop-records {
+  width: 100%;
+  margin: 0;
+  padding: 12px;
+}
+.coop-record-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 0;
+  margin: 18px 0;
+  border-block: 1px solid #3a3f5560;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: #ffb03a99;
+}
+.coop-record-summary span:last-child {
+  margin-left: auto;
+}
+.coop-records .coop-board-row {
+  border: 1px solid #3a3f5560;
+  margin-top: 8px;
+  background: #07091166;
+  padding-inline: 14px;
+}
+.coop-endcap > .coop-results {
+  width: min(720px, 94%);
+  border: 1px solid #3a3f5580;
+  border-top: 3px solid #ffb03a;
+  padding: clamp(24px, 4vw, 44px);
+}
+.coop-endcap h2 {
+  font-weight: 900;
+  line-height: 1;
+  color: #ffe0a3;
+}
+.coop-endcap.is-defeat > .coop-results {
+  border-top-color: #ff3d6e;
+}
+.coop-endcap.is-defeat h2 {
+  color: #ff3d6e;
+}
+.coop-endcap .coop-result-status {
+  padding-bottom: 15px;
+  border-bottom: 1px solid #3a3f5560;
+  color: #ffb03a99;
+  font-size: 9px;
+  letter-spacing: 0.15em;
+}
+.coop-result-pilots {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.coop-result-pilots > section {
+  padding: 14px;
+  border: 1px solid #3a3f5560;
+  background: #07091166;
+}
+.coop-result-pilots dl {
+  display: block;
+  margin: 12px 0 0;
+}
+.coop-result-pilots dl > div {
+  display: flex;
+  justify-content: space-between;
+  border: 0;
+  padding: 5px 0;
+}
+.coop-result-pilots dd {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.coop-results > button {
+  background: #ffb03a;
+  color: #070911;
+  border: 2px solid #ffb03a;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+}
+.flight-settings {
+  font-family: var(--font-mono);
+}
+@media (max-width: 800px) {
+  .coop-home {
+    grid-template-columns: 1fr;
+    display: grid;
+    padding: 20px;
+  }
+  .coop-mission-header {
+    align-items: start;
+  }
+  .coop-mission-header > div:last-child {
+    display: none;
+  }
+  .coop-actions-grid {
+    margin-top: 0;
+  }
+  .coop-form,
+  .coop-ready,
+  .coop-room-browser,
+  .coop-records {
+    width: calc(100% - 24px);
+    margin: 16px auto;
+    padding: 18px;
+  }
+}
+@media (max-width: 480px) {
+  .coop-result-pilots {
+    grid-template-columns: 1fr;
+  }
+  .coop-actions-grid > button {
+    min-height: 145px;
+    padding: 16px;
+  }
+  .coop-actions-grid > button strong {
+    font-size: 15px;
+  }
+  .coop-record-summary span:last-child {
+    margin-left: 0;
+  }
+}
+
+.deploy-screen--cooperative {
+  color-scheme: dark;
+  scrollbar-color: #3a3f55 #070911;
+  scrollbar-width: thin;
+}
+.coop-endcap .coop-results > button {
+  color: #070911;
+  background: #ffb03a;
+}
+.coop-endcap .coop-results > button:hover {
+  background: #ffe0a3;
 }

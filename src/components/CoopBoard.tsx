@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { createPortal } from "react-dom";
 import { Eye, Pencil, RefreshCw, ShieldCheck, Trash2, X } from "lucide-react";
 import {
   authenticateDeveloper,
@@ -144,15 +145,20 @@ export function CoopBoard({
     }
   };
   return (
-    <div className="coop-browser">
+    <div className="coop-browser coop-records plate">
       <div className="coop-section-title">
         <div>
-          <p className="deploy-eyebrow">Server-authored records</p>
+          <p className="legend">Flight archive / team records</p>
           <h2>CO-OP LEADERBOARD</h2>
         </div>
         <button onClick={onRefresh} disabled={pending}>
           <RefreshCw size={16} /> Refresh
         </button>
+      </div>
+      <div className="coop-record-summary">
+        <p className="legend">Archive status</p>
+        <span>{page?.total ?? 0} TEAM RECORDS</span>
+        <span>25 WAVES / 5 SECTORS / MK6</span>
       </div>
       <p className="coop-help">
         {admin
@@ -219,224 +225,231 @@ export function CoopBoard({
       {!pending && !page?.entries.length && (
         <p className="coop-help">No authoritative co-op results have been recorded yet.</p>
       )}
-      {selected && (
-        <div
-          className="lb-sheet-backdrop coop-record-backdrop"
-          data-coop-record-dialog
-          onKeyDown={(event) => {
-            event.stopPropagation();
-            if (event.key === "Escape") {
-              event.preventDefault();
-              close();
-            }
-            if (event.key !== "Tab") return;
-            const controls = Array.from(
-              sheet.current?.querySelectorAll<HTMLElement>(
-                "button:not(:disabled),input:not(:disabled),select:not(:disabled)",
-              ) ?? [],
-            );
-            const first = controls[0],
-              last = controls.at(-1);
-            if (event.shiftKey && document.activeElement === first) {
-              event.preventDefault();
-              last?.focus();
-            } else if (!event.shiftKey && document.activeElement === last) {
-              event.preventDefault();
-              first?.focus();
-            }
-          }}
-        >
+      {selected &&
+        createPortal(
           <div
-            className="lb-sheet thin-scroll"
-            ref={sheet}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="coop-action-title"
+            className="lb-sheet-backdrop coop-record-backdrop"
+            data-coop-record-dialog
+            onKeyDown={(event) => {
+              event.stopPropagation();
+              if (event.key === "Escape") {
+                event.preventDefault();
+                close();
+              }
+              if (event.key !== "Tab") return;
+              const controls = Array.from(
+                sheet.current?.querySelectorAll<HTMLElement>(
+                  "button:not(:disabled),input:not(:disabled),select:not(:disabled)",
+                ) ?? [],
+              );
+              const first = controls[0],
+                last = controls.at(-1);
+              if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last?.focus();
+              } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first?.focus();
+              }
+            }}
           >
-            <header className="lb-sheet-header">
-              <div>
-                <span className="lb-label">DEVELOPER CONSOLE</span>
-                <h3 id="coop-action-title">
-                  {action === "authenticate"
-                    ? "Developer access"
-                    : action === "details"
-                      ? "Team telemetry"
-                      : action === "edit"
-                        ? "Edit co-op record"
-                        : "Delete co-op record"}
-                </h3>
-                <p>
-                  {selected.playerOne} + {selected.playerTwo} · Wave {selected.wave}
+            <div
+              className="lb-sheet thin-scroll"
+              ref={sheet}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="coop-action-title"
+            >
+              <header className="lb-sheet-header">
+                <div>
+                  <span className="lb-label">DEVELOPER CONSOLE</span>
+                  <h3 id="coop-action-title">
+                    {action === "authenticate"
+                      ? "Developer access"
+                      : action === "details"
+                        ? "Team telemetry"
+                        : action === "edit"
+                          ? "Edit co-op record"
+                          : "Delete co-op record"}
+                  </h3>
+                  <p>
+                    {selected.playerOne} + {selected.playerTwo} · Wave {selected.wave}
+                  </p>
+                </div>
+                <button
+                  className="lb-icon-button"
+                  type="button"
+                  aria-label="Close record actions"
+                  data-autofocus={action === "details" || action === "delete" ? true : undefined}
+                  disabled={busy}
+                  onClick={close}
+                >
+                  <X size={19} />
+                </button>
+              </header>
+              {error && (
+                <div className="lb-error" role="alert">
+                  <p>{error}</p>
+                  {action !== "authenticate" && (
+                    <button
+                      className="lb-button"
+                      onClick={() => void load(selected, action)}
+                      disabled={busy}
+                    >
+                      Reload record
+                    </button>
+                  )}
+                </div>
+              )}
+              {busy && (
+                <p role="status" className="lb-label">
+                  Synchronizing record…
                 </p>
-              </div>
-              <button
-                className="lb-icon-button"
-                type="button"
-                aria-label="Close record actions"
-                data-autofocus={action === "details" || action === "delete" ? true : undefined}
-                disabled={busy}
-                onClick={close}
-              >
-                <X size={19} />
-              </button>
-            </header>
-            {error && (
-              <div className="lb-error" role="alert">
-                <p>{error}</p>
-                {action !== "authenticate" && (
-                  <button
-                    className="lb-button"
-                    onClick={() => void load(selected, action)}
-                    disabled={busy}
-                  >
-                    Reload record
-                  </button>
-                )}
-              </div>
-            )}
-            {busy && (
-              <p role="status" className="lb-label">
-                Synchronizing record…
-              </p>
-            )}
-            {action === "details" && details && <CoopTelemetry details={details} />}
-            {action !== "details" && (
-              <form className="lb-edit-form" onSubmit={submit}>
-                {action === "authenticate" ? (
-                  <>
-                    <p>Enter the developer code to securely manage co-op records.</p>
-                    <label>
-                      Developer code
-                      <input
-                        type="password"
-                        value={code}
-                        onChange={(e) => setCode(e.target.value)}
-                        autoComplete="off"
-                        maxLength={256}
-                        required
-                        disabled={busy}
-                        data-autofocus
-                      />
-                    </label>
-                  </>
-                ) : action === "delete" ? (
-                  <div className="lb-delete-warning">
-                    <Trash2 size={28} />
-                    <p>
-                      Remove{" "}
-                      <strong>
-                        {selected.playerOne} + {selected.playerTwo}’s
-                      </strong>{" "}
-                      run from the co-op leaderboard?
-                    </p>
-                    <p>
-                      This record will be hidden from all players. This action cannot be undone
-                      here.
-                    </p>
-                    <dl>
-                      <div>
-                        <dt>Progress</dt>
-                        <dd>Wave {selected.wave}</dd>
-                      </div>
-                      <div>
-                        <dt>Score</dt>
-                        <dd>{selected.score.toLocaleString()}</dd>
-                      </div>
-                    </dl>
-                  </div>
-                ) : (
-                  edit && (
+              )}
+              {action === "details" && details && <CoopTelemetry details={details} />}
+              {action !== "details" && (
+                <form className="lb-edit-form" onSubmit={submit}>
+                  {action === "authenticate" ? (
                     <>
-                      {(
-                        [
-                          ["playerOne", "Pilot one"],
-                          ["playerTwo", "Pilot two"],
-                        ] as const
-                      ).map(([key, label]) => (
-                        <label key={key}>
-                          {label}
-                          <input
-                            value={edit[key]}
-                            minLength={2}
-                            maxLength={24}
-                            required
-                            disabled={busy}
-                            data-autofocus={key === "playerOne" ? true : undefined}
-                            onChange={(e) => setEdit({ ...edit, [key]: e.target.value })}
-                          />
-                        </label>
-                      ))}
-                      <div className="lb-edit-grid">
+                      <p>Enter the developer code to securely manage co-op records.</p>
+                      <label>
+                        Developer code
+                        <input
+                          type="password"
+                          value={code}
+                          onChange={(e) => setCode(e.target.value)}
+                          autoComplete="off"
+                          maxLength={256}
+                          required
+                          disabled={busy}
+                          data-autofocus
+                        />
+                      </label>
+                    </>
+                  ) : action === "delete" ? (
+                    <div className="lb-delete-warning">
+                      <Trash2 size={28} />
+                      <p>
+                        Remove{" "}
+                        <strong>
+                          {selected.playerOne} + {selected.playerTwo}’s
+                        </strong>{" "}
+                        run from the co-op leaderboard?
+                      </p>
+                      <p>
+                        This record will be hidden from all players. This action cannot be undone
+                        here.
+                      </p>
+                      <dl>
+                        <div>
+                          <dt>Progress</dt>
+                          <dd>Wave {selected.wave}</dd>
+                        </div>
+                        <div>
+                          <dt>Score</dt>
+                          <dd>{selected.score.toLocaleString()}</dd>
+                        </div>
+                      </dl>
+                    </div>
+                  ) : (
+                    edit && (
+                      <>
                         {(
                           [
-                            ["score", "Team score", 1e12],
-                            ["wave", "Wave", 1000000],
-                            ["sector", "Sector", 7],
-                            ["durationSeconds", "Flight time (seconds)", 31536000],
-                            ["bossesDefeated", "Bosses defeated", 1000000],
+                            ["playerOne", "Pilot one"],
+                            ["playerTwo", "Pilot two"],
                           ] as const
-                        ).map(([key, label, max]) => (
+                        ).map(([key, label]) => (
                           <label key={key}>
                             {label}
                             <input
-                              type="number"
-                              min={0}
-                              max={max}
-                              step={1}
+                              value={edit[key]}
+                              minLength={2}
+                              maxLength={24}
                               required
                               disabled={busy}
-                              value={edit[key]}
-                              onChange={(e) => setEdit({ ...edit, [key]: Number(e.target.value) })}
+                              data-autofocus={key === "playerOne" ? true : undefined}
+                              onChange={(e) => setEdit({ ...edit, [key]: e.target.value })}
                             />
                           </label>
                         ))}
-                        <label>
-                          Run status
-                          <select
-                            value={edit.status}
-                            disabled={busy}
-                            onChange={(e) =>
-                              setEdit({ ...edit, status: e.target.value as CoopRunEdit["status"] })
-                            }
-                          >
-                            <option value="victory">Victory</option>
-                            <option value="defeat">Defeat</option>
-                            <option value="abandoned">Abandoned</option>
-                          </select>
-                        </label>
-                      </div>
-                      <p>
-                        Victory marks a campaign clear. Saved pilot telemetry remains the original
-                        flight record.
-                      </p>
-                    </>
-                  )
-                )}
-                <footer className="lb-sheet-buttons">
-                  <button type="button" className="lb-button" disabled={busy} onClick={close}>
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className={`lb-button ${action === "delete" ? "lb-button-danger" : "lb-button-accent"}`}
-                    disabled={busy || (action === "edit" && !edit)}
-                  >
-                    {action === "authenticate" ? (
-                      <>
-                        <ShieldCheck size={14} /> Authorize
+                        <div className="lb-edit-grid">
+                          {(
+                            [
+                              ["score", "Team score", 1e12],
+                              ["wave", "Wave", 1000000],
+                              ["sector", "Sector", 7],
+                              ["durationSeconds", "Flight time (seconds)", 31536000],
+                              ["bossesDefeated", "Bosses defeated", 1000000],
+                            ] as const
+                          ).map(([key, label, max]) => (
+                            <label key={key}>
+                              {label}
+                              <input
+                                type="number"
+                                min={0}
+                                max={max}
+                                step={1}
+                                required
+                                disabled={busy}
+                                value={edit[key]}
+                                onChange={(e) =>
+                                  setEdit({ ...edit, [key]: Number(e.target.value) })
+                                }
+                              />
+                            </label>
+                          ))}
+                          <label>
+                            Run status
+                            <select
+                              value={edit.status}
+                              disabled={busy}
+                              onChange={(e) =>
+                                setEdit({
+                                  ...edit,
+                                  status: e.target.value as CoopRunEdit["status"],
+                                })
+                              }
+                            >
+                              <option value="victory">Victory</option>
+                              <option value="defeat">Defeat</option>
+                              <option value="abandoned">Abandoned</option>
+                            </select>
+                          </label>
+                        </div>
+                        <p>
+                          Victory marks a campaign clear. Saved pilot telemetry remains the original
+                          flight record.
+                        </p>
                       </>
-                    ) : action === "delete" ? (
-                      "Delete run"
-                    ) : (
-                      "Save changes"
-                    )}
-                  </button>
-                </footer>
-              </form>
-            )}
-          </div>
-        </div>
-      )}
+                    )
+                  )}
+                  <footer className="lb-sheet-buttons">
+                    <button type="button" className="lb-button" disabled={busy} onClick={close}>
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className={`lb-button ${action === "delete" ? "lb-button-danger" : "lb-button-accent"}`}
+                      disabled={busy || (action === "edit" && !edit)}
+                    >
+                      {action === "authenticate" ? (
+                        <>
+                          <ShieldCheck size={14} /> Authorize
+                        </>
+                      ) : action === "delete" ? (
+                        "Delete run"
+                      ) : (
+                        "Save changes"
+                      )}
+                    </button>
+                  </footer>
+                </form>
+              )}
+            </div>
+          </div>,
+          document.querySelector<HTMLDialogElement>("dialog.deploy-screen[open]") ?? document.body,
+        )}
     </div>
   );
 }

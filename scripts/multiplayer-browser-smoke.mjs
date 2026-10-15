@@ -370,6 +370,7 @@ async function observeFlight(client, page) {
     const reconcile = ClientPrediction.prototype.reconcile;
     ClientPrediction.prototype.reconcile = function(snapshot) {
       window.__flight = snapshot.state;
+      window.__snapshot = snapshot;
       return reconcile.call(this, snapshot);
     };
   })()`,
@@ -691,12 +692,13 @@ try {
     const times=window.__drawTimes.slice(-60).sort((a,b)=>a-b);
     const canvas=document.querySelector('.coop-arena');
     const rect=canvas.getBoundingClientRect();
-    return {meanMs:times.reduce((a,b)=>a+b,0)/times.length,p95Ms:times[56],pixels:canvas.width,expectedPixels:Math.max(1000,Math.round(rect.width*devicePixelRatio)),aspect:rect.width/rect.height};
+    return {meanMs:times.reduce((a,b)=>a+b,0)/times.length,p95Ms:times[56],pixels:canvas.width,expectedPixels:Math.round(rect.width*devicePixelRatio),aspect:rect.width/rect.height,fill:rect.width/canvas.parentElement.clientWidth};
   })()`,
   );
   assert.equal(rendering.pixels, rendering.expectedPixels);
-  assert.ok(Math.abs(rendering.aspect - 10 / 7) < 0.001, "arena must retain campaign proportions");
+  assert.ok(Math.abs(rendering.fill - 1) < 0.001, "arena must fill the available viewport width");
   console.info(`[coop rendering] ${JSON.stringify(rendering)}`);
+  await capture(cdp, alpha, "helio-coop-flight.png");
   for (const display of [
     { width: 1440, height: 900, deviceScaleFactor: 3, mobile: false },
     { width: 640, height: 480, deviceScaleFactor: 1, mobile: false },
@@ -711,9 +713,10 @@ try {
       const canvas = document.querySelector('.coop-arena');
       const rect = canvas.getBoundingClientRect();
       return devicePixelRatio === ${display.deviceScaleFactor} &&
-        Math.abs(canvas.width - Math.max(1000, Math.round(rect.width * devicePixelRatio))) <= 1 &&
-        Math.abs(canvas.height - canvas.width * 0.7) <= 1 &&
-        Math.abs(rect.width / rect.height - 10 / 7) < 0.001;
+        Math.abs(canvas.width - Math.round(rect.width * devicePixelRatio)) <= 1 &&
+        Math.abs(canvas.height - Math.round(rect.height * devicePixelRatio)) <= 1 &&
+        Math.abs(rect.width - canvas.parentElement.clientWidth) < 1 &&
+        Math.abs(rect.height - canvas.parentElement.clientHeight) < 1;
     })()`,
         "sharp canvas after viewport/display-density change",
       );
@@ -815,6 +818,44 @@ try {
   await cdp.send("Page.bringToFront", {}, alpha.sessionId);
   await capture(cdp, alpha, "helio-coop-pause.png");
   if (process.env.HELIOS_SCREENSHOT_DIR) {
+    await evaluate(cdp, alpha, "window.__originalPauseSnapshot=structuredClone(window.__snapshot)");
+    for (const phase of ["victory", "defeat"]) {
+      await evaluate(
+        cdp,
+        alpha,
+        `(() => {const snapshot=structuredClone(window.__originalPauseSnapshot);snapshot.pause=null;snapshot.state.phase=${JSON.stringify(phase)};window.__flightSocket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify(snapshot)}));})()`,
+      );
+      await waitFor(
+        cdp,
+        alpha,
+        "document.querySelector('.coop-endcap')",
+        "result-screen visual fixture",
+      );
+      assert.equal(
+        await evaluate(
+          cdp,
+          alpha,
+          "(() => {const button=document.querySelector('.coop-results > button');const style=getComputedStyle(button);return button.textContent.includes('Return to flight deck') && style.color !== style.backgroundColor;})()",
+        ),
+        true,
+        "result action must remain readable",
+      );
+      await capture(cdp, alpha, `helio-coop-${phase}.png`);
+    }
+    await evaluate(
+      cdp,
+      alpha,
+      "window.__originalPauseSnapshot.serverTime=Date.now();window.__flightSocket.dispatchEvent(new MessageEvent('message',{data:JSON.stringify(window.__originalPauseSnapshot)}))",
+    );
+    await waitFor(
+      cdp,
+      alpha,
+      "document.querySelector('.coop-pause') && !document.querySelector('.coop-endcap')",
+      "restore authoritative pause after visual fixtures",
+    );
+  }
+
+  if (process.env.HELIOS_SCREENSHOT_DIR) {
     await cdp.send(
       "Emulation.setDeviceMetricsOverride",
       { width: 390, height: 844, deviceScaleFactor: 2, mobile: false },
@@ -831,23 +872,31 @@ try {
   await waitFor(
     cdp,
     alpha,
-    "document.querySelector('.coop-settings select')",
+    "document.querySelector('.flight-settings select')",
     "multiplayer settings",
   );
   assert.equal(
     await evaluate(
       cdp,
       alpha,
-      "document.querySelectorAll('.coop-settings input[type=checkbox]').length",
+      "document.querySelectorAll('.flight-settings [role=switch]').length",
     ),
     4,
   );
-  // Escape dismisses the settings subpage, keeping both pilots paused.
   await evaluate(
     cdp,
     alpha,
-    "document.querySelector('.coop-settings input[type=checkbox]').click()",
+    `(() => {const input=document.querySelector('[aria-label="Ship visibility"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'75');input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));})()`,
   );
+  await waitFor(
+    cdp,
+    alpha,
+    "JSON.parse(localStorage.getItem('helios-settings-v1')).shipVisibility === 0.75",
+    "persisted ship visibility slider",
+  );
+  await capture(cdp, alpha, "helio-flight-settings.png");
+  // Escape dismisses the settings subpage, keeping both pilots paused.
+  await evaluate(cdp, alpha, "document.querySelector('.flight-settings [role=switch]').click()");
   assert.equal(
     await evaluate(cdp, alpha, "JSON.parse(localStorage.getItem('helios-settings-v1')).autoFire"),
     true,
@@ -924,10 +973,11 @@ try {
     clickText("Tether Sentinel", '[aria-label="Developer console"] button'),
   );
   await evaluate(cdp, alpha, clickText("Mine Warden", '[aria-label="Developer console"] button'));
+  await evaluate(cdp, alpha, clickText("Rift Spiker", '[aria-label="Developer console"] button'));
   await waitFor(
     cdp,
     bravo,
-    "window.__flight.campaign.drones.some(d=>d.coop?.kind==='tetherSentinel') && window.__flight.campaign.drones.some(d=>d.coop?.kind==='mineWarden')",
+    "window.__flight.campaign.drones.some(d=>d.coop?.kind==='tetherSentinel') && window.__flight.campaign.drones.some(d=>d.coop?.kind==='mineWarden') && window.__flight.campaign.drones.some(d=>d.coop?.kind==='riftSpiker')",
     "special developer spawns synchronized",
   );
   await evaluate(cdp, alpha, clickText("P2 →", '[aria-label="Developer console"] button'));
@@ -955,6 +1005,24 @@ try {
     "developer console must receive pointer events above pause",
   );
   await capture(cdp, alpha, "helio-coop-developer-field.png");
+  if (process.env.HELIOS_SCREENSHOT_DIR) {
+    await evaluate(
+      cdp,
+      alpha,
+      `(async()=>{
+      const resources=performance.getEntriesByType('resource');
+      const {Game}=await import(resources.find(e=>e.name.includes('/src/game/engine.ts')).name);
+      const {renderSpecialist}=await import(resources.find(e=>e.name.includes('/src/game/render-specialists.ts')).name);
+      const canvas=document.createElement('canvas');canvas.id='specialist-gallery';canvas.width=1000;canvas.height=340;
+      Object.assign(canvas.style,{position:'fixed',left:'50%',top:'50%',transform:'translate(-50%,-50%)',width:'min(1000px,95vw)',height:'auto',zIndex:'400'});document.querySelector('dialog.deploy-screen').append(canvas);
+      const ctx=canvas.getContext('2d');ctx.fillStyle='#070911';ctx.fillRect(0,0,1000,340);ctx.strokeStyle='#3a3f55';ctx.strokeRect(.5,.5,999,339);ctx.fillStyle='#ffb03a';ctx.font='14px monospace';ctx.fillText('HELIOS / CO-OP SPECIALIST SIGNATURES',28,35);
+      const g=new Game(null,{onHud(){},onMode(){}},{headless:true,width:1600,height:1000});
+      ['tetherSentinel','mineWarden','riftSpiker'].forEach((kind,i)=>{const d=g.spawnDrone(180+i*320,165,500,kind==='mineWarden'?'warden':kind==='riftSpiker'?'spiker':'sentinel');d.r=40;d.angle=0;d.coop={kind,timer:7,warning:0,target:null};renderSpecialist(ctx,d,120);});
+    })()`,
+    );
+    await capture(cdp, alpha, "helio-coop-specialists.png");
+    await evaluate(cdp, alpha, "document.querySelector('#specialist-gallery').remove()");
+  }
 
   await evaluate(cdp, alpha, clickText("X", '[aria-label="Developer console"] button'));
   await evaluate(cdp, alpha, clickText("BEAM", ".coop-pause button"));

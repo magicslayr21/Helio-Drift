@@ -162,6 +162,8 @@ export class RunSave {
     try {
       const saved = read();
       const state = saved?.state;
+      if (state?.p && state.p.rangeMul === undefined)
+        state.p.rangeMul = 1 + Math.min(3, Math.max(0, state.stacks?.range ?? 0)) * (0.4 / 3);
       if (state && state.campaignTethers === undefined) state.campaignTethers = [];
       // New modules default to unpurchased in saves from earlier alpha releases.
       if (state?.salvageDrone?.upgrades && state.salvageDrone.upgrades.shield === undefined)

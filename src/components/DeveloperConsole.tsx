@@ -19,11 +19,13 @@ export function DeveloperConsole({
   send,
   onClose,
   onRestart,
+  multiplayer = false,
 }: {
   view: DeveloperView;
   send: (command: DeveloperCommand) => void;
   onClose: () => void;
   onRestart?: () => void;
+  multiplayer?: boolean;
 }) {
   const [page, setPage] = useState<1 | 2>(1);
   const [count, setCount] = useState(1);
@@ -126,6 +128,8 @@ export function DeveloperConsole({
                 ["mineWarden", "Mine Warden"],
               ] as [DeveloperEnemy, string][]
             ).map(([kind, label]) => btn(label, { action: "enemy", kind, count, size }))}
+            {multiplayer &&
+              btn("Rift Spiker", { action: "enemy", kind: "riftSpiker", count, size })}
           </DevRow>
           <DevRow label="Shower">
             {btn(

@@ -41,7 +41,13 @@ export function leaderboardContract(fixture) {
   test("new Guardian Link reports round-trip while unknown drone upgrades stay rejected", async (t) => {
     const api = await fixture(t);
     const identity = await api.player("Guardian Pilot");
-    const report = run("guardian_link_001", { drone: { purchased: true, weapon: "arc", upgrades: { shield: 3, piercing: 2, twinCannons: 3 } } });
+    const report = run("guardian_link_001", {
+      drone: {
+        purchased: true,
+        weapon: "arc",
+        upgrades: { shield: 3, piercing: 2, twinCannons: 3 },
+      },
+    });
     assert.equal((await api.submit(identity, report)).status, 200);
     const session = await api.admin();
     const detail = await api.request(`/admin/runs/${report.runId}`, { token: session.token });
@@ -468,6 +474,18 @@ export function leaderboardContract(fixture) {
       assert.equal((await api.request(`/leaderboard?${query}`)).status, 400);
     }
     assert.equal((await api.request("/leaderboard")).data.entries[0].score, report.score);
+  });
+
+  test("Range upgrades round-trip through player reports and developer telemetry", async (t) => {
+    const api = await fixture(t);
+    const pilot = await api.player("Range Pilot");
+    const report = run("range_upgrade_001", { upgrades: { range: 3, overclock: 1 } });
+    const result = await api.submit(pilot, report);
+    assert.equal(result.status, 200, JSON.stringify(result.data));
+    const session = await api.admin();
+    const details = await api.request(`/admin/runs/${report.runId}`, { token: session.token });
+    assert.equal(details.status, 200);
+    assert.equal(details.data.report.upgrades.range, 3);
   });
 
   test("CORS grants the configured game origin without reflecting arbitrary origins", async (t) => {

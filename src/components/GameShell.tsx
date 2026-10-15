@@ -17,6 +17,7 @@ import {
   type SalvageUpgradeId,
 } from "../game/engine";
 import { PlayerStatus } from "./PlayerStatus";
+import { FlightSettings } from "./FlightSettings";
 import { LevelPips } from "./LevelPips";
 import { PauseMenu } from "./PauseMenu";
 import { DeveloperConsole } from "./DeveloperConsole";
@@ -100,15 +101,6 @@ const SECTOR_FILTER = [
 // Hybrid Aim is the default flight scheme: the hull tracks the cursor while the
 // keys push the ship in world space. Legacy Movement opts back into the classic
 // keyboard-only handling (rotate with A/D, thrust with W) with no mouse assist.
-const EMPTY_SETTINGS = {
-  autoFire: false,
-  mouseControl: false,
-  hybridAim: true,
-  trackpad: false,
-  legacyMovement: false,
-  shake: true,
-};
-
 export default function GameShell({
   onOpenDetails,
   detailsOpen = false,
@@ -126,23 +118,13 @@ export default function GameShell({
   const [scores, setScores] = useState<ScoreEntry[]>([]);
   const [run, setRun] = useState<ScoreEntry | null>(null);
   const [muted, setMuted] = useState(audio.muted);
-  const [musicEnabled, setMusicEnabled] = useState(audio.musicEnabled);
 
-  const [settings, setSettings] = useState(() => {
-    try {
-      const raw = localStorage.getItem("helios-settings-v1");
-      if (raw) return { ...EMPTY_SETTINGS, ...(JSON.parse(raw) as Partial<typeof EMPTY_SETTINGS>) };
-    } catch {
-      /* fall through */
-    }
-    return { ...EMPTY_SETTINGS };
-  });
+  const [settings, setSettings] = useState(readFlightSettings);
   const [panel, setPanel] = useState<"none" | "settings" | "code">("none");
   useEffect(() => {
     const sync = () => {
       setSettings(readFlightSettings());
       setMuted(audio.muted);
-      setMusicEnabled(audio.musicEnabled);
     };
     window.addEventListener("helios-settings-change", sync);
     return () => window.removeEventListener("helios-settings-change", sync);
@@ -251,6 +233,7 @@ export default function GameShell({
   useEffect(() => {
     const g = gameRef.current;
     if (g) {
+      g.settings.shipVisibility = settings.shipVisibility;
       g.settings.autoFire = settings.autoFire;
       g.settings.mouseControl = settings.mouseControl;
       g.settings.hybridAim = settings.hybridAim;
@@ -349,30 +332,7 @@ export default function GameShell({
     setMuted(next);
     if (!next) audio.play("ui");
   }, []);
-  const toggleSetting = useCallback((key: keyof typeof EMPTY_SETTINGS) => {
-    audio.play("ui");
-    setSettings((s) => ({ ...s, [key]: !s[key] }));
-  }, []);
 
-  // The flight schemes are mutually exclusive. Switching one on clears the
-  // others; switching the active one off falls back to Legacy Movement, since
-  // that is plain keyboard steering with no mouse assist.
-  const toggleMovement = useCallback(
-    (key: "mouseControl" | "hybridAim" | "legacyMovement" | "trackpad") => {
-      audio.play("ui");
-      setSettings((s) => {
-        const on = !s[key];
-        return {
-          ...s,
-          mouseControl: on && key === "mouseControl",
-          hybridAim: on && key === "hybridAim",
-          trackpad: on && key === "trackpad",
-          legacyMovement: on ? key === "legacyMovement" : true,
-        };
-      });
-    },
-    [],
-  );
   const cycleWeapon = useCallback(() => gameRef.current?.cycleWeapon(1), []);
 
   const openShop = useCallback(() => {
@@ -944,59 +904,7 @@ export default function GameShell({
                     >
                       Developer Access
                     </button>
-                    <div className="mt-5">
-                      <SettingRow
-                        label="Auto-Fire"
-                        hint="The ship fires on its own. Free up the trigger to focus on flying and dodging."
-                        on={settings.autoFire}
-                        onToggle={() => toggleSetting("autoFire")}
-                      />
-                      <SettingRow
-                        label="Trackpad Mode"
-                        hint="WASD / arrows move; glide on the trackpad to aim. Fires automatically — no click-hold needed. E launches missiles; Q / Tab switches weapons; P pauses."
-                        on={settings.trackpad}
-                        onToggle={() => toggleMovement("trackpad")}
-                      />
-                      <SettingRow
-                        label="Hybrid Aim"
-                        hint="Default scheme. Twin-stick style: the ship always tracks the cursor while WASD / arrows push the ship in world space. Click to fire."
-                        on={settings.hybridAim}
-                        onToggle={() => toggleMovement("hybridAim")}
-                      />
-                      <SettingRow
-                        label="Mouse Control"
-                        hint="Veteran scheme: the ship faces the cursor and holds the left button to thrust. Keyboard steering is ignored."
-                        on={settings.mouseControl}
-                        onToggle={() => toggleMovement("mouseControl")}
-                      />
-                      <SettingRow
-                        label="Legacy Movement"
-                        hint="Classic cabinet handling: A/D or Left/Right rotate the ship, W thrusts. No mouse aiming at all."
-                        on={settings.legacyMovement}
-                        onToggle={() => toggleMovement("legacyMovement")}
-                      />
-                      <SettingRow
-                        label="Screen Shake"
-                        hint="Camera shake on impacts and explosions. Off for a perfectly still feed."
-                        on={settings.shake}
-                        onToggle={() => toggleSetting("shake")}
-                      />
-                      <SettingRow
-                        label="Audio"
-                        hint="Procedural synth audio. Choice persists between sessions."
-                        on={!muted}
-                        onToggle={toggleMute}
-                      />
-                      <SettingRow
-                        label="Music"
-                        hint="Quiet original flight, dreadnought, and Omega scores. Turn music off without muting sound effects."
-                        on={musicEnabled}
-                        onToggle={() => {
-                          audio.setMusicEnabled(!audio.musicEnabled);
-                          setMusicEnabled(audio.musicEnabled);
-                        }}
-                      />
-                    </div>
+                    <FlightSettings settings={settings} onChange={setSettings} />
                     <button
                       onClick={() => setUpdateLogOpen(true)}
                       className="mt-5 w-full border border-ice/50 px-4 py-2.5 text-xs uppercase tracking-widest text-ice hover:bg-ice/10"
@@ -1390,38 +1298,6 @@ function ScoreList({ scores }: { scores: ScoreEntry[] }) {
         </li>
       ))}
     </ol>
-  );
-}
-
-function SettingRow({
-  label,
-  hint,
-  on,
-  onToggle,
-}: {
-  label: string;
-  hint: string;
-  on: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-4 border-b border-steel/25 py-3">
-      <div className="min-w-0">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-hot">
-          {label}
-        </p>
-        <p className="mt-1 text-[10px] leading-relaxed text-amber/45">{hint}</p>
-      </div>
-      <button
-        onClick={onToggle}
-        role="switch"
-        aria-label={label}
-        aria-checked={on}
-        className={`w-16 shrink-0 border px-2 py-1.5 text-[10px] uppercase tracking-[0.22em] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber ${on ? "border-amber bg-amber/15 text-amber" : "border-steel/50 text-amber/40 hover:border-amber/60"}`}
-      >
-        {on ? "On" : "Off"}
-      </button>
-    </div>
   );
 }
 

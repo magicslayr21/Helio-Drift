@@ -5,6 +5,7 @@ export const DEFAULT_SETTINGS = {
   trackpad: false,
   legacyMovement: false,
   shake: true,
+  shipVisibility: 0,
 };
 export type FlightSettings = typeof DEFAULT_SETTINGS;
 export function readFlightSettings(): FlightSettings {
@@ -13,7 +14,13 @@ export function readFlightSettings(): FlightSettings {
     return Object.fromEntries(
       Object.entries(DEFAULT_SETTINGS).map(([key, fallback]) => [
         key,
-        typeof saved?.[key] === "boolean" ? saved[key] : fallback,
+        key === "shipVisibility"
+          ? typeof saved?.[key] === "number" && Number.isFinite(saved[key])
+            ? Math.max(0, Math.min(1, saved[key]))
+            : fallback
+          : typeof saved?.[key] === "boolean"
+            ? saved[key]
+            : fallback,
       ]),
     ) as FlightSettings;
   } catch {

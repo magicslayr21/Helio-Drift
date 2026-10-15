@@ -152,5 +152,7 @@ export function weaponSimulationStats(
   stats.rate *= player.fireRateMul * feeder;
   stats.damage *= player.damageMul;
   stats.shots += player.extraShots;
+  stats.life *= player.rangeMul ?? 1;
+  stats.fuse *= player.rangeMul ?? 1;
   return stats;
 }

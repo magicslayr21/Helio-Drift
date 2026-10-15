@@ -2,12 +2,13 @@ import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from "react
 import { ClientPrediction, SnapshotInterpolator } from "../game/network/client-sync";
 import type { AuthoritativeSnapshot, ClientInputMessage } from "../game/network/protocol";
 import type { CoopPlayerId } from "../game/simulation/coop-types";
+import { COOP_CONFIG } from "../game/simulation/coop-config";
 import { CoopRenderer } from "../game/coop-renderer";
 import { CampaignBanner } from "./CampaignBanner";
 import type { FlightSettings } from "../game/preferences";
 
-const WIDTH = 1000;
-const HEIGHT = 700;
+const WIDTH = COOP_CONFIG.arena.width;
+const HEIGHT = COOP_CONFIG.arena.height;
 
 export function CoopArena({
   snapshot,
@@ -25,6 +26,7 @@ export function CoopArena({
   settings: FlightSettings;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rendererRef = useRef<CoopRenderer | null>(null);
   const prediction = useRef(new ClientPrediction(playerId, WIDTH, HEIGHT));
   const interpolation = useRef(new SnapshotInterpolator());
   const latest = useRef(snapshot);
@@ -148,7 +150,9 @@ export function CoopArena({
     let frame = 0;
     if (!canvasRef.current) return;
     const renderer = new CoopRenderer(canvasRef.current);
+    rendererRef.current = renderer;
     let pausedSnapshot: AuthoritativeSnapshot | null = null;
+    let renderedSettings = handlers.current.settings;
     const resize = () => {
       renderer.resizeDisplay();
       pausedSnapshot = null;
@@ -161,7 +165,11 @@ export function CoopArena({
     let renderTick: number | null = null;
     let renderedAt = performance.now();
     const render = () => {
-      renderer.settings.shake = handlers.current.settings.shake;
+      renderer.settings = handlers.current.settings;
+      if (renderedSettings !== renderer.settings) {
+        renderedSettings = renderer.settings;
+        pausedSnapshot = null;
+      }
       // Monitor/zoom changes can update DPR without firing resize or media events.
       // This inexpensive scalar check also refreshes a paused canvas after a switch.
       if (displayDensity !== (window.devicePixelRatio || 1)) {
@@ -199,6 +207,7 @@ export function CoopArena({
     };
     frame = requestAnimationFrame(render);
     return () => {
+      rendererRef.current = null;
       cancelAnimationFrame(frame);
       observer.disconnect();
       window.removeEventListener("resize", resize);
@@ -208,8 +217,11 @@ export function CoopArena({
   const point = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (handlers.current.settings.legacyMovement) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const x = ((event.clientX - rect.left) / rect.width) * WIDTH;
-    const y = ((event.clientY - rect.top) / rect.height) * HEIGHT;
+    const point = rendererRef.current?.worldPoint(
+      event.clientX - rect.left,
+      event.clientY - rect.top,
+    ) ?? { x: 0, y: 0 };
+    const { x, y } = point;
     const ship = prediction.current.ship ?? latest.current.state.players[playerId].ship;
     aim.current = Math.atan2(y - ship.y, x - ship.x);
   };

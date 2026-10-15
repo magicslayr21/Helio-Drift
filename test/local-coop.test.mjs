@@ -401,7 +401,7 @@ test("enemy target selection follows the nearest living pilot; late Spikers reta
     assert.ok(Math.abs(angles[i] - angles[i - 1] - Math.PI / 4) < 1e-6);
 });
 
-test("co-op escorts use native chassis and their tether/mine additions still function", () => {
+test("co-op specialists use native chassis with allied shields and deployed mines", () => {
   const sim = fixture(),
     g = sim.game;
   g.wave = 14;
@@ -414,11 +414,17 @@ test("co-op escorts use native chassis and their tether/mine additions still fun
   warden.coop.timer = 0;
   sim.stepTicks(30);
   assert.ok(g.rocks.some((r) => r.coopMine));
-  assert.ok(sim.state.tethers.length > 0);
-  const target = sim.state.players[sim.state.tethers[0].targetPlayerId];
-  target.ship.x = -1000;
+  assert.equal(sim.state.tethers.length, 0, "support Sentinels no longer tether players");
+  const target = g.makeRock(tether.x + 50, tether.y, 2, 0, 0, "none");
+  g.rocks.push(target);
   g.updateTethers(1 / 60);
-  assert.equal(sim.state.tethers.length, 0);
+  assert.ok(target.supportShield?.hp > 0);
+  const hull = target.hp;
+  g.loseRockHp(target, 3);
+  assert.equal(target.hp, hull);
+  target.x = tether.x + COOP_CONFIG.tetherSentinel.shieldRange + 1;
+  g.updateTethers(1 / 60);
+  assert.equal(target.supportShield, undefined);
   const mine = g.rocks.find((r) => r.coopMine);
   assert.equal(g.boomRoom(), 6, "mines should not consume the campaign boom-asteroid limit");
   g.bindPilot("p1");
@@ -540,7 +546,7 @@ test("campaign and co-op developer consoles share bounded field and loadout oper
   assert.equal(sim.state.tick, tick + 1);
 });
 
-test("campaign developer spawns use the existing tether and mine abilities", () => {
+test("campaign developer spawns share allied shield and mine abilities", () => {
   const g = new Game(null, { onHud() {}, onMode() {} }, { headless: true, random: () => 0.5 });
   g.mode = "playing";
   g.wave = 15;
@@ -551,15 +557,15 @@ test("campaign developer spawns use the existing tether and mine abilities", () 
   const warden = g.drones.find((d) => d.coop?.kind === "mineWarden");
   assert.equal(tether.kind, "sentinel");
   assert.equal(warden.kind, "warden");
-  tether.coop.timer = 0;
-  g.updateDroneSpecial(tether, 0.01);
-  assert.ok(tether.coop.warning > 0);
-  g.updateDroneSpecial(tether, 1);
-  assert.equal(g.campaignTethers.length, 1);
+  const ally = g.makeRock(tether.x + 40, tether.y, 2, 0, 0, "none");
+  g.rocks.push(ally);
   g.p.vx = 0;
   g.p.vy = 0;
   g.updateTethers(0.1);
-  assert.ok(Math.hypot(g.p.vx, g.p.vy) > 0);
+  assert.ok(ally.supportShield?.hp > 0);
+  assert.equal(g.campaignTethers.length, 0);
+  assert.equal(g.p.vx, 0);
+  assert.equal(g.p.vy, 0);
   warden.coop.timer = 0;
   g.updateDroneSpecial(warden, 0.01);
   const mine = g.rocks.find((r) => r.coopMine);
@@ -604,4 +610,87 @@ test("paused loadout transactions preserve combat time and reject stale or comba
   assert.equal(sim.state.team.elapsedSeconds, before.team.elapsedSeconds);
   assert.deepEqual(sim.state.players.p2, before.players.p2);
   assert.deepEqual(sim.game.rocks, before.campaign.rocks);
+});
+
+test("support shields absorb damage, recharge without stacking, exclude bosses and collapse with their source", () => {
+  const sim = fixture(),
+    g = sim.game;
+  g.devSpawnMob("tetherSentinel", 2);
+  const source = g.drones[0],
+    second = g.drones[1];
+  source.x = 400;
+  source.y = 300;
+  second.x = 420;
+  second.y = 300;
+  const rock = g.makeRock(450, 300, 2, 0, 0, "none");
+  g.rocks.push(rock);
+  g.devSpawnMob("warden");
+  const enemy = g.drones.at(-1);
+  enemy.x = 460;
+  enemy.y = 300;
+  g.boss = g.makeBoss(false, 3);
+  g.boss.x = 450;
+  g.boss.y = 300;
+  g.updateTethers(0.1);
+  const shield = rock.supportShield.hp,
+    health = rock.hp;
+  assert.equal(shield, Math.max(8, Math.min(28, rock.maxHp * 0.12)));
+  assert.ok(enemy.supportShield.hp > 0);
+  assert.equal(g.boss.supportShield, undefined);
+  g.loseRockHp(rock, shield + 5);
+  assert.equal(rock.hp, health - 5);
+  assert.equal(rock.supportShield.hp, 0);
+  g.updateTethers(1);
+  assert.equal(rock.supportShield.hp, 4);
+  g.drones = g.drones.filter((d) => d.coop?.kind !== "tetherSentinel");
+  g.loseRockHp(rock, 3);
+  assert.equal(rock.hp, health - 8);
+  assert.equal(rock.supportShield, undefined);
+  g.updateTethers(0.1);
+  assert.equal(enemy.supportShield, undefined);
+});
+
+test("Rift Spikers unlock only in co-op, warn before gravity pulses and survive checkpoints", () => {
+  const sim = fixture(),
+    g = sim.game;
+  g.wave = 15;
+  g.spawnCoopEscorts();
+  assert.ok(!g.drones.some((d) => d.coop?.kind === "riftSpiker"));
+  g.wave = 16;
+  g.spawnCoopEscorts();
+  const rift = g.drones.find((d) => d.coop?.kind === "riftSpiker");
+  assert.ok(rift);
+  assert.equal(rift.kind, "spiker");
+  g.spawnCoopEscorts();
+  assert.equal(g.drones.filter((d) => d.coop?.kind === "riftSpiker").length, 1);
+  rift.x = 400;
+  rift.y = 300;
+  rift.coop.timer = 0;
+  for (const p of Object.values(sim.state.players)) {
+    p.ship.x = 500;
+    p.ship.y = 300;
+    p.ship.vx = 0;
+    p.ship.vy = 0;
+    p.ship.invuln = 0;
+  }
+  const hull = sim.state.players.p1.ship.hull;
+  g.updateDroneSpecial(rift, 0.01);
+  assert.ok(rift.coop.warning > 1);
+  assert.equal(sim.state.players.p1.ship.hull, hull);
+  g.updateDroneSpecial(rift, 0.1);
+  assert.ok(sim.state.players.p1.ship.vx < 0);
+  const resumed = LocalCoopSimulation.restore(sim.snapshot());
+  assert.ok(resumed.game.drones.find((d) => d.coop?.kind === "riftSpiker").coop.warning > 0);
+  for (let i = 0; i < 80; i++) g.updateDroneSpecial(rift, 1 / 60);
+  assert.ok(sim.state.players.p1.ship.hull < hull);
+  assert.ok(sim.state.players.p1.ship.vx > 0);
+  rift.fire = 0;
+  g.updateSpiker(rift, 0.01);
+  assert.equal(g.bullets.filter((b) => b.damageCause === "Rift Spiker spiral volley").length, 8);
+  g.wave = 21;
+  g.spawnCoopEscorts();
+  assert.equal(g.drones.filter((d) => d.coop?.kind === "riftSpiker").length, 2);
+  const campaign = new Game(null, { onHud() {}, onMode() {} }, { headless: true });
+  campaign.devSpawnMob("riftSpiker");
+  assert.equal(campaign.drones.length, 0);
 });

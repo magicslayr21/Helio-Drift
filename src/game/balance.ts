@@ -115,7 +115,7 @@ export const WEAPON_DEFS: Record<
     name: "Beam Emitter",
     short: "BEAM",
     desc: "A continuous cutting beam with an overheat gauge.",
-    perLevel: "+28% dps · −6% heat build-up",
+    perLevel: "+28% dps · wider beam · −6% heat · +35% damage in the red zone",
     rarity: GAME_CONFIG.weaponProgression.weapons.laser.rarity,
     weight: GAME_CONFIG.weaponProgression.weapons.laser.weight,
   },
@@ -136,6 +136,18 @@ export const WEAPON_BASE_PRICE: Record<Rarity, number> = {
 /* ------------------------------------------------------------ stat upgrades */
 
 export const STAT_UPGRADES: StatUpgrade[] = [
+  {
+    id: "range",
+    name: "Range",
+    tag: "Reach",
+    rarity: "common",
+    weight: GAME_CONFIG.statUpgrades.range.weight,
+    max: GAME_CONFIG.statUpgrades.range.max,
+    desc: "Weapon and drone range +13.3% per level; +40% at maximum.",
+    apply: (g) => {
+      g.p.rangeMul = (g.p.rangeMul ?? 1) + GAME_CONFIG.statUpgrades.range.rangePerStack;
+    },
+  },
   {
     id: "overclock",
     name: "Overclocked Barrels",
@@ -481,6 +493,7 @@ export function freshPlayer(): Player {
     fireRateMul: GAME_CONFIG.player.fireRateMul,
     damageMul: GAME_CONFIG.player.damageMul,
     bulletSpeed: GAME_CONFIG.player.bulletSpeed,
+    rangeMul: 1,
     primary: "pulse",
     weapons,
     extraShots: 0,

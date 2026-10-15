@@ -1038,12 +1038,14 @@ test("pre-update saves migrate shield, caps, derived stats and health fractions 
   const old = JSON.parse(data);
   delete old.balanceVersion;
   delete old.state.campaignTethers;
+  delete old.state.p.rangeMul;
   delete old.state.salvageDrone.upgrades.shield;
   data = JSON.stringify(old);
   const restored = game();
   assert.equal(save.restore(restored), true);
   assert.equal(restored.salvageDrone.upgrades.shield, 0);
   assert.deepEqual(restored.campaignTethers, []);
+  assert.equal(restored.p.rangeMul, 1);
   assert.equal(restored.p.weapons.pulse, 3);
   assert.equal(restored.p.weapons.seeker, 4);
   assert.equal(restored.stacks.crit, 3);
@@ -1292,7 +1294,7 @@ test("leaderboard retries old Worker shield rejection and retains failed reports
   assert.deepEqual(JSON.parse(store.get("helios-leaderboard-pending-v1")), []);
 });
 
-test("campaign specialist enemies, mines and active tethers survive save and continue", async (t) => {
+test("campaign specialists, mines and allied shields survive save and continue", async (t) => {
   const { RunSave } = await import("../src/game/run-save.ts");
   let data = null;
   t.mock.method(localStorage, "getItem", () => data);
@@ -1303,7 +1305,7 @@ test("campaign specialist enemies, mines and active tethers survive save and con
   g.devSpawnMob("tetherSentinel", 1, 2);
   g.devSpawnMob("mineWarden", 1, 2);
   const [tether, warden] = g.drones;
-  tether.x = g.p.x + 300;
+  tether.x = 250;
   tether.y = g.p.y;
   tether.coop.timer = 0;
   g.updateDroneSpecial(tether, 0.01);
@@ -1311,6 +1313,10 @@ test("campaign specialist enemies, mines and active tethers survive save and con
   warden.coop.timer = 0;
   g.updateDroneSpecial(warden, 0.01);
   for (let i = 0; i < 6; i++) g.addRocks(g.makeRock(50 + i * 50, 50, 1, 0, 0, "boom"));
+  g.rocks[1].x = tether.x + 50;
+  g.rocks[1].y = tether.y;
+  g.updateTethers(0.1);
+  assert.ok(g.rocks[1].supportShield?.hp > 0);
   assert.equal(g.rocks.length, 7);
   const expected = {
     drones: structuredClone(g.drones),
@@ -1327,5 +1333,98 @@ test("campaign specialist enemies, mines and active tethers survive save and con
   assert.equal(restored.boomRoom(), 0);
   restored.mode = "playing";
   restored.updateTethers(0.1);
-  assert.ok(Math.hypot(restored.p.vx, restored.p.vy) > 0);
+  assert.ok(restored.rocks[1].supportShield?.hp > 0);
+  assert.equal(restored.campaignTethers.length, 0);
+});
+
+test("Range is a capped common upgrade that extends projectile, beam, arc and drone reach without changing damage", async () => {
+  const { STAT_UPGRADES } = await import("../src/game/balance.ts");
+  const { GAME_CONFIG } = await import("../src/game/game-config.ts");
+  const g = game();
+  const base = g.weaponStats("pulse", 1),
+    beam = g.laserStats(1),
+    arc = g.arcStats(1);
+  const def = STAT_UPGRADES.find((u) => u.id === "range");
+  assert.equal(def.rarity, "common");
+  assert.equal(def.max, 3);
+  g.devSetStack("range", 999);
+  assert.equal(g.stacks.range, 3);
+  assert.ok(Math.abs(g.p.rangeMul - 1.4) < 1e-8);
+  assert.ok(Math.abs(g.weaponStats("pulse", 1).life / base.life - 1.4) < 1e-8);
+  assert.equal(g.weaponStats("pulse", 1).dmg, base.dmg);
+  assert.ok(Math.abs(g.laserStats(1).range / beam.range - 1.4) < 1e-8);
+  assert.ok(Math.abs(g.arcStats(1).range / arc.range - 1.4) < 1e-8);
+  const drone = g.salvageDrone;
+  drone.purchased = true;
+  drone.active = true;
+  drone.fireTimer = 0;
+  const range = GAME_CONFIG.salvage.targetRangeBase;
+  g.rocks = [g.makeRock(drone.x + range * 1.2, drone.y, 1, 0, 0, "none")];
+  g.salvageFire(drone, 0.01);
+  assert.ok(g.bullets.length > 0, "range should extend the drone's target acquisition");
+  g.devSetStack("range", 0);
+  assert.equal(g.p.rangeMul, 1);
+});
+
+test("beam levels widen the actual hit corridor and redline heat boosts damage before overheat", () => {
+  const g = game(),
+    p = g.p;
+  p.x = 100;
+  p.y = 100;
+  p.angle = 0;
+  p.weapons.laser = 1;
+  const r = g.makeRock(220, 111, 1, 0, 0, "none");
+  r.r = 5;
+  r.hp = r.maxHp = 100;
+  g.rocks = [r];
+  const cold = g.laserStats(1);
+  g.beamDamage(0.1, 10);
+  assert.equal(r.hp, 100);
+  p.weapons.laser = 6;
+  assert.ok(g.laserStats(6).width > cold.width);
+  g.beamDamage(0.1, 10);
+  assert.equal(r.hp, 99);
+  p.weapons.laser = 1;
+  p.heat = 0.8;
+  const hot = g.laserStats(1);
+  assert.equal(hot.redline, true);
+  assert.equal(hot.color, "#ff3d45");
+  assert.equal(hot.dps, cold.dps * 1.35);
+  assert.equal(g.laserStats(1, true).redline, false, "drone beams do not inherit pilot overheat");
+  p.heat = 0.2;
+  assert.equal(g.laserStats(1).redline, false);
+  assert.equal(g.laserStats(1).dps, cold.dps);
+});
+
+test("rail guidance retains a gentle forward assist with a strict total steering limit", () => {
+  const g = game();
+  g.rocks = [g.makeRock(900, 25, 1, 0, 0, "none")];
+  g.drones = [];
+  g.boss = null;
+  const b = { x: 0, y: 0, vx: 960, vy: 0, kind: "rail", turn: g.weaponStats("rail", 1).turn };
+  g.guide(b, 0.1);
+  assert.ok(b.vy > 0);
+  assert.ok(Math.atan2(b.vy, b.vx) <= 0.018 + 1e-8);
+  g.rocks[0].y = 0;
+  g.rocks[0].vy = 1000;
+  for (let i = 0; i < 100; i++) g.guide(b, 0.1);
+  assert.ok(Math.abs(Math.atan2(b.vy, b.vx)) <= 0.17 + 1e-8);
+  const offAxis = { ...b, vx: 960, vy: 0, guidanceOrigin: 0, target: undefined };
+  g.rocks[0].y = 400;
+  g.guide(offAxis, 0.5);
+  assert.equal(offAxis.vy, 0);
+});
+
+test("ship visibility reads old preferences safely and clamps its persisted slider value", async (t) => {
+  const { readFlightSettings } = await import("../src/game/preferences.ts");
+  let saved = { shake: false, autoFire: true };
+  t.mock.method(localStorage, "getItem", () => JSON.stringify(saved));
+  assert.equal(readFlightSettings().shipVisibility, 0);
+  assert.equal(readFlightSettings().shake, false);
+  saved.shipVisibility = 0.65;
+  assert.equal(readFlightSettings().shipVisibility, 0.65);
+  saved.shipVisibility = 100;
+  assert.equal(readFlightSettings().shipVisibility, 1);
+  saved.shipVisibility = "bright";
+  assert.equal(readFlightSettings().shipVisibility, 0);
 });

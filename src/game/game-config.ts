@@ -212,6 +212,10 @@ export const GAME_CONFIG = {
         life: 1.2,
         radius: 3.2,
         range: 1100,
+        baseWidth: 7,
+        widthPerLevel: 2.4,
+        redlineThreshold: 0.78,
+        redlineDamageMultiplier: 1.35,
         heatRate: 0.36,
         heatReductionPerLevel: 0.06,
       },
@@ -231,13 +235,16 @@ export const GAME_CONFIG = {
         speed: 960,
         life: 2.2,
         radius: 6,
-        turn: 1.15,
+        turn: 0.18,
+        aimAssistCone: 0.14,
+        maxAimCorrection: 0.17,
         effectiveRange: 2112,
       },
     },
   },
 
   statUpgrades: {
+    range: { max: 3, rarity: "common", weight: 1, rangePerStack: 0.4 / 3 },
     overclock: { max: 3, rarity: "common", weight: 1, fireRateMultiplier: 1.09 },
     hollow: { max: 3, rarity: "common", weight: 1, damageMultiplier: 1.12 },
     thruster: {
