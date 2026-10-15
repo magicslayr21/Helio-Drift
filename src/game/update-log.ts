@@ -1,5 +1,22 @@
 export const UPDATE_LOG = [
   {
+    version: "0.5.6-alpha.1",
+    date: "2026-10-15",
+    title: "Shared flight controls and co-op records",
+    sections: [
+      {
+        title: "MULTIPLAYER",
+        items: [
+          "Campaign pause layout, arsenal and boost ledger in co-op.",
+          "Weapon selection and shop purchases work during shared pause.",
+          "Full draggable developer console with field and loadout controls.",
+          "Inspect both pilots’ stats, edit team records and delete co-op runs.",
+        ],
+      },
+      { title: "CAMPAIGN", items: ["Tether Sentinel and Mine Warden added to developer spawns."] },
+    ],
+  },
+  {
     version: "0.5.5-alpha.1",
     date: "2026-10-14",
     title: "A unified Helios flight deck",

@@ -76,3 +76,39 @@ export type RunEdit = Pick<
   LeaderboardEntry,
   "username" | "score" | "credits" | "wave" | "level" | "stage" | "status"
 >;
+
+export interface CoopPilotTelemetry {
+  callsign: string;
+  level: number;
+  credits: number;
+  hull: number;
+  maxHull: number;
+  primary: WeaponId;
+  weapons: Record<WeaponId, number>;
+  upgrades: Record<string, number>;
+  stats: import("../game/simulation/coop-types").CoopPlayerStats;
+  drone: RunReport["drone"];
+}
+export interface CoopRunDetails extends CoopLeaderboardEntry {
+  roomCode: string;
+  createdAt: string;
+  updatedAt: string;
+  revision: number;
+  moderated: boolean;
+  telemetry: {
+    pilots: Record<"p1" | "p2", CoopPilotTelemetry>;
+    directive: string | null;
+    bonusDefeated: boolean;
+  } | null;
+}
+export type CoopRunEdit = Pick<
+  CoopLeaderboardEntry,
+  | "playerOne"
+  | "playerTwo"
+  | "score"
+  | "wave"
+  | "sector"
+  | "durationSeconds"
+  | "bossesDefeated"
+  | "status"
+> & { revision: number };

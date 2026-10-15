@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { CampaignBanner } from "./CampaignBanner";
 import {
@@ -7,8 +7,6 @@ import {
   saveScore,
   WEAPON_DEFS,
   WEAPON_ORDER,
-  weaponMaxLevel,
-  STAT_UPGRADES,
   type Hud,
   type Mode,
   type ScoreEntry,
@@ -19,7 +17,10 @@ import {
   type SalvageUpgradeId,
 } from "../game/engine";
 import { PlayerStatus } from "./PlayerStatus";
-import { DevWindow } from "./DevWindow";
+import { LevelPips } from "./LevelPips";
+import { PauseMenu } from "./PauseMenu";
+import { DeveloperConsole } from "./DeveloperConsole";
+import { applyDeveloperCommand } from "../game/developer-command";
 import { WeaponBar } from "./WeaponBar";
 import { readFlightSettings } from "../game/preferences";
 import { Leaderboard } from "./Leaderboard";
@@ -108,35 +109,6 @@ const EMPTY_SETTINGS = {
   shake: true,
 };
 
-const DRONE_UPGRADE_IDS = [
-  "twinCannons",
-  "overcharge",
-  "piercing",
-  "armor",
-  "repairPulse",
-  "shield",
-  "magnet",
-  "scan",
-  "speed",
-] as const satisfies readonly SalvageUpgradeId[];
-
-function LevelPips({ level, max, color }: { level: number; max: number; color: string }) {
-  return (
-    <span className="inline-flex items-center gap-[3px]" aria-label={`level ${level} of ${max}`}>
-      {Array.from({ length: max }).map((_, i) => (
-        <span
-          key={i}
-          className="h-[6px] w-[6px]"
-          style={{
-            background: i < level ? color : "rgba(58,63,85,0.5)",
-            boxShadow: i < level ? `0 0 6px ${color}` : "none",
-          }}
-        />
-      ))}
-    </span>
-  );
-}
-
 export default function GameShell({
   onOpenDetails,
   detailsOpen = false,
@@ -184,9 +156,6 @@ export default function GameShell({
   const shopReturnMode = useRef<Mode>("playing");
   const [devUnlocked, setDevUnlocked] = useState(false);
   const [devOpen, setDevOpen] = useState(false);
-  const [devPage, setDevPage] = useState<1 | 2>(1);
-  const [devSpawnCount, setDevSpawnCount] = useState(1);
-  const [devSpawnSize, setDevSpawnSize] = useState<1 | 2 | 3>(2);
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const [updateLogOpen, setUpdateLogOpen] = useState(false);
   const [canContinue, setCanContinue] = useState(false);
@@ -500,13 +469,6 @@ export default function GameShell({
     fn(x);
     audio.play("ui");
   }, []);
-  const devPlaying = useCallback((fn: (x: Game) => void) => {
-    const x = gameRef.current;
-    if (!x || x.mode !== "playing") return;
-    x.markLeaderboardAssisted();
-    fn(x);
-    audio.play("ui");
-  }, []);
   /** stat-stack edits must refresh the HUD, since stacks feed the boost ledger */
   const devStat = useCallback((fn: (x: Game) => void) => {
     const x = gameRef.current;
@@ -684,146 +646,25 @@ export default function GameShell({
                   transition={{ duration: 0.18 }}
                   className="absolute inset-0 flex items-center justify-center overflow-y-auto bg-void/86 py-6 backdrop-blur-[2px]"
                 >
-                  <div className="w-[min(520px,90%)] border border-steel/50 plate p-6 sm:p-7">
-                    <div className="flex items-end justify-between">
-                      <div>
-                        <p className="legend">System State</p>
-                        <h2 className="mt-1 font-display text-[clamp(1.8rem,5vw,2.6rem)] leading-none text-amber-hot">
-                          PAUSED
-                        </h2>
-                      </div>
-                      <p className="legend text-right text-amber/50">
-                        Wave {String(hud.wave).padStart(2, "0")} · Lvl{" "}
-                        {String(hud.level).padStart(2, "0")}
-                      </p>
-                    </div>
-
-                    {/* arsenal readout */}
-                    <div className="mt-5 border-y border-steel/30 py-3">
-                      <p className="legend mb-2">Arsenal · Tab / Q to cycle · 1 / 2 quick slots</p>
-                      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-3">
-                        {hud.owned.map((o) => (
-                          <button
-                            key={o.id}
-                            onClick={() => dev((x) => x.selectWeapon(o.id))}
-                            className={`flex items-center justify-between gap-2 border px-2 py-1.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber ${
-                              o.id === hud.primary
-                                ? "border-amber bg-amber/10"
-                                : "border-steel/40 hover:border-amber/60"
-                            }`}
-                          >
-                            <span className="text-[10px] uppercase tracking-[0.16em] text-amber-hot">
-                              {WEAPON_DEFS[o.id].short}
-                            </span>
-                            <LevelPips level={o.level} max={weaponMaxLevel(o.id)} color="#ffb03a" />
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* boost ledger: every stat card taken, and what they add up to */}
-                    <div className="mt-4 border border-steel/35 bg-black/25 p-3">
-                      <div className="flex items-baseline justify-between gap-3">
-                        <p className="legend">Boosts Unlocked</p>
-                        <p className="text-[10px] uppercase tracking-[0.16em] text-amber/55">
-                          {hud.boosts.totalStacks} stack{hud.boosts.totalStacks === 1 ? "" : "s"} ·{" "}
-                          {hud.boosts.taken.length} type{hud.boosts.taken.length === 1 ? "" : "s"}
-                        </p>
-                      </div>
-                      {hud.boosts.taken.length === 0 ? (
-                        <p className="mt-2 text-[10px] leading-relaxed text-amber/35">
-                          No stat upgrades yet — level up to draw your first rack.
-                        </p>
-                      ) : (
-                        <>
-                          <div className="thin-scroll mt-2 flex max-h-[76px] flex-wrap gap-1.5 overflow-y-auto">
-                            {hud.boosts.taken.map((b) => (
-                              <span
-                                key={b.id}
-                                className="inline-flex items-center gap-1.5 border border-steel/40 bg-graphite/60 px-2 py-1"
-                              >
-                                <span className="text-[9px] uppercase tracking-[0.1em] text-amber-hot">
-                                  {b.name}
-                                </span>
-                                <span className="text-[9px] text-amber/50">
-                                  ×{b.level}/{b.max}
-                                </span>
-                              </span>
-                            ))}
-                          </div>
-                          <div className="mt-2.5 border-t border-steel/25 pt-2">
-                            <p className="legend mb-1.5 text-amber/50">Combined effect</p>
-                            <dl className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-3">
-                              {hud.boosts.totals.map((t) => (
-                                <div
-                                  key={t.label}
-                                  className="flex items-baseline justify-between gap-2 border-b border-steel/20 pb-0.5 text-[10px]"
-                                >
-                                  <dt className="truncate uppercase tracking-[0.1em] text-amber/42">
-                                    {t.label}
-                                  </dt>
-                                  <dd className="shrink-0 text-amber-hot">{t.value}</dd>
-                                </div>
-                              ))}
-                            </dl>
-                          </div>
-                        </>
-                      )}
-                    </div>
-
-                    <div className="mt-4 grid grid-cols-2 gap-2">
-                      <button
-                        onClick={resume}
-                        className="col-span-2 border-2 border-amber bg-amber px-6 py-3 text-[11px] font-semibold uppercase tracking-[0.28em] text-void transition-transform hover:-translate-y-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-hot"
-                      >
-                        Resume
-                      </button>
-                      <button
-                        onClick={openShop}
-                        className="col-span-2 border border-ice/60 px-4 py-3 text-[11px] uppercase tracking-[0.24em] text-ice transition-colors hover:bg-ice/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-ice"
-                      >
-                        Weapon Shop · {hud.credits} CR
-                      </button>
-                      <button
-                        onClick={() => {
-                          audio.play("ui");
-                          setPanel("settings");
-                        }}
-                        className="border border-steel/60 px-4 py-3 text-[11px] uppercase tracking-[0.24em] text-amber/80 transition-colors hover:border-amber hover:bg-amber/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber"
-                      >
-                        Settings
-                      </button>
-                      <button
-                        onClick={() => {
-                          audio.play("ui");
-                          if (devUnlocked) setDevOpen((v) => !v);
-                          else setPanel("code");
-                        }}
-                        className={`border px-4 py-3 text-[11px] uppercase tracking-[0.24em] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber ${
-                          devUnlocked
-                            ? "border-magenta/60 text-magenta hover:bg-magenta/10"
-                            : "border-steel/60 text-amber/80 hover:border-amber hover:bg-amber/10"
-                        }`}
-                      >
-                        {devUnlocked ? (devOpen ? "Hide Console" : "Dev Console") : "Service Code"}
-                      </button>
-                      <button
-                        onClick={returnToMenu}
-                        className="w-full border border-ice/50 py-3 text-[10px] uppercase tracking-[0.2em] text-ice hover:bg-ice/10"
-                      >
-                        Save & return to menu
-                      </button>
-                      <button
-                        onClick={openLeaderboard}
-                        className="w-full border border-ice/50 py-3 text-[10px] uppercase tracking-[0.2em] text-ice hover:bg-ice/10"
-                      >
-                        Global Leaderboard
-                      </button>
-                    </div>
-                    <p className="legend mt-4 text-center text-amber/40">
-                      P or Esc to resume · Save & return keeps your run
-                    </p>
-                  </div>
+                  <PauseMenu
+                    hud={hud}
+                    onSelectWeapon={(id) => dev((x) => x.selectWeapon(id))}
+                    onResume={resume}
+                    onShop={openShop}
+                    onSettings={() => {
+                      audio.play("ui");
+                      setPanel("settings");
+                    }}
+                    onDeveloper={() => {
+                      audio.play("ui");
+                      if (devUnlocked) setDevOpen((v) => !v);
+                      else setPanel("code");
+                    }}
+                    onReturn={returnToMenu}
+                    onLeaderboard={openLeaderboard}
+                    devUnlocked={devUnlocked}
+                    devOpen={devOpen}
+                  />
                 </motion.div>
               )}
 
@@ -1467,475 +1308,16 @@ export default function GameShell({
             </AnimatePresence>
 
             {devOpen && devUnlocked && (
-              <DevWindow>
-                <div className="flex items-center justify-between border-b border-steel/30 pb-2">
-                  <p className="legend text-magenta">
-                    Dev Console · P{devPage} · Press ` to Toggle
-                  </p>
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => {
-                        setDevPage((p) => (p === 1 ? 2 : 1));
-                        audio.play("ui");
-                      }}
-                      aria-label="Switch developer console page"
-                      className="border border-steel/50 px-2 py-0.5 text-[10px] text-amber/70 transition-colors hover:border-magenta hover:text-magenta focus:outline-none focus-visible:ring-2 focus-visible:ring-magenta"
-                    >
-                      {devPage === 1 ? "P2 →" : "← P1"}
-                    </button>
-                    <button
-                      onClick={() => setDevOpen(false)}
-                      aria-label="Close developer console"
-                      className="border border-steel/50 px-2 py-0.5 text-[10px] text-amber/70 transition-colors hover:border-magenta hover:text-magenta focus:outline-none focus-visible:ring-2 focus-visible:ring-magenta"
-                    >
-                      X
-                    </button>
-                  </div>
-                </div>
-                <div className={`mt-2.5 space-y-2.5 ${devPage === 1 ? "" : "hidden"}`}>
-                  <DevRow label="Score">
-                    <DevBtn
-                      label="-1k"
-                      onClick={() =>
-                        dev((x) => {
-                          x.score = Math.max(0, x.score - 1000);
-                        })
-                      }
-                    />
-                    <DevBtn
-                      label="+1k"
-                      onClick={() =>
-                        dev((x) => {
-                          x.score += 1000;
-                        })
-                      }
-                    />
-                    <DevBtn
-                      label="+10k"
-                      onClick={() =>
-                        dev((x) => {
-                          x.score += 10000;
-                        })
-                      }
-                    />
-                  </DevRow>
-                  <DevRow label="Credits">
-                    <DevBtn
-                      label="-100"
-                      onClick={() =>
-                        dev((x) => {
-                          x.credits = Math.max(0, x.credits - 100);
-                        })
-                      }
-                    />
-                    <DevBtn
-                      label="+100"
-                      onClick={() =>
-                        dev((x) => {
-                          x.credits += 100;
-                        })
-                      }
-                    />
-                    <DevBtn
-                      label="+1k"
-                      onClick={() =>
-                        dev((x) => {
-                          x.credits += 1000;
-                        })
-                      }
-                    />
-                  </DevRow>
-                  <DevRow label="Health">
-                    <DevBtn
-                      label="-25"
-                      onClick={() =>
-                        dev((x) => {
-                          x.p.hull = Math.max(1, x.p.hull - 25);
-                        })
-                      }
-                    />
-                    <DevBtn
-                      label="+25"
-                      onClick={() =>
-                        dev((x) => {
-                          x.p.hull = Math.min(x.p.maxHull, x.p.hull + 25);
-                        })
-                      }
-                    />
-                    <DevBtn
-                      label="Max"
-                      onClick={() =>
-                        dev((x) => {
-                          x.p.hull = x.p.maxHull;
-                        })
-                      }
-                    />
-                  </DevRow>
-                  <DevRow label="Kill All">
-                    <DevBtn
-                      label="Clear Field"
-                      onClick={() =>
-                        devPlaying((x) => {
-                          x.clearAllArt();
-                        })
-                      }
-                    />
-                    <DevBtn
-                      label="Boss"
-                      active={!!gameRef.current?.boss}
-                      onClick={() =>
-                        devPlaying((x) => {
-                          if (x.boss) x.killBoss();
-                        })
-                      }
-                    />
-                  </DevRow>
-                  <DevRow label="Wave">
-                    <DevBtn
-                      label="Next"
-                      onClick={() =>
-                        devPlaying((x) => {
-                          x.rocks = [];
-                          x.drones = [];
-                          x.boss = null;
-                          x.nextWave();
-                        })
-                      }
-                    />
-                    <DevBtn
-                      label="+5"
-                      onClick={() =>
-                        devPlaying((x) => {
-                          x.rocks = [];
-                          x.drones = [];
-                          x.boss = null;
-                          x.wave += 4;
-                          x.nextWave();
-                        })
-                      }
-                    />
-                  </DevRow>
-                  <DevRow label="Boss">
-                    {[1, 2, 3, 4, 5, 6].map((mk) => (
-                      <DevBtn
-                        key={mk}
-                        label={mk === 5 ? "MK5" : `MK${mk}`}
-                        active={
-                          !!gameRef.current?.boss &&
-                          gameRef.current.boss.suffix.startsWith(`MK${mk}`)
-                        }
-                        onClick={() =>
-                          devPlaying((x) => {
-                            x.boss = x.makeBoss(mk === 5, mk);
-                            x.banner = x.boss.name + " " + x.boss.suffix.split(" ")[0];
-                            x.bannerSub = "DEV SUMMON";
-                            x.bannerT = 2;
-                            audio.play("bossCharge");
-                          })
-                        }
-                      />
-                    ))}
-                  </DevRow>
-                  <DevRow label="Spawn count">
-                    <input
-                      aria-label="Spawn count"
-                      type="number"
-                      min={1}
-                      max={50}
-                      step={1}
-                      value={devSpawnCount}
-                      onChange={(event) =>
-                        setDevSpawnCount(
-                          Math.max(1, Math.min(50, Math.floor(Number(event.target.value) || 1))),
-                        )
-                      }
-                      className="w-16 border border-steel bg-void px-2 py-1 text-amber"
-                    />
-                    <span className="text-[10px] text-muted">1–50 · boom cap: 6</span>
-                  </DevRow>
-                  <DevRow label="Spawn size">
-                    {([1, 2, 3] as const).map((size) => (
-                      <DevBtn
-                        key={size}
-                        label={size === 1 ? "Small" : size === 2 ? "Medium" : "Large"}
-                        active={devSpawnSize === size}
-                        onClick={() => setDevSpawnSize(size)}
-                      />
-                    ))}
-                  </DevRow>
-                  <DevRow label="Mob">
-                    <DevBtn
-                      label="Norm"
-                      onClick={() =>
-                        devPlaying((x) => x.devSpawnRock(devSpawnSize, "none", devSpawnCount))
-                      }
-                    />
-                    <DevBtn
-                      label="Homer"
-                      onClick={() =>
-                        devPlaying((x) => x.devSpawnRock(devSpawnSize, "homing", devSpawnCount))
-                      }
-                    />
-                    <DevBtn
-                      label="Bounce"
-                      onClick={() =>
-                        devPlaying((x) => x.devSpawnRock(devSpawnSize, "bounce", devSpawnCount))
-                      }
-                    />
-                    <DevBtn
-                      label="Boom"
-                      onClick={() =>
-                        devPlaying((x) => x.devSpawnRock(devSpawnSize, "boom", devSpawnCount))
-                      }
-                    />
-                    <DevBtn
-                      label="Fast"
-                      onClick={() =>
-                        devPlaying((x) => x.devSpawnRock(devSpawnSize, "fast", devSpawnCount))
-                      }
-                    />
-                    <DevBtn
-                      label="Sentinel"
-                      onClick={() =>
-                        devPlaying((x) => x.devSpawnMob("sentinel", devSpawnCount, devSpawnSize))
-                      }
-                    />
-                    <DevBtn
-                      label="Warden"
-                      onClick={() =>
-                        devPlaying((x) => x.devSpawnMob("warden", devSpawnCount, devSpawnSize))
-                      }
-                    />
-                    <DevBtn
-                      label="Spiker"
-                      onClick={() =>
-                        devPlaying((x) => x.devSpawnMob("spiker", devSpawnCount, devSpawnSize))
-                      }
-                    />
-                  </DevRow>
-                  <DevRow label="Shower">
-                    <DevBtn
-                      label={gameRef.current?.shower.active ? "Running" : "Start"}
-                      active={!!gameRef.current?.shower.active}
-                      onClick={() =>
-                        devPlaying((x) => {
-                          if (!x.shower.active) x.startShower();
-                        })
-                      }
-                    />
-                    <DevBtn
-                      label="Long"
-                      onClick={() =>
-                        devPlaying((x) => {
-                          x.startShower(14);
-                        })
-                      }
-                    />
-                    <DevBtn
-                      label="Stop"
-                      onClick={() =>
-                        devPlaying((x) => {
-                          x.shower.t = 0;
-                          x.shower.active = false;
-                        })
-                      }
-                    />
-                  </DevRow>
-                  <DevRow label="Meteorite">
-                    <DevBtn label="×1" onClick={() => devPlaying((x) => x.devSpawnMeteorites(1))} />
-                    <DevBtn label="×6" onClick={() => devPlaying((x) => x.devSpawnMeteorites(6))} />
-                    <DevBtn
-                      label="×15"
-                      onClick={() => devPlaying((x) => x.devSpawnMeteorites(15))}
-                    />
-                    <DevBtn
-                      label="Meteor"
-                      onClick={() => devPlaying((x) => x.spawnMeteor(Math.random() < 0.5 ? -1 : 1))}
-                    />
-                  </DevRow>
-                </div>
-
-                <div className={`mt-2.5 space-y-2.5 ${devPage === 2 ? "" : "hidden"}`}>
-                  <DevRow label="Max All">
-                    <DevBtn
-                      label="God Build"
-                      onClick={() =>
-                        dev((x) => {
-                          // full unlock: arsenal, drone, survivability and economy
-                          for (const w of WEAPON_ORDER) x.p.weapons[w] = weaponMaxLevel(w);
-                          x.devSetAllStacks(999);
-                          for (const id of DRONE_UPGRADE_IDS) x.devSetSalvageUpgrade(id, 9);
-                          x.buySalvageDrone();
-                          x.salvageDrone.purchased = true;
-                          x.salvageDrone.active = true;
-                          x.devSetSalvageHp(9999);
-                          x.p.maxHull = Math.max(x.p.maxHull, 500);
-                          x.p.hull = x.p.maxHull;
-                          x.p.missiles = x.p.maxMissiles;
-                          x.credits = 999999;
-                          x.score = Math.max(x.score, 999999);
-                          x.floatText(x.p.x, x.p.y - 40, "MAX LOADOUT", "#ff3d6e", 16);
-                          audio.play("levelup");
-                        })
-                      }
-                    />
-                  </DevRow>
-                  <DevStatUpgrades game={gameRef.current} onEdit={devStat} />
-                  <DevRow label="Level">
-                    <DevBtn
-                      label="+1"
-                      onClick={() =>
-                        devPlaying((x) => {
-                          x.gainXp(x.xpNext);
-                        })
-                      }
-                    />
-                    <DevBtn
-                      label="+5"
-                      onClick={() =>
-                        devPlaying((x) => {
-                          x.gainXp(x.xpNext * 5);
-                        })
-                      }
-                    />
-                  </DevRow>
-                  <DevRow label="Weapon">
-                    {WEAPON_ORDER.map((w) => (
-                      <DevBtn
-                        key={w}
-                        label={WEAPON_DEFS[w].short.slice(0, 4)}
-                        active={hud.primary === w}
-                        onClick={() =>
-                          dev((x) => {
-                            if (x.p.weapons[w] <= 0) x.p.weapons[w] = 1;
-                            x.p.primary = w;
-                            x.p.heat = 0;
-                            x.p.beamOn = false;
-                          })
-                        }
-                      />
-                    ))}
-                  </DevRow>
-                  <DevRow label="Wpn Lvl">
-                    <DevBtn
-                      label="+1"
-                      onClick={() =>
-                        dev((x) => {
-                          const w = x.p.primary;
-                          x.p.weapons[w] = Math.min(weaponMaxLevel(w), x.p.weapons[w] + 1);
-                        })
-                      }
-                    />
-                    <DevBtn
-                      label="Max"
-                      onClick={() =>
-                        dev((x) => {
-                          x.p.weapons[x.p.primary] = weaponMaxLevel(x.p.primary);
-                        })
-                      }
-                    />
-                    <DevBtn
-                      label="All"
-                      onClick={() =>
-                        dev((x) => {
-                          for (const w of WEAPON_ORDER)
-                            x.p.weapons[w] = Math.max(1, x.p.weapons[w]);
-                        })
-                      }
-                    />
-                  </DevRow>
-                  <DevRow label="Drone">
-                    <DevBtn
-                      label="Buy"
-                      onClick={() =>
-                        dev((x) => {
-                          x.buySalvageDrone();
-                        })
-                      }
-                    />
-                    <DevBtn label="1x" onClick={() => dev((x) => x.devSpawnSalvage(1))} />
-                    <DevBtn label="2x" onClick={() => dev((x) => x.devSpawnSalvage(2))} />
-                    <DevBtn label="3x" onClick={() => dev((x) => x.devSpawnSalvage(3))} />
-                    <DevBtn label="HP 1" onClick={() => dev((x) => x.devSetSalvageHp(1))} />
-                    <DevBtn label="HP Max" onClick={() => dev((x) => x.devSetSalvageHp(999))} />
-                  </DevRow>
-                  <DevRow label="D Lv">
-                    {DRONE_UPGRADE_IDS.map((id) => (
-                      <DevBtn
-                        key={id}
-                        label={
-                          id === "twinCannons"
-                            ? "TC+"
-                            : id === "overcharge"
-                              ? "OC+"
-                              : id === "piercing"
-                                ? "PR+"
-                                : id === "repairPulse"
-                                  ? "RP+"
-                                  : id.slice(0, 2).toUpperCase() + "+"
-                        }
-                        onClick={() =>
-                          dev((x) => x.devSetSalvageUpgrade(id, x.salvageDrone.upgrades[id] + 1))
-                        }
-                      />
-                    ))}
-                  </DevRow>
-                  <DevRow label="D Build">
-                    <DevBtn
-                      label="Max"
-                      onClick={() =>
-                        dev((x) => {
-                          for (const id of DRONE_UPGRADE_IDS) x.devSetSalvageUpgrade(id, 9);
-                        })
-                      }
-                    />
-                    <DevBtn
-                      label="Reset"
-                      onClick={() =>
-                        dev((x) => {
-                          for (const id of DRONE_UPGRADE_IDS) x.devSetSalvageUpgrade(id, 0);
-                        })
-                      }
-                    />
-                    <DevBtn label="Die" onClick={() => dev((x) => x.damageSalvageDrone(9999))} />
-                  </DevRow>
-                  <DevRow label="D Wpn">
-                    <DevBtn
-                      label="Base"
-                      active={gameRef.current?.salvageDrone.weapon == null}
-                      onClick={() => dev((x) => x.devEquipSalvageWeapon(null))}
-                    />
-                    {WEAPON_ORDER.map((w) => (
-                      <DevBtn
-                        key={w}
-                        label={WEAPON_DEFS[w].short.slice(0, 3)}
-                        active={gameRef.current?.salvageDrone.weapon === w}
-                        onClick={() => dev((x) => x.devEquipSalvageWeapon(w))}
-                      />
-                    ))}
-                  </DevRow>
-                  <DevRow label="Misc">
-                    <DevBtn
-                      label="Missiles"
-                      onClick={() =>
-                        dev((x) => {
-                          x.p.missiles = x.p.maxMissiles;
-                        })
-                      }
-                    />
-                    <DevBtn
-                      label="God"
-                      active={!!gameRef.current?.god}
-                      onClick={() =>
-                        dev((x) => {
-                          x.god = !x.god;
-                        })
-                      }
-                    />
-                    <DevBtn label="Restart" onClick={start} />
-                  </DevRow>
-                </div>
-              </DevWindow>
+              <DeveloperConsole
+                view={gameRef.current!}
+                onClose={() => setDevOpen(false)}
+                onRestart={start}
+                send={(command) =>
+                  devStat((g) => {
+                    applyDeveloperCommand(g, command);
+                  })
+                }
+              />
             )}
           </div>
 
@@ -2262,104 +1644,5 @@ function ShopStats({
         <p className="mt-3 text-[10px] leading-relaxed text-amber/35">{empty}</p>
       )}
     </div>
-  );
-}
-
-/**
- * Dev-only picker: choose exactly which stat upgrades are unlocked and how many
- * times each one is stacked. Counts are read live from the engine and every edit
- * rebuilds the derived stats, so the numbers always match what the ship has.
- */
-function DevStatUpgrades({
-  game,
-  onEdit,
-}: {
-  game: Game | null;
-  onEdit: (fn: (g: Game) => void) => void;
-}) {
-  return (
-    <div className="space-y-1 border-t border-steel/25 pt-2">
-      <div className="flex items-center justify-between gap-1">
-        <span className="legend text-amber/50">Stat Upgrades</span>
-        <span className="flex gap-1">
-          <DevBtn
-            label="+1 All"
-            onClick={() =>
-              onEdit((g) => {
-                for (const u of STAT_UPGRADES) g.devSetStack(u.id, (g.stacks[u.id] ?? 0) + 1);
-              })
-            }
-          />
-          <DevBtn label="Max" onClick={() => onEdit((g) => g.devSetAllStacks(999))} />
-          <DevBtn label="Zero" onClick={() => onEdit((g) => g.devSetAllStacks(0))} />
-        </span>
-      </div>
-      {STAT_UPGRADES.map((u) => {
-        const level = game?.stacks[u.id] ?? 0;
-        const capped = level >= u.max;
-        return (
-          <div key={u.id} className="flex items-center gap-1">
-            <span
-              title={`${u.desc} (max ${u.max})`}
-              className="min-w-0 flex-1 truncate text-[9px] uppercase tracking-[0.06em] text-amber/65"
-            >
-              {u.name}
-            </span>
-            <span
-              className={`w-9 shrink-0 text-right text-[9px] ${level > 0 ? "text-amber-hot" : "text-amber/30"}`}
-            >
-              {level}/{u.max}
-            </span>
-            <DevBtn label="−" onClick={() => onEdit((g) => g.devSetStack(u.id, level - 1))} />
-            <DevBtn
-              label="+"
-              disabled={capped}
-              onClick={() => onEdit((g) => g.devSetStack(u.id, level + 1))}
-            />
-            <DevBtn
-              label="M"
-              active={capped}
-              onClick={() => onEdit((g) => g.devSetStack(u.id, u.max))}
-            />
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function DevRow({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="flex items-start justify-between gap-1.5">
-      <span className="legend mt-1 w-[54px] shrink-0 text-amber/45">{label}</span>
-      <div className="flex flex-wrap justify-end gap-1">{children}</div>
-    </div>
-  );
-}
-
-function DevBtn({
-  label,
-  onClick,
-  active,
-  disabled,
-}: {
-  label: string;
-  onClick: () => void;
-  active?: boolean;
-  disabled?: boolean;
-}) {
-  const tone = disabled
-    ? "cursor-not-allowed border-steel/25 text-amber/25"
-    : active
-      ? "border-magenta bg-magenta/25 text-magenta"
-      : "border-steel/50 text-amber/70 hover:border-amber hover:text-amber-hot";
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={`border px-1.5 py-1 text-[9px] uppercase tracking-[0.12em] transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-magenta ${tone}`}
-    >
-      {label}
-    </button>
   );
 }

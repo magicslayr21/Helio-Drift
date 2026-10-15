@@ -61,6 +61,7 @@ export function DevWindow({ children }: { children: ReactNode }) {
       ref={panel}
       role="region"
       aria-label="Developer console"
+      data-developer-console
       className="thin-scroll fixed z-[100] max-h-[calc(100dvh-1rem)] w-[276px] max-w-[calc(100vw-1rem)] overflow-y-auto border border-magenta/60 bg-black/88 p-3 pt-10 backdrop-blur-sm"
       style={{ left: position.x, top: position.y }}
     >
@@ -111,6 +112,6 @@ export function DevWindow({ children }: { children: ReactNode }) {
       </button>
       {children}
     </div>,
-    document.body,
+    document.querySelector<HTMLDialogElement>("dialog.deploy-screen[open]") ?? document.body,
   );
 }

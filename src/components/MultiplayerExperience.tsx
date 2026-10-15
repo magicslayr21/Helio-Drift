@@ -59,7 +59,10 @@ import { readFlightSettings, saveFlightSettings } from "../game/preferences";
 import { UpdateLog } from "./UpdateLog";
 import { Leaderboard } from "./Leaderboard";
 import SpecSection from "./SpecSection";
-import { CoopDeveloperPanel } from "./CoopDeveloperPanel";
+import { DeveloperConsole } from "./DeveloperConsole";
+import { CoopBoard } from "./CoopBoard";
+import { PauseMenu } from "./PauseMenu";
+import { boostSummary } from "../game/boost-summary";
 import "./MultiplayerExperience.css";
 
 type Screen = "home" | "browse" | "create" | "join" | "leaderboard" | "room";
@@ -107,6 +110,7 @@ export function MultiplayerExperience({
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [board, setBoard] = useState<CoopLeaderboardPage | null>(null);
   const [shopOpen, setShopOpen] = useState(false);
+  const [devOpen, setDevOpen] = useState(false);
   const [developerSession, setDeveloperSession] = useState(getAdminSession);
   const [developerCode, setDeveloperCode] = useState("");
   const [developerPending, setDeveloperPending] = useState(false);
@@ -135,7 +139,18 @@ export function MultiplayerExperience({
   }, [pause, snapshot?.serverTime]);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
-      if (event.code !== "Escape" || event.repeat) return;
+      const input =
+        event.target instanceof HTMLElement &&
+        /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName);
+      if (event.code === "Backquote" && !input && developerSession && room?.phase === "running") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        setDevOpen((v) => !v);
+        return;
+      }
+      if ((event.target as HTMLElement | null)?.closest("[data-coop-record-dialog], .lb-overlay"))
+        return;
+      if ((event.code !== "Escape" && (event.code !== "KeyP" || input)) || event.repeat) return;
       // Separate top-layer dialogs (records/update log) own their own Escape key.
       const dialog = (event.target as HTMLElement | null)?.closest("dialog");
       if (dialog && !dialog.classList.contains("deploy-screen")) return;
@@ -162,7 +177,17 @@ export function MultiplayerExperience({
     };
     window.addEventListener("keydown", key, true);
     return () => window.removeEventListener("keydown", key, true);
-  }, [room?.phase, pause, warningOpen, pausePanel, shopOpen, session, screen, onExit]);
+  }, [
+    room?.phase,
+    pause,
+    warningOpen,
+    pausePanel,
+    shopOpen,
+    session,
+    screen,
+    onExit,
+    developerSession,
+  ]);
 
   const enterSession = useCallback((next: CoopSession) => {
     setSession(next);
@@ -261,6 +286,10 @@ export function MultiplayerExperience({
     try {
       const next = await authenticateDeveloper(developerCode.trim());
       setDeveloperSession(next);
+      if (room?.phase === "running") {
+        setDevOpen(true);
+        setPausePanel("main");
+      }
       setDeveloperCode("");
       setDeveloperNotice("Hosting unlocked for this developer session.");
       audio.play("levelup");
@@ -503,145 +532,151 @@ export function MultiplayerExperience({
           </div>
         )}
         {shopOpen && me && (
-          <CoopShop player={me} onClose={() => setShopOpen(false)} send={sendCommand} />
+          <CoopShop
+            player={me}
+            paused={Boolean(pause)}
+            onClose={() => setShopOpen(false)}
+            send={sendCommand}
+          />
         )}
-        {pause && (
+        {devOpen && developerSession && (
+          <DeveloperConsole
+            view={{
+              p: me.ship,
+              stacks: me.upgrades,
+              salvageDrone: me.drone,
+              boss: state.campaign.boss,
+              shower: state.campaign.shower,
+              god: me.campaign?.god ?? false,
+              score: state.team.score,
+              credits: me.credits,
+            }}
+            onClose={() => setDevOpen(false)}
+            onRestart={() => {
+              sendCommand({
+                type: "developer",
+                token: developerSession.token,
+                command: { action: "restart" },
+              });
+            }}
+            send={(command) => {
+              sendCommand({ type: "developer", token: developerSession.token, command });
+            }}
+          />
+        )}
+        {pause && !shopOpen && (
           <div
-            className="coop-modal coop-pause"
+            className="coop-pause campaign-pause-overlay scanlines fixed inset-0 z-20 flex items-center justify-center overflow-y-auto bg-void/86 py-6 backdrop-blur-[2px]"
             role="dialog"
             aria-modal="true"
-            aria-labelledby="coop-pause-title"
+            aria-labelledby="flight-pause-title"
           >
-            <div>
-              <div className="coop-panel-heading">
-                <p className="deploy-eyebrow">Helios / flight systems</p>
-                <span>Both pilots paused</span>
-              </div>
-              <h2 id="coop-pause-title">FLIGHT PAUSED</h2>
-              <p>{state.players[pause.playerId].callsign} paused the game.</p>
-              <div className="coop-pause-clock">
-                <p>Automatic flight resume</p>
-                <strong>{String(pauseSeconds).padStart(2, "0")}s</strong>
-              </div>
-              <details className="coop-pilot-details">
-                <summary>Pilot, loadout & upgrades</summary>
-                <p>
-                  Wave {state.team.wave} · Sector {state.team.sector} ·{" "}
-                  {duration(state.team.elapsedSeconds)} flown
-                </p>
-                <p>
-                  {me.callsign} · Level {me.level} · {me.credits} CR · Hull{" "}
-                  {Math.ceil(me.ship.hull)}/{me.ship.maxHull} · Missiles {me.ship.missiles}/
-                  {me.ship.maxMissiles}
-                </p>
-                <p>
-                  Damage ×{me.ship.damageMul.toFixed(2)} · Fire rate ×
-                  {me.ship.fireRateMul.toFixed(2)} · Critical chance{" "}
-                  {Math.round(me.ship.crit * 100)}%
-                </p>
-                <p>
-                  {WEAPON_ORDER.filter((id) => me.ship.weapons[id] > 0)
-                    .map(
-                      (id) =>
-                        `${WEAPON_DEFS[id].short} Lv ${me.ship.weapons[id]}${me.ship.primary === id ? " (active)" : ""}`,
-                    )
-                    .join(" · ")}
-                </p>
-                <p>
-                  {STAT_UPGRADES.filter((upgrade) => me.upgrades[upgrade.id] > 0)
-                    .map((upgrade) => `${upgrade.name} ${me.upgrades[upgrade.id]}/${upgrade.max}`)
-                    .join(" · ") || "No stat upgrades yet."}
-                </p>
-                <p>
-                  Drone:{" "}
-                  {me.drone.purchased
-                    ? `${me.drone.active ? "Active" : "Rebuilding"} · ${Math.ceil(me.drone.hp)}/${me.drone.maxHp} hull · ${me.drone.weapon ? WEAPON_DEFS[me.drone.weapon].short : "Starter cannon"}`
-                    : "Not purchased"}
-                </p>
-                {me.drone.purchased && (
-                  <p>
-                    {SALVAGE_UPGRADE_ORDER.filter((id) => me.drone.upgrades[id] > 0)
-                      .map(
-                        (id) =>
-                          `${SALVAGE_UPGRADES[id].name} ${me.drone.upgrades[id]}/${SALVAGE_UPGRADES[id].max}`,
-                      )
-                      .join(" · ") || "No drone upgrades yet."}
-                  </p>
+            {pausePanel === "main" ? (
+              <PauseMenu
+                hud={{
+                  wave: state.team.wave,
+                  level: me.level,
+                  credits: me.credits,
+                  primary: me.ship.primary,
+                  owned: WEAPON_ORDER.filter((id) => me.ship.weapons[id] > 0).map((id) => ({
+                    id,
+                    level: me.ship.weapons[id],
+                  })),
+                  boosts: boostSummary(me.ship, me.drone, me.upgrades),
+                }}
+                devUnlocked={Boolean(developerSession)}
+                devOpen={devOpen}
+                onSelectWeapon={(weapon) => {
+                  sendCommand({ type: "selectWeapon", weapon });
+                }}
+                onResume={() => connection.current?.send({ type: "resume" })}
+                onShop={() => setShopOpen(true)}
+                onSettings={() => setPausePanel("settings")}
+                onDeveloper={() => {
+                  if (developerSession) setDevOpen((v) => !v);
+                  else setPausePanel("developer");
+                }}
+                onReturn={leave}
+                returnLabel="Leave match"
+                leaderboardLabel="Co-op leaderboard"
+                arsenalLabel="Arsenal · 1 / 2 quick slots · Select to equip"
+                onLeaderboard={() => {
+                  setPausePanel("records");
+                  void loadBoard();
+                }}
+                subtitle={`${state.players[pause.playerId].callsign} paused both pilots · Auto-resume in ${pauseSeconds}s`}
+                footer="P or Esc to resume · Shared pause lasts up to 30 seconds"
+                extra={
+                  notice && (
+                    <p role="status" className="mt-3 text-[10px] text-magenta">
+                      {notice}
+                    </p>
+                  )
+                }
+              />
+            ) : (
+              <div className="thin-scroll w-[min(680px,94%)] max-h-[90dvh] overflow-y-auto border border-steel/50 plate p-6 sm:p-7">
+                <button
+                  className="legend mb-4 border border-steel/60 px-4 py-2 text-amber"
+                  onClick={() => setPausePanel("main")}
+                >
+                  Back to pause menu · {pauseSeconds}s
+                </button>
+                {pausePanel === "settings" && (
+                  <>
+                    <nav className="coop-pause-nav" aria-label="Game information">
+                      <button onClick={() => setPausePanel("global")}>Global leaderboard</button>
+                      <button onClick={() => setPausePanel("details")}>Game details</button>
+                      <button onClick={() => setPausePanel("updates")}>
+                        Update log · v{__APP_VERSION__}
+                      </button>
+                    </nav>
+                    <FlightSettings
+                      settings={settings}
+                      onChange={(next) => {
+                        setSettings(next);
+                        saveFlightSettings(next);
+                      }}
+                    />
+                  </>
                 )}
-                <p>
-                  {me.stats.kills} enemy kills · {me.stats.asteroidKills} asteroid kills ·{" "}
-                  {me.stats.revives} revives · {Math.floor(me.stats.damage).toLocaleString()} damage
-                  dealt
-                </p>
-              </details>
-              {notice && <p role="status">{notice}</p>}
-              {pausePanel === "main" ? (
-                <nav className="coop-pause-nav" aria-label="Pause menu">
-                  <button onClick={() => setPausePanel("settings")}>Settings</button>
-                  <button
-                    onClick={() => {
-                      setPausePanel("records");
-                      void loadBoard();
-                    }}
-                  >
-                    Co-op leaderboard
-                  </button>
-                  <button onClick={() => setPausePanel("global")}>Global leaderboard</button>
-                  <button onClick={() => setPausePanel("details")}>Game details</button>
-                  <button onClick={() => setPausePanel("updates")}>
-                    Update log · v{__APP_VERSION__}
-                  </button>
-                  <button onClick={() => setPausePanel("developer")}>Developer panel</button>
-                </nav>
-              ) : (
-                <button onClick={() => setPausePanel("main")}>Back to pause menu</button>
-              )}
-              {pausePanel === "settings" && (
-                <FlightSettings
-                  settings={settings}
-                  onChange={(next) => {
-                    setSettings(next);
-                    saveFlightSettings(next);
-                  }}
-                />
-              )}
-              {pausePanel === "records" && (
-                <CoopBoard
-                  page={board}
-                  notice={notice}
-                  pending={pending}
-                  onRefresh={() => void loadBoard()}
-                  onMore={() => void loadBoard(board?.entries.length ?? 0)}
-                />
-              )}
-              {pausePanel === "details" && (
-                <>
-                  <p>
-                    Co-op runs reconnect through the room relay. Campaign browser saves are
-                    separate. Both pilots pause together for up to 30 seconds.
-                  </p>
-                  <SpecSection developer={Boolean(developerSession)} multiplayer />
-                </>
-              )}
-              {pausePanel === "updates" && <UpdateLog onClose={() => setPausePanel("main")} />}
-              {pausePanel === "global" && (
-                <Leaderboard
-                  devUnlocked={Boolean(developerSession)}
-                  onClose={() => setPausePanel("main")}
-                />
-              )}
-              {pausePanel === "developer" &&
-                (developerSession ? (
-                  <CoopDeveloperPanel
-                    send={(command) =>
-                      sendCommand({ type: "developer", token: developerSession.token, command })
-                    }
+                {pausePanel === "records" && (
+                  <CoopBoard
+                    page={board}
+                    notice={notice}
+                    pending={pending}
+                    onRefresh={() => void loadBoard()}
+                    onMore={() => void loadBoard(board?.entries.length ?? 0)}
                   />
-                ) : (
-                  <form onSubmit={authorizeHosting} className="coop-settings">
+                )}
+                {pausePanel === "details" && (
+                  <>
+                    <p>
+                      Co-op runs reconnect through the room relay. Campaign browser saves are
+                      separate. Both pilots pause together for up to 30 seconds.
+                    </p>
+                    <SpecSection developer={Boolean(developerSession)} multiplayer />
+                  </>
+                )}
+                {pausePanel === "updates" && <UpdateLog onClose={() => setPausePanel("main")} />}
+                {pausePanel === "global" && (
+                  <Leaderboard
+                    devUnlocked={Boolean(developerSession)}
+                    onClose={() => setPausePanel("main")}
+                  />
+                )}
+                {pausePanel === "developer" && (
+                  <form
+                    onSubmit={(event) => {
+                      void authorizeHosting(event);
+                    }}
+                    className="coop-settings"
+                  >
+                    <p className="legend">Service code</p>
                     <label>
                       Developer code
                       <input
+                        aria-label="Service code"
                         type="password"
                         value={developerCode}
                         maxLength={256}
@@ -651,19 +686,21 @@ export function MultiplayerExperience({
                     </label>
                     <button disabled={developerPending}>Unlock developer panel</button>
                     <p role="status">{developerNotice}</p>
+                    {developerSession && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDevOpen(true);
+                          setPausePanel("main");
+                        }}
+                      >
+                        Open developer console
+                      </button>
+                    )}
                   </form>
-                ))}
-              <button
-                className="coop-resume"
-                autoFocus
-                onClick={() => connection.current?.send({ type: "resume" })}
-              >
-                Resume flight
-              </button>
-              <button className="coop-leave" onClick={leave}>
-                Leave match
-              </button>
-            </div>
+                )}
+              </div>
+            )}
           </div>
         )}
         {ended && (
@@ -1101,77 +1138,14 @@ function CoopForm({
   );
 }
 
-function CoopBoard({
-  page,
-  notice,
-  pending,
-  onRefresh,
-  onMore,
-}: {
-  page: CoopLeaderboardPage | null;
-  notice: string;
-  pending: boolean;
-  onRefresh: () => void;
-  onMore: () => void;
-}) {
-  return (
-    <div className="coop-browser">
-      <div className="coop-section-title">
-        <div>
-          <p className="deploy-eyebrow">Server-authored records</p>
-          <h2>CO-OP LEADERBOARD</h2>
-        </div>
-        <button onClick={onRefresh} disabled={pending}>
-          <RefreshCw size={16} /> Refresh
-        </button>
-      </div>
-      {notice && <p className="coop-notice">{notice}</p>}
-      <div className="coop-board-head">
-        <span>Rank / team</span>
-        <span>Progress</span>
-        <span>Score</span>
-        <span>Time</span>
-      </div>
-      {page?.entries.map((entry) => (
-        <div className="coop-board-row" key={entry.id}>
-          <span>
-            <b>#{entry.rank}</b>
-            <strong>
-              {entry.playerOne} + {entry.playerTwo}
-            </strong>
-          </span>
-          <span>
-            W{entry.wave} · S{entry.sector}
-            <small>{entry.status}</small>
-          </span>
-          <span>
-            {entry.score.toLocaleString()}
-            <small>{entry.bossesDefeated} bosses</small>
-          </span>
-          <span>
-            {duration(entry.durationSeconds)}
-            <small>{entry.completed ? "Campaign clear" : "Run ended"}</small>
-          </span>
-        </div>
-      ))}
-      {page && page.entries.length < page.total && (
-        <button className="coop-load-more" disabled={pending} onClick={onMore}>
-          Load more records
-        </button>
-      )}
-      {!pending && !page?.entries.length && (
-        <p className="coop-help">No authoritative co-op results have been recorded yet.</p>
-      )}
-    </div>
-  );
-}
-
 function CoopShop({
   player,
+  paused,
   onClose,
   send,
 }: {
   player: AuthoritativeSnapshot["state"]["players"][CoopPlayerId];
+  paused: boolean;
   onClose: () => void;
   send: (message: UiCommand) => boolean;
 }) {
@@ -1285,8 +1259,9 @@ function CoopShop({
           </>
         )}
         <p className="coop-help">
-          Purchases are accepted only after server validation. Combat continues while this panel is
-          open.
+          {paused
+            ? "Both pilots are paused. The shared 30-second countdown still applies."
+            : "Combat continues while this panel is open."}
         </p>
       </div>
     </div>

@@ -1,14 +1,11 @@
 import { CoopCampaign, PILOTS, freshPilotCampaign, isHostileShot } from "../coop-campaign";
 import { captureCampaignWorld, restoreCampaignWorld } from "../campaign-state";
+import { freshPlayer, freshSalvageDrone, THEMES, STAT_UPGRADES } from "../balance";
 import {
-  freshPlayer,
-  freshSalvageDrone,
-  THEMES,
-  STAT_UPGRADES,
-  WEAPON_ORDER,
-  weaponMaxLevel,
-} from "../balance";
-import { validDeveloperCommand, type DeveloperCommand } from "../developer-command";
+  applyDeveloperCommand,
+  validDeveloperCommand,
+  type DeveloperCommand,
+} from "../developer-command";
 import { GAME_CONFIG } from "../game-config";
 import { clamp, wrapAngle } from "../math";
 import { COOP_CONFIG, COOP_FIXED_DT } from "./coop-config";
@@ -369,6 +366,26 @@ export class LocalCoopSimulation {
     this.state.clockAccumulator = clock.accumulator;
     return steps;
   }
+  /** Loadout transactions can run during a shared pause without advancing combat. */
+  pausedCommand(command: CoopCommand) {
+    const allowed = (c: CoopCommand) =>
+      [
+        "buyWeapon",
+        "selectWeapon",
+        "buyDrone",
+        "buyDroneUpgrade",
+        "equipDroneWeapon",
+        "chooseUpgrade",
+        "rerollUpgrades",
+      ].includes(c.type);
+    if (!allowed(command) || !this.submit(command)) return false;
+    const deferred = this.commands.filter((c) => !allowed(c));
+    this.commands = this.commands.filter(allowed);
+    this.applyCommands();
+    this.commands = deferred;
+    this.sync();
+    return true;
+  }
   clearControls() {
     this.commands = this.commands.filter((command) => command.type !== "input");
     for (const p of Object.values(this.state.players)) {
@@ -380,38 +397,33 @@ export class LocalCoopSimulation {
   /** Invoked only after Worker authorization; reuses campaign console operations. */
   developer(playerId: CoopPlayerId, command: DeveloperCommand) {
     if (!validDeveloperCommand(command) || this.state.phase !== "running") return false;
+    if (command.action === "restart") {
+      const previous = this.state;
+      const fresh = new LocalCoopSimulation({
+        seed: previous.seed,
+        width: this.width,
+        height: this.height,
+        callsigns: [previous.players.p1.callsign, previous.players.p2.callsign],
+      }).snapshot();
+      fresh.tick = previous.tick;
+      fresh.clockAccumulator = previous.clockAccumulator;
+      for (const id of PILOTS) {
+        fresh.players[id].lastInputSequence = previous.players[id].lastInputSequence;
+        fresh.players[id].lastCommandSequence = previous.players[id].lastCommandSequence;
+      }
+      this.state = fresh;
+      this.game = this.createGame();
+      restoreCampaignWorld(this.game, fresh.campaign!);
+      this.game.restorePilotContext();
+      this.random.restore(fresh.randomState);
+      this.commands = [];
+      this.events = [];
+      this.sync();
+      return true;
+    }
     const g = this.game;
     g.bindPilot(playerId);
-    switch (command.action) {
-      case "heal":
-        g.p.hull = g.p.maxHull;
-        break;
-      case "credits":
-        g.credits += 10000;
-        break;
-      case "clear":
-        g.clearAllArt();
-        break;
-      case "nextWave":
-        g.clearAllArt();
-        g.nextWave();
-        break;
-      case "weapons":
-        for (const id of WEAPON_ORDER) g.p.weapons[id] = weaponMaxLevel(id);
-        break;
-      case "drone":
-        g.devSpawnSalvage(1);
-        break;
-      case "rock":
-        g.devSpawnRock(command.size, command.kind, command.count);
-        break;
-      case "enemy":
-        g.devSpawnMob(command.kind, command.count, command.size);
-        break;
-      case "boss":
-        g.boss = g.makeBoss(command.mk === 5, command.mk);
-        break;
-    }
+    applyDeveloperCommand(g, command);
     g.releasePilot();
     this.enforceEntityCaps();
     this.sync();
@@ -462,7 +474,6 @@ export class LocalCoopSimulation {
       this.game.decayShake(dt / 2);
       this.game.timeScale += (1 - this.game.timeScale) * Math.min(1, (dt / 2) * 7);
       this.game.update((dt / 2) * this.game.timeScale);
-      this.game.updateTethers((dt / 2) * this.game.timeScale);
       if (this.game.mode === "victory")
         this.state.phase = this.game.bonusAvailable ? "bonusOffer" : "victory";
     }

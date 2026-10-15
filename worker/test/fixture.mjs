@@ -50,6 +50,17 @@ export async function fixture(t, overrides = {}) {
       .filter(Boolean)
       .map((sql) => db.prepare(sql)),
   );
+  const moderationMigration = await readFile(
+    new URL("../migrations/0003_coop_moderation.sql", import.meta.url),
+    "utf8",
+  );
+  await db.batch(
+    moderationMigration
+      .split(";")
+      .map((sql) => sql.trim())
+      .filter(Boolean)
+      .map((sql) => db.prepare(sql)),
+  );
   async function request(path, { method = "GET", token, body, rawBody, headers = {} } = {}) {
     const response = await mf.dispatchFetch(`https://leaderboard.example/api${path}`, {
       method,

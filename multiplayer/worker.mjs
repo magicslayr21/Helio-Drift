@@ -730,8 +730,7 @@ export class MatchRoom {
     this.broadcastSnapshot();
   }
 
-  applyCombatCommand(socket, playerId, message) {
-    if (this.room.pause) return;
+  async applyCombatCommand(socket, playerId, message) {
     if (this.room.phase !== "running" || !this.simulation) {
       return this.sendError(socket, "not_running", "Match has not started.");
     }
@@ -758,6 +757,14 @@ export class MatchRoom {
       )
         return this.sendError(socket, "invalid_command", "Upgrade is invalid.");
       command.upgrade = message.upgrade;
+    }
+    if (this.room.pause) {
+      if (!this.simulation.pausedCommand(command))
+        return this.sendError(socket, "rejected_command", "Command was stale or not permitted while paused.");
+      this.room.match = this.simulation.snapshot(false);
+      await this.persist();
+      this.broadcastSnapshot();
+      return;
     }
     if (!this.simulation.submit(command))
       this.sendError(socket, "rejected_command", "Command was stale or not permitted.");

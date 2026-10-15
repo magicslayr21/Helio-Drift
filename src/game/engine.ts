@@ -71,6 +71,10 @@ import type {
   SalvageClone,
   SectorTheme,
 } from "./types";
+import { boostSummary } from "./boost-summary";
+import { COOP_CONFIG } from "./simulation/coop-config";
+import type { CoopEvent, CoopTetherState, CoopPlayerId } from "./simulation/coop-types";
+import type { DeveloperEnemy } from "./developer-command";
 import { GAME_CONFIG } from "./game-config";
 import { stepPlayerMovement, type FlightIntent } from "./simulation/movement";
 import {
@@ -126,9 +130,161 @@ export class Game {
   }
   selectTarget(_x: number, _y: number) {}
   selectBulletPilot(_bullet: Bullet) {}
-  updateRockSpecial(_rock: Rock, _dt: number) {
-    return false;
+  campaignTethers: CoopTetherState[] = [];
+  specialPilots() {
+    return [{ id: "p1" as CoopPlayerId, ship: this.p, disabled: false }];
   }
+  specialPilotId(): CoopPlayerId {
+    return "p1";
+  }
+  specialTethers() {
+    return this.campaignTethers;
+  }
+  specialEvent(_event: CoopEvent) {}
+  specialTick() {
+    return this.frame;
+  }
+  updateDroneSpecial(d: Drone, dt: number) {
+    const extra = d.coop;
+    if (!extra) return;
+    extra.timer -= dt;
+    if (extra.kind === "mineWarden") {
+      if (
+        extra.timer <= 0 &&
+        this.rocks.filter((r) => r.coopMine).length < COOP_CONFIG.mineWarden.mineCap
+      ) {
+        const c = COOP_CONFIG.mineWarden;
+        const mine = this.makeRock(d.x, d.y, 1, 0, 0, "boom");
+        mine.r = c.mineRadius;
+        mine.hp = mine.maxHp = c.mineHp;
+        mine.coopMine = {
+          ownerId: d.id,
+          armTimer: c.mineArmSeconds,
+          triggerTimer: -1,
+          life: c.mineLifetime,
+        };
+        this.rocks.push(mine);
+        this.specialEvent({ type: "mineDeployed", tick: this.specialTick(), entityId: mine.id });
+        extra.timer = this.rnd(c.deploymentMin, c.deploymentMax);
+      }
+      return;
+    }
+    const config = COOP_CONFIG.tetherSentinel;
+    if (extra.warning > 0) {
+      extra.warning -= dt;
+      if (
+        extra.warning <= 0 &&
+        extra.target &&
+        !this.specialPilots().find((p) => p.id === extra.target)!.disabled
+      ) {
+        this.specialTethers().push({
+          id: this.nextId++,
+          sourceId: d.id,
+          targetPlayerId: extra.target,
+          strength: config.strength,
+          minimumDistance: config.minimumDistance,
+          maximumDistance: config.maximumDistance,
+        });
+        this.specialEvent({
+          type: "tetherStarted",
+          tick: this.specialTick(),
+          entityId: d.id,
+          playerId: extra.target,
+        });
+        extra.timer = config.cooldownSeconds;
+      }
+    } else if (extra.timer <= 0 && !this.specialTethers().some((t) => t.sourceId === d.id)) {
+      extra.target = this.specialPilotId();
+      extra.warning = config.telegraphSeconds;
+      this.rings.push({
+        x: d.x,
+        y: d.y,
+        r: d.r,
+        max: d.r * 2,
+        life: config.telegraphSeconds,
+        color: "#6fe7ff",
+        w: 2,
+      });
+    }
+  }
+
+  updateRockSpecial(r: Rock, dt: number) {
+    const mine = r.coopMine;
+    if (!mine) return false;
+    mine.armTimer -= dt;
+    mine.life -= dt;
+    r.flash = Math.max(0, r.flash - dt * 4);
+    if (mine.life <= 0) {
+      this.rocks.splice(this.rocks.indexOf(r), 1);
+      return true;
+    }
+    if (mine.armTimer > 0) return true;
+    const config = COOP_CONFIG.mineWarden;
+    if (
+      mine.triggerTimer < 0 &&
+      this.specialPilots().some((p) => {
+        return (
+          !p.disabled && Math.hypot(p.ship.x - r.x, p.ship.y - r.y) <= config.mineBlastRadius * 0.8
+        );
+      })
+    ) {
+      mine.triggerTimer = config.mineWarningSeconds;
+      this.rings.push({
+        x: r.x,
+        y: r.y,
+        r: r.r,
+        max: config.mineBlastRadius,
+        life: config.mineWarningSeconds,
+        color: "#ff3d6e",
+        w: 2,
+      });
+    }
+    if (mine.triggerTimer >= 0) {
+      mine.triggerTimer -= dt;
+      if (mine.triggerTimer <= 0) this.breakRock(this.rocks.indexOf(r), 0, 0);
+    }
+    return true;
+  }
+
+  updateTethers(dt: number) {
+    const remaining = this.specialTethers().filter((t) => {
+      const source = this.drones.find((d) => d.id === t.sourceId),
+        p = this.specialPilots().find((p) => p.id === t.targetPlayerId)!;
+      const distance = source ? Math.hypot(source.x - p.ship.x, source.y - p.ship.y) : Infinity;
+      if (!source || p.disabled || distance > t.maximumDistance) {
+        this.specialEvent({
+          type: "tetherBroken",
+          tick: this.specialTick(),
+          entityId: t.sourceId,
+          playerId: p.id,
+        });
+        return false;
+      }
+      if (distance > t.minimumDistance) {
+        p.ship.vx += ((source.x - p.ship.x) / distance) * t.strength * dt;
+        p.ship.vy += ((source.y - p.ship.y) / distance) * t.strength * dt;
+      }
+      return true;
+    });
+    this.specialTethers().splice(0, this.specialTethers().length, ...remaining);
+  }
+
+  mineBoom(r: Rock) {
+    this.enemyBlast(
+      r.x,
+      r.y,
+      COOP_CONFIG.mineWarden.mineBlastRadius,
+      COOP_CONFIG.mineWarden.mineDamage,
+      "Mine Warden mine",
+    );
+    this.specialEvent({
+      type: "mineDestroyed",
+      tick: this.specialTick(),
+      entityId: r.id,
+      playerId: this.specialPilotId(),
+    });
+  }
+
   updateBossContactCooldown(boss: Boss, dt: number) {
     if (boss.mk6) boss.mk6.beamCd -= dt;
   }
@@ -458,6 +614,7 @@ export class Game {
     this.p.y = this.h / 2;
     this.stacks = {};
     this.rocks = [];
+    this.campaignTethers = [];
     this.drones = [];
     this.bullets = [];
     this.pickups = [];
@@ -1002,44 +1159,7 @@ export class Game {
    * player state so it always agrees with what the game is actually doing.
    */
   boostSummary(): Hud["boosts"] {
-    const p = this.p;
-    const base = freshPlayer();
-    const taken = STAT_UPGRADES.filter((u) => (this.stacks[u.id] ?? 0) > 0).map((u) => ({
-      id: u.id,
-      name: u.name,
-      tag: u.tag,
-      level: this.stacks[u.id] ?? 0,
-      max: u.max,
-    }));
-    const pct = (mul: number) => `${mul >= 1 ? "+" : ""}${Math.round((mul - 1) * 100)}%`;
-    const totals: { label: string; value: string }[] = [];
-    if (this.playerAttackRate() !== 1)
-      totals.push({ label: "Fire rate", value: pct(this.playerAttackRate()) });
-    if (p.damageMul !== 1) totals.push({ label: "Damage", value: pct(p.damageMul) });
-    if (p.extraShots > 0) totals.push({ label: "Extra projectiles", value: `+${p.extraShots}` });
-    if (p.pierce > 0) totals.push({ label: "Pierce", value: `+${p.pierce}` });
-    if (p.crit !== base.crit)
-      totals.push({ label: "Crit chance", value: `${Math.round(p.crit * 100)}%` });
-    if (p.thrust !== base.thrust)
-      totals.push({ label: "Thrust", value: pct(p.thrust / base.thrust) });
-    if (p.maxSpeed !== base.maxSpeed)
-      totals.push({ label: "Top speed", value: pct(p.maxSpeed / base.maxSpeed) });
-    if (p.maxHull !== base.maxHull)
-      totals.push({
-        label: "Max health",
-        value: `${Math.round(p.maxHull)} (+${Math.round(p.maxHull - base.maxHull)})`,
-      });
-    if (p.armor > 0)
-      totals.push({ label: "Damage taken", value: `−${Math.round(p.armor * 100)}%` });
-    if (p.leech > 0) totals.push({ label: "Lifesteal", value: `${Math.round(p.leech * 100)}%` });
-    if (p.maxMissiles !== base.maxMissiles)
-      totals.push({
-        label: "Missile rack",
-        value: `${p.maxMissiles} (+${p.maxMissiles - base.maxMissiles})`,
-      });
-    if (p.blastDmg !== base.blastDmg)
-      totals.push({ label: "Blast damage", value: pct(p.blastDmg / base.blastDmg) });
-    return { taken, totals, totalStacks: taken.reduce((s, t) => s + t.level, 0) };
+    return boostSummary(this.p, this.salvageDrone, this.stacks);
   }
 
   /* ------------------------------------------------------------ update */
@@ -1372,6 +1492,8 @@ export class Game {
       this.selectTarget(d.x, d.y);
       this.updateDrone(d, dt);
     }
+
+    this.updateTethers(dt);
 
     // ---- salvage drone ----
     this.forEachPilot(() => this.updateSalvageDrone(dt));
@@ -2146,6 +2268,7 @@ export class Game {
   }
 
   updateDrone(d: Drone, dt: number) {
+    this.updateDroneSpecial(d, dt);
     if (d.kind === "spiker") {
       this.updateSpiker(d, dt);
       return;
@@ -3476,6 +3599,7 @@ export class Game {
   }
 
   rockBoom(r: Rock) {
+    if (r.coopMine) return this.mineBoom(r);
     const radius = this.boomRadius(r.size);
     const pdmg = r.size === 3 ? 32 : r.size === 2 ? 16 : 8;
     const rdmg = r.size === 3 ? 42 : r.size === 2 ? 22 : 11;
@@ -3822,13 +3946,13 @@ export class Game {
     return Math.max(
       0,
       GAME_CONFIG.asteroids.traits.boom.maxAlive -
-        this.rocks.filter((rock) => rock.trait === "boom").length,
+        this.rocks.filter((rock) => rock.trait === "boom" && !rock.coopMine).length,
     );
   }
 
   addRocks(...rocks: Rock[]) {
     for (const rock of rocks) {
-      if (rock.trait === "boom" && this.boomRoom() === 0) continue;
+      if (rock.trait === "boom" && !rock.coopMine && this.boomRoom() === 0) continue;
       this.rocks.push(rock);
     }
   }
@@ -5804,7 +5928,7 @@ export class Game {
   }
 
   /** Medium enemies retain their normal size and health. */
-  devSpawnMob(kind: Drone["kind"], count = 1, size: 1 | 2 | 3 = 2) {
+  devSpawnMob(kind: DeveloperEnemy, count = 1, size: 1 | 2 | 3 = 2) {
     const tuningWave = scaledWave(this.wave);
     const hpScale = size === 1 ? 0.65 : size === 3 ? 1.6 : 1;
     const radiusScale = size === 1 ? 0.75 : size === 3 ? 1.35 : 1;
@@ -5812,16 +5936,33 @@ export class Game {
       const a = this.random() * TAU;
       const x = clamp(this.p.x + Math.cos(a) * 520, 50, this.w - 50);
       const y = clamp(this.p.y + Math.sin(a) * 520, 50, this.h - 50);
+      const special = kind === "tetherSentinel" || kind === "mineWarden" ? kind : null;
+      const baseKind =
+        kind === "tetherSentinel" ? "sentinel" : kind === "mineWarden" ? "warden" : kind;
       const mob = this.spawnDrone(
         x,
         y,
-        (kind === "spiker"
-          ? this.spikerHp()
-          : kind === "warden"
-            ? 210 + tuningWave * 28
-            : 55 + tuningWave * 11) * hpScale,
-        kind,
+        (special
+          ? COOP_CONFIG[special].baseHp + this.wave * COOP_CONFIG[special].hpPerWave
+          : kind === "spiker"
+            ? this.spikerHp()
+            : kind === "warden"
+              ? 210 + tuningWave * 28
+              : 55 + tuningWave * 11) * hpScale,
+        baseKind,
       );
+      if (special) {
+        mob.r = COOP_CONFIG[special].radius;
+        mob.coop = {
+          kind: special,
+          timer:
+            special === "mineWarden"
+              ? COOP_CONFIG.mineWarden.deploymentMin
+              : COOP_CONFIG.tetherSentinel.cooldownSeconds,
+          warning: 0,
+          target: null,
+        };
+      }
       mob.r *= radiusScale;
       this.drones.push(mob);
     }
@@ -6719,6 +6860,20 @@ export class Game {
       ctx.globalAlpha = 1;
       ctx.shadowBlur = 0;
     }
+
+    ctx.save();
+    ctx.strokeStyle = "#6fe7ff";
+    ctx.setLineDash([6, 5]);
+    ctx.lineWidth = 2;
+    for (const tether of this.campaignTethers) {
+      const source = this.drones.find((d) => d.id === tether.sourceId);
+      if (!source) continue;
+      ctx.beginPath();
+      ctx.moveTo(source.x, source.y);
+      ctx.lineTo(this.p.x, this.p.y);
+      ctx.stroke();
+    }
+    ctx.restore();
 
     // Enemy silhouettes share the same magenta vector armor language.
     for (const d of this.drones) {

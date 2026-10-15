@@ -52,6 +52,8 @@ export interface CoopPlayerState {
     beamAngle: number;
     anomalyTimer: number;
     beamCooldown: number;
+    salvageClones?: import("../types").SalvageClone[];
+    god?: boolean;
   };
 }
 

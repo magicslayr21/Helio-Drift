@@ -70,7 +70,9 @@ export function CoopArena({
       const target = event.target as HTMLElement | null;
       if (
         target &&
-        (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable)
+        (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) ||
+          target.isContentEditable ||
+          Boolean(target.closest("[data-developer-console]")))
       )
         return;
       // Preserve keyboard activation of UI buttons without swallowing flight keys.

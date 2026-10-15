@@ -1040,3 +1040,22 @@
     grid-template-columns: 1fr;
   }
 }
+
+.coop-record-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+}
+.coop-record-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 180;
+  padding: 20px;
+}
+.coop-record-backdrop .lb-sheet {
+  width: min(640px, 100%);
+  max-height: 90dvh;
+}
+.campaign-pause-overlay {
+  color: #ffe0a3;
+}

@@ -46,6 +46,25 @@ test("developer actions require authorization, synchronize while paused, and exc
   assert.equal(after.state.players.p2.credits, before.state.players.p2.credits);
   const view = await app.nextMessage(a.socket, (m) => m.type === "room" && m.room.assisted);
   assert.equal(view.room.assisted, true);
+  send(a.socket, { type: "buyWeapon", sequence: 10, weapon: "spread" });
+  const purchase = await app.nextMessage(
+    b.socket,
+    (m) => m.type === "snapshot" && m.state.players.p1.ship.weapons.spread > 0,
+  );
+  assert.equal(purchase.serverTick, before.serverTick);
+  assert.equal(purchase.state.team.elapsedSeconds, before.state.team.elapsedSeconds);
+  send(a.socket, { type: "selectWeapon", sequence: 11, weapon: "spread" });
+  const equipped = await app.nextMessage(
+    b.socket,
+    (m) => m.type === "snapshot" && m.state.players.p1.ship.primary === "spread",
+  );
+  assert.equal(equipped.serverTick, before.serverTick);
+  assert.equal(equipped.state.players.p2.ship.primary, "pulse");
+  send(a.socket, { type: "selectWeapon", sequence: 10, weapon: "pulse" });
+  assert.equal(
+    (await app.nextMessage(a.socket, (m) => m.type === "error")).code,
+    "rejected_command",
+  );
   await app.restart();
   a = await app.connect(first);
   b = await app.connect(second);

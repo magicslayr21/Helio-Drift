@@ -26,6 +26,7 @@ const FIELDS = [
   "stacks",
   "rocks",
   "drones",
+  "campaignTethers",
   "boss",
   "bullets",
   "pickups",
@@ -161,6 +162,7 @@ export class RunSave {
     try {
       const saved = read();
       const state = saved?.state;
+      if (state && state.campaignTethers === undefined) state.campaignTethers = [];
       // New modules default to unpurchased in saves from earlier alpha releases.
       if (state?.salvageDrone?.upgrades && state.salvageDrone.upgrades.shield === undefined)
         state.salvageDrone.upgrades.shield = 0;

@@ -163,3 +163,119 @@ test("missing or weak moderation secrets leave the Worker unavailable", async (t
     );
   }
 });
+
+test("co-op moderation authenticates, reads legacy stats, edits rankings and hides deleted runs", async (t) => {
+  const api = await fixture(t);
+  const stamp = "2026-10-15T01:00:00.000Z";
+  for (const [id, wave, score] of [
+    ["coop-admin-old", 20, 1000],
+    ["coop-admin-new", 25, 2000],
+  ]) {
+    await api.db
+      .prepare("INSERT INTO coop_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .bind(id, "ABC234", "Alpha", "Bravo", score, wave, 5, 1500, 4, "defeat", 0, stamp, stamp)
+      .run();
+  }
+  const path = "/admin/coop-runs/coop-admin-old";
+  for (const method of ["GET", "PATCH", "DELETE"])
+    assert.equal(
+      (
+        await api.request(path, {
+          method,
+          body: method === "PATCH" ? { revision: 0, score: 999 } : undefined,
+        })
+      ).status,
+      401,
+    );
+  const session = await api.admin();
+  const options = { token: session.token };
+  const old = await api.request(path, options);
+  assert.equal(old.status, 200);
+  assert.equal(old.data.telemetry, null);
+  assert.equal(old.data.wave, 20);
+  assert.equal(old.data.rank, 2);
+  const edited = await api.request(path, {
+    ...options,
+    method: "PATCH",
+    body: {
+      revision: 0,
+      playerOne: "Renamed Pilot",
+      score: 9999,
+      wave: 26,
+      status: "victory",
+      bossesDefeated: 6,
+    },
+  });
+  assert.equal(edited.status, 200, JSON.stringify(edited.data));
+  assert.equal(edited.data.entry.moderated, true);
+  assert.equal(edited.data.entry.revision, 1);
+  let board = await api.request("/leaderboard/coop");
+  assert.equal(board.data.entries[0].id, "coop-admin-old");
+  assert.equal(board.data.entries[0].playerOne, "Renamed Pilot");
+  assert.equal(board.data.entries[0].completed, true);
+  assert.equal(
+    (await api.request(path, { ...options, method: "PATCH", body: { revision: 0, score: 1 } }))
+      .status,
+    409,
+  );
+  for (const body of [
+    { revision: 1, score: -1 },
+    { revision: 1, status: "active" },
+    { revision: 1, sector: 8 },
+    { revision: 1, unknown: 123 },
+    { score: 10 },
+  ])
+    assert.equal((await api.request(path, { ...options, method: "PATCH", body })).status, 400);
+  assert.equal((await api.request(path, { ...options, method: "DELETE" })).status, 200);
+  board = await api.request("/leaderboard/coop");
+  assert.equal(board.data.total, 1);
+  assert.equal(board.data.entries[0].rank, 1);
+  assert.equal((await api.request(path, options)).status, 404);
+  assert.equal(
+    (await api.db.prepare("SELECT score FROM coop_runs WHERE id = 'coop-admin-old'").first()).score,
+    9999,
+  );
+  assert.equal((await api.request("/leaderboard")).data.total, 0);
+  await api.expireSessions();
+  assert.equal((await api.request("/admin/coop-runs/coop-admin-new", options)).status, 401);
+});
+
+test("concurrent co-op edits cannot overwrite each other or resurrect a deleted record", async (t) => {
+  const api = await fixture(t);
+  const stamp = "2026-10-15T01:00:00.000Z";
+  await api.db
+    .prepare("INSERT INTO coop_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(
+      "coop-concurrent",
+      "ABC234",
+      "Alpha",
+      "Bravo",
+      1000,
+      20,
+      5,
+      1500,
+      4,
+      "defeat",
+      0,
+      stamp,
+      stamp,
+    )
+    .run();
+  const session = await api.admin();
+  const path = "/admin/coop-runs/coop-concurrent";
+  const responses = await Promise.all(
+    [2000, 3000].map((score) =>
+      api.request(path, { method: "PATCH", token: session.token, body: { revision: 0, score } }),
+    ),
+  );
+  assert.deepEqual(responses.map((r) => r.status).sort(), [200, 409]);
+  await Promise.all([
+    api.request(path, { method: "DELETE", token: session.token }),
+    api.request(path, {
+      method: "PATCH",
+      token: session.token,
+      body: { revision: 1, score: 4000 },
+    }),
+  ]);
+  assert.equal((await api.request("/leaderboard/coop")).data.total, 0);
+});

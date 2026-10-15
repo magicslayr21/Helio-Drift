@@ -44,7 +44,8 @@ export function captureCampaignWorld(game: Game): CampaignWorld {
 
 export function restoreCampaignWorld(game: Game, world: CampaignWorld) {
   const data = structuredClone(world);
-  for (const key of WORLD_FIELDS) Object.assign(game, { [key]: data[key] });
+  for (const key of WORLD_FIELDS)
+    if (data[key] !== undefined) Object.assign(game, { [key]: data[key] });
   game.bullets = data.bullets.map((b) => ({ ...b, hitIds: new Set(b.hitIds) }));
   game.shake = data.shake;
   game.theme = THEMES[game.themeIdx];

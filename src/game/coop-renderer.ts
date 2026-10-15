@@ -88,6 +88,8 @@ export class CoopRenderer extends Game {
     const pilot = this.room!.players[id];
     this.p = pilot.ship;
     this.salvageDrone = pilot.drone;
+    this.salvageClones = pilot.campaign?.salvageClones ?? [];
+    this.god = pilot.campaign?.god ?? false;
     this.beamAngle = pilot.campaign?.beamAngle ?? pilot.ship.angle;
     this.credits = pilot.credits;
   }

@@ -1064,6 +1064,6 @@ export function Leaderboard({
         )}
       </div>
     </div>,
-    document.body,
+    document.querySelector<HTMLDialogElement>("dialog.deploy-screen[open]") ?? document.body,
   );
 }

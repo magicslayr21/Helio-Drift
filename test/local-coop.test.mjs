@@ -487,3 +487,121 @@ test("restoring a room preserves each pilot's anomaly and MK6 contact timers", (
   restored.stepTicks(5);
   assert.deepEqual(restored.snapshot(), sim.snapshot());
 });
+
+test("campaign and co-op developer consoles share bounded field and loadout operations", async () => {
+  const { applyDeveloperCommand, validDeveloperCommand } = await import(
+    "../src/game/developer-command.ts"
+  );
+  const sim = fixture(),
+    g = sim.game;
+  const campaign = new Game(null, { onHud() {}, onMode() {} }, { headless: true });
+  campaign.mode = "playing";
+  campaign.wave = g.wave;
+  campaign.credits = sim.state.players.p1.credits;
+  const other = structuredClone(sim.state.players.p2);
+  for (const command of [
+    { action: "adjust", field: "credits", amount: 1000 },
+    { action: "stack", id: "crit", level: 2 },
+    { action: "weapons" },
+    { action: "droneCount", count: 2 },
+    { action: "droneUpgrade", id: "scan", level: 2 },
+    { action: "droneWeapon", id: "laser" },
+    { action: "heal" },
+  ]) {
+    assert.equal(validDeveloperCommand(command), true);
+    assert.equal(applyDeveloperCommand(campaign, command), true);
+    assert.equal(sim.developer("p1", command), true);
+  }
+  const pilot = sim.state.players.p1;
+  assert.equal(pilot.credits, campaign.credits);
+  assert.deepEqual(pilot.ship.weapons, campaign.p.weapons);
+  assert.deepEqual(pilot.upgrades, campaign.stacks);
+  assert.equal(pilot.drone.upgrades.scan, campaign.salvageDrone.upgrades.scan);
+  assert.equal(pilot.drone.weapon, campaign.salvageDrone.weapon);
+  assert.deepEqual(sim.state.players.p2, other);
+  for (const command of [
+    { action: "enemy", kind: "bogus", count: 1, size: 2 },
+    { action: "enemy", kind: "mineWarden", count: 51, size: 2 },
+    { action: "stack", id: "bogus", level: 1 },
+    { action: "adjust", field: "credits", amount: Infinity },
+    { action: "droneUpgrade", id: "scan", level: 100 },
+  ]) {
+    assert.equal(sim.developer("p1", command), false);
+  }
+  sim.stepTicks(3);
+  const tick = sim.state.tick;
+  assert.equal(sim.developer("p1", { action: "restart" }), true);
+  assert.equal(sim.state.team.wave, 1);
+  assert.equal(sim.state.team.score, 0);
+  assert.equal(sim.state.players.p1.ship.weapons.laser, 0);
+  assert.equal(sim.state.players.p1.callsign, "Alpha");
+  assert.equal(sim.state.tick, tick);
+  sim.stepTicks();
+  assert.equal(sim.state.tick, tick + 1);
+});
+
+test("campaign developer spawns use the existing tether and mine abilities", () => {
+  const g = new Game(null, { onHud() {}, onMode() {} }, { headless: true, random: () => 0.5 });
+  g.mode = "playing";
+  g.wave = 15;
+  g.waveHold = 999;
+  g.devSpawnMob("tetherSentinel", 1, 2);
+  g.devSpawnMob("mineWarden", 1, 3);
+  const tether = g.drones.find((d) => d.coop?.kind === "tetherSentinel");
+  const warden = g.drones.find((d) => d.coop?.kind === "mineWarden");
+  assert.equal(tether.kind, "sentinel");
+  assert.equal(warden.kind, "warden");
+  tether.coop.timer = 0;
+  g.updateDroneSpecial(tether, 0.01);
+  assert.ok(tether.coop.warning > 0);
+  g.updateDroneSpecial(tether, 1);
+  assert.equal(g.campaignTethers.length, 1);
+  g.p.vx = 0;
+  g.p.vy = 0;
+  g.updateTethers(0.1);
+  assert.ok(Math.hypot(g.p.vx, g.p.vy) > 0);
+  warden.coop.timer = 0;
+  g.updateDroneSpecial(warden, 0.01);
+  const mine = g.rocks.find((r) => r.coopMine);
+  assert.ok(mine);
+  assert.equal(g.boomRoom(), 6, "mines do not use the normal boom limit");
+  mine.coopMine.armTimer = 0;
+  g.p.x = mine.x;
+  g.p.y = mine.y;
+  g.p.invuln = 0;
+  g.updateRockSpecial(mine, 0.01);
+  g.updateRockSpecial(mine, 1);
+  assert.ok(!g.rocks.includes(mine));
+  assert.ok(g.p.hull < g.p.maxHull);
+  g.drones = [];
+  g.updateTethers(0.1);
+  assert.equal(g.campaignTethers.length, 0);
+});
+
+test("paused loadout transactions preserve combat time and reject stale or combat commands", () => {
+  const sim = fixture();
+  sim.developer("p1", { action: "credits" });
+  const before = sim.snapshot();
+  assert.equal(
+    sim.pausedCommand({ type: "buyWeapon", playerId: "p1", sequence: 100, weapon: "spread" }),
+    true,
+  );
+  assert.ok(sim.state.players.p1.ship.weapons.spread > 0);
+  assert.equal(
+    sim.pausedCommand({ type: "selectWeapon", playerId: "p1", sequence: 101, weapon: "spread" }),
+    true,
+  );
+  assert.equal(sim.state.players.p1.ship.primary, "spread");
+  assert.equal(
+    sim.pausedCommand({ type: "selectWeapon", playerId: "p1", sequence: 100, weapon: "pulse" }),
+    false,
+  );
+  assert.equal(
+    sim.pausedCommand({ type: "activateOverdrive", playerId: "p1", sequence: 102 }),
+    false,
+  );
+  assert.equal(sim.state.tick, before.tick);
+  assert.equal(sim.state.team.elapsedSeconds, before.team.elapsedSeconds);
+  assert.deepEqual(sim.state.players.p2, before.players.p2);
+  assert.deepEqual(sim.game.rocks, before.campaign.rocks);
+});

@@ -48,7 +48,51 @@ const [leaderboardPort, multiplayerPort, vitePort, cdpPort] = await Promise.all(
 const smokeDeveloperCode = "smoke-developer-code";
 const smokeDeveloperToken = "S".repeat(43);
 
-const leaderboard = createHttpServer((request, response) => {
+const smokePilot = (callsign) => ({
+  callsign,
+  level: 8,
+  credits: 120,
+  hull: 60,
+  maxHull: 100,
+  primary: "pulse",
+  weapons: { pulse: 3 },
+  upgrades: { crit: 2 },
+  stats: {
+    damage: 1200,
+    kills: 12,
+    asteroidKills: 8,
+    bossDamage: 400,
+    revives: 1,
+    creditsCollected: 500,
+  },
+  drone: { purchased: true, weapon: "pulse", upgrades: { scan: 2 } },
+});
+let smokeCoopRecord = {
+  id: "browser-coop-record",
+  playerOne: "Smoke Alpha",
+  playerTwo: "Smoke Bravo",
+  score: 98765,
+  wave: 25,
+  sector: 5,
+  durationSeconds: 1700,
+  bossesDefeated: 5,
+  status: "victory",
+  completed: true,
+  finishedAt: "2026-10-15T01:00:00Z",
+  rank: 1,
+  roomCode: "ABC234",
+  createdAt: "2026-10-15T00:30:00Z",
+  updatedAt: "2026-10-15T01:00:00Z",
+  revision: 0,
+  moderated: false,
+  telemetry: {
+    pilots: { p1: smokePilot("Smoke Alpha"), p2: smokePilot("Smoke Bravo") },
+    directive: null,
+    bonusDefeated: false,
+  },
+};
+
+const leaderboard = createHttpServer(async (request, response) => {
   response.setHeader("Content-Type", "application/json");
   response.setHeader("Cache-Control", "no-store");
   if (request.method === "POST" && request.url === "/api/admin/session") {
@@ -56,6 +100,43 @@ const leaderboard = createHttpServer((request, response) => {
       JSON.stringify({
         token: smokeDeveloperToken,
         expiresAt: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+      }),
+    );
+  } else if (request.url?.startsWith("/api/admin/coop-runs/")) {
+    if (request.headers.authorization !== `Bearer ${smokeDeveloperToken}`) {
+      response.statusCode = 401;
+      response.end(JSON.stringify({ error: "Sign in to continue." }));
+      return;
+    }
+    if (!smokeCoopRecord) {
+      response.statusCode = 404;
+      response.end(JSON.stringify({ error: "Not found" }));
+      return;
+    }
+    if (request.method === "DELETE") {
+      smokeCoopRecord = null;
+      response.end(JSON.stringify({ deleted: true }));
+      return;
+    }
+    if (request.method === "PATCH") {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      const edit = JSON.parse(body);
+      smokeCoopRecord = {
+        ...smokeCoopRecord,
+        ...edit,
+        revision: smokeCoopRecord.revision + 1,
+        moderated: true,
+      };
+      response.end(JSON.stringify({ entry: smokeCoopRecord }));
+      return;
+    }
+    response.end(JSON.stringify(smokeCoopRecord));
+  } else if (request.url?.startsWith("/api/leaderboard/coop")) {
+    response.end(
+      JSON.stringify({
+        entries: smokeCoopRecord ? [smokeCoopRecord] : [],
+        total: smokeCoopRecord ? 1 : 0,
       }),
     );
   } else if (request.url?.startsWith("/api/leaderboard")) {
@@ -349,7 +430,7 @@ try {
   await multiplayer.ready;
   const db = await multiplayer.getD1Database("DB");
   const migrations = await Promise.all(
-    ["0001_leaderboard.sql", "0002_coop_leaderboard.sql"].map((name) =>
+    ["0001_leaderboard.sql", "0002_coop_leaderboard.sql", "0003_coop_moderation.sql"].map((name) =>
       readFile(join(root, "worker/migrations", name), "utf8"),
     ),
   );
@@ -781,9 +862,36 @@ try {
     { type: "keyUp", code: "Escape", key: "Escape" },
     alpha.sessionId,
   );
-  await waitFor(cdp, alpha, "document.querySelector('.coop-pause-nav')", "return to pause menu");
+  await waitFor(
+    cdp,
+    alpha,
+    "document.querySelector('#flight-pause-title')",
+    "return to pause menu",
+  );
   assert.equal(await evaluate(cdp, bravo, "Boolean(document.querySelector('.coop-pause'))"), true);
-  await evaluate(cdp, alpha, clickText("Developer panel", ".coop-pause button"));
+  await evaluate(cdp, alpha, clickText("Settings", ".coop-pause button"));
+  await evaluate(cdp, alpha, clickText("Global leaderboard", ".coop-pause button"));
+  await waitFor(
+    cdp,
+    alpha,
+    "document.querySelector('dialog.deploy-screen .lb-overlay')",
+    "global leaderboard inside deployment dialog",
+  );
+  assert.equal(
+    await evaluate(
+      cdp,
+      alpha,
+      `(() => {const button=document.querySelector('[aria-label="Close leaderboard"]');const rect=button.getBoundingClientRect();return button.contains(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2));})()`,
+    ),
+    true,
+    "global leaderboard must receive pointer events",
+  );
+  await evaluate(
+    cdp,
+    alpha,
+    "document.querySelector('[aria-label=\"Close leaderboard\"]').click()",
+  );
+  await evaluate(cdp, alpha, clickText("Service Code", ".coop-pause button"));
   await waitFor(
     cdp,
     alpha,
@@ -799,7 +907,34 @@ try {
   await waitFor(
     cdp,
     alpha,
-    clickText("Max weapons", ".coop-pause button"),
+    "document.querySelector('[aria-label=\"Developer console\"]')",
+    "floating developer console",
+  );
+  assert.equal(
+    await evaluate(
+      cdp,
+      alpha,
+      "Boolean(document.querySelector('dialog.deploy-screen [aria-label=\"Developer console\"]'))",
+    ),
+    true,
+  );
+  await evaluate(
+    cdp,
+    alpha,
+    clickText("Tether Sentinel", '[aria-label="Developer console"] button'),
+  );
+  await evaluate(cdp, alpha, clickText("Mine Warden", '[aria-label="Developer console"] button'));
+  await waitFor(
+    cdp,
+    bravo,
+    "window.__flight.campaign.drones.some(d=>d.coop?.kind==='tetherSentinel') && window.__flight.campaign.drones.some(d=>d.coop?.kind==='mineWarden')",
+    "special developer spawns synchronized",
+  );
+  await evaluate(cdp, alpha, clickText("P2 →", '[aria-label="Developer console"] button'));
+  await waitFor(
+    cdp,
+    alpha,
+    clickText("Max weapons", '[aria-label="Developer console"] button'),
     "authorized developer console",
   );
   await waitFor(
@@ -809,7 +944,34 @@ try {
     "developer loadout synchronized to teammate",
   );
   await capture(cdp, alpha, "helio-coop-developer.png");
-  await evaluate(cdp, alpha, clickText("Back to pause menu", ".coop-pause button"));
+  await evaluate(cdp, alpha, clickText("P1", '[aria-label="Developer console"] button'));
+  assert.equal(
+    await evaluate(
+      cdp,
+      alpha,
+      `(() => {const button=document.querySelector('[aria-label="Switch developer console page"]');const rect=button.getBoundingClientRect();return button.contains(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2));})()`,
+    ),
+    true,
+    "developer console must receive pointer events above pause",
+  );
+  await capture(cdp, alpha, "helio-coop-developer-field.png");
+
+  await evaluate(cdp, alpha, clickText("X", '[aria-label="Developer console"] button'));
+  await evaluate(cdp, alpha, clickText("BEAM", ".coop-pause button"));
+  await waitFor(
+    cdp,
+    bravo,
+    "window.__flight.players.p1.ship.primary === 'laser' && document.querySelector('.coop-pause')",
+    "pause arsenal selection",
+  );
+  await evaluate(cdp, alpha, clickText("PULSE", ".coop-pause button"));
+  await waitFor(
+    cdp,
+    bravo,
+    "window.__flight.players.p1.ship.primary === 'pulse'",
+    "pause arsenal reset",
+  );
+
   await cdp.send(
     "Input.dispatchKeyEvent",
     { type: "keyDown", code: "Escape", key: "Escape" },
@@ -903,9 +1065,69 @@ try {
   await waitFor(cdp, bravo, "document.querySelector('.coop-pause')", "pause menu before leaving");
   assert.equal(await evaluate(cdp, bravo, clickText("Leave match", ".coop-pause button")), true);
   await waitFor(cdp, bravo, "document.body.innerText.includes('FLY TOGETHER')", "leave return");
+  await evaluate(cdp, bravo, clickText("Co-op records", ".coop-actions-grid button"));
+  await waitFor(cdp, bravo, "document.querySelector('.coop-board-row')", "co-op record list");
+  await evaluate(cdp, bravo, "document.querySelector('[aria-label^=\"View stats for\"]').click()");
+  await waitFor(
+    cdp,
+    bravo,
+    "document.querySelector('[data-coop-record-dialog] input[type=password]')",
+    "co-op record authorization",
+  );
+  await evaluate(
+    cdp,
+    bravo,
+    `(() => { const input=document.querySelector('[data-coop-record-dialog] input[type=password]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(smokeDeveloperCode)});input.dispatchEvent(new Event('input',{bubbles:true})); })()`,
+  );
+  await evaluate(cdp, bravo, clickText("Authorize", "[data-coop-record-dialog] button"));
+  await waitFor(
+    cdp,
+    bravo,
+    "document.querySelector('.lb-telemetry')?.textContent.includes('Revives')",
+    "co-op pilot telemetry",
+  );
+  await capture(cdp, bravo, "helio-coop-telemetry.png");
+  await evaluate(
+    cdp,
+    bravo,
+    "document.querySelector('[aria-label=\"Close record actions\"]').click()",
+  );
+  await evaluate(cdp, bravo, "document.querySelector('[aria-label^=\"Edit run for\"]').click()");
+  await waitFor(
+    cdp,
+    bravo,
+    "document.querySelector('[data-coop-record-dialog] input[type=number]')",
+    "edit co-op record",
+  );
+  await evaluate(
+    cdp,
+    bravo,
+    "(() => {const input=document.querySelector('[data-coop-record-dialog] input[type=number]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'123456');input.dispatchEvent(new Event('input',{bubbles:true}));})()",
+  );
+  await evaluate(cdp, bravo, clickText("Save changes", "[data-coop-record-dialog] button"));
+  await waitFor(
+    cdp,
+    bravo,
+    "document.querySelector('.coop-board-row')?.textContent.includes('123,456')",
+    "co-op record updated",
+  );
+  await evaluate(cdp, bravo, "document.querySelector('[aria-label^=\"Delete run for\"]').click()");
+  await waitFor(
+    cdp,
+    bravo,
+    "document.querySelector('.lb-delete-warning')",
+    "co-op deletion confirmation",
+  );
+  await evaluate(cdp, bravo, clickText("Delete run", "[data-coop-record-dialog] button"));
+  await waitFor(
+    cdp,
+    bravo,
+    "!document.querySelector('.coop-board-row') && !document.querySelector('[data-coop-record-dialog]')",
+    "co-op record deleted",
+  );
   assert.deepEqual(cdp.exceptions, []);
   console.info(
-    `[coop readiness] two-browser room ${roomCode}: movement, display density, reconnect recovery, shared pause, settings, callsign gate, developer authorization, weapon slots, loadout controls and leave passed`,
+    `[coop readiness] two-browser room ${roomCode}: movement, display density, reconnect recovery, shared pause, settings, callsign gate, developer authorization, weapon slots, paused loadout controls, co-op record moderation and leave passed`,
   );
 } finally {
   try {

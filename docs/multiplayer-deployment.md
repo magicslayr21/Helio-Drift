@@ -319,3 +319,33 @@ competitive co-op records. Simply opening the panel does not mark a run as assis
 
 The weapon bar provides two customizable quick slots (keys 1 and 2). Slots only offer owned
 weapons that are not mounted on the drone; they do not grant weapons or fire two weapons at once.
+
+## Updating to 0.5.6-alpha.1
+
+This release shares the campaign pause menu and full developer console with co-op. It also adds
+co-op leaderboard administration and captures each pilot's loadout and combat statistics on new
+completed runs. Older runs retain their existing team statistics; pilot telemetry cannot be
+recovered retroactively.
+
+Update the frontend and **both Workers**. Apply the additive migration before deploying either
+Worker. It creates `coop_run_details` without changing the existing `coop_runs` records or database
+binding. Deletions hide a record while preserving its ID, so result retries cannot restore it.
+
+From the repository folder in PowerShell:
+
+```powershell
+git pull --ff-only
+npm.cmd ci
+npx.cmd wrangler login
+npx.cmd wrangler d1 migrations apply DB --remote --config wrangler.jsonc
+npx.cmd wrangler deploy --config wrangler.jsonc
+npx.cmd wrangler deploy --config wrangler.multiplayer.jsonc
+```
+
+Use your existing Cloudflare account, D1 database, service URLs, and developer secret. Wrangler
+login is only needed if this machine is not authenticated. Publish the frontend through the normal
+GitHub Pages workflow, then refresh both browsers. Prefer completing active matches before updating.
+
+Co-op leaderboard rows have **View stats**, **Edit run**, and **Delete run** actions. Enter the
+existing leaderboard developer code when prompted. Editing names and team progress updates the
+rankings; original pilot telemetry remains intact. Conflicting edits require reloading the record.

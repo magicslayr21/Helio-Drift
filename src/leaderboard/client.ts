@@ -1,6 +1,8 @@
 import type {
   AdminSession,
   CoopLeaderboardPage,
+  CoopRunDetails,
+  CoopRunEdit,
   LeaderboardPage,
   PlayerIdentity,
   RunDetails,
@@ -296,4 +298,17 @@ export async function flushPendingRuns() {
       }, 0);
     }
   }
+}
+
+export const getCoopRunDetails = (id: string) =>
+  request<CoopRunDetails>(`/admin/coop-runs/${encodeURIComponent(id)}`, {}, adminToken());
+export async function editCoopRun(id: string, edit: CoopRunEdit) {
+  await request(
+    `/admin/coop-runs/${encodeURIComponent(id)}`,
+    { method: "PATCH", body: JSON.stringify(edit) },
+    adminToken(),
+  );
+}
+export async function deleteCoopRun(id: string) {
+  await request(`/admin/coop-runs/${encodeURIComponent(id)}`, { method: "DELETE" }, adminToken());
 }

@@ -3,7 +3,7 @@ import { COOP_CONFIG } from "./simulation/coop-config";
 import { RUN_PACING } from "./simulation/campaign";
 import { GAME_CONFIG } from "./game-config";
 import type { CoopEvent, CoopMatchState, CoopPlayerId } from "./simulation/coop-types";
-import type { Boss, Bullet, Mode, WeaponId, Drone, Rock, Pickup } from "./types";
+import type { Boss, Bullet, Mode, WeaponId, Rock, Pickup } from "./types";
 
 export const PILOTS = ["p1", "p2"] as const;
 export const isHostileShot = (b: Bullet) => ["enemy", "wardenOrb", "wardenShard"].includes(b.kind);
@@ -17,6 +17,8 @@ export const freshPilotCampaign = () => ({
   beamAngle: 0,
   anomalyTimer: 0,
   beamCooldown: 0,
+  salvageClones: [] as Game["salvageClones"],
+  god: false,
 });
 
 /** Only multiplayer context, ownership and team rules live here. Combat stays in Game. */
@@ -65,6 +67,8 @@ export class CoopCampaign extends Game {
       combo: this.combo,
       comboTimer: this.comboTimer,
       quietTime: this.quietTime,
+      salvageClones: this.salvageClones,
+      god: this.god,
       beamAngle: this.beamAngle,
       anomalyTimer: this.boss?.hole?.damageTimer ?? 0,
       beamCooldown: this.boss?.mk6?.beamCd ?? 0,
@@ -111,6 +115,8 @@ export class CoopCampaign extends Game {
     this.combo = own.combo;
     this.comboTimer = own.comboTimer;
     this.quietTime = own.quietTime;
+    this.salvageClones = own.salvageClones ??= [];
+    this.god = own.god ??= false;
     this.beamAngle = own.beamAngle;
     if (this.boss?.hole) this.boss.hole.damageTimer = own.anomalyTimer;
     if (this.boss?.mk6) this.boss.mk6.beamCd = own.beamCooldown;
@@ -359,15 +365,6 @@ export class CoopCampaign extends Game {
     );
   }
 
-  override boomRoom() {
-    // Mine Warden mines have their own cap; they must not suppress native boss boom attacks.
-    return Math.max(
-      0,
-      GAME_CONFIG.asteroids.traits.boom.maxAlive -
-        this.rocks.filter((r) => r.trait === "boom" && !r.coopMine).length,
-    );
-  }
-
   spawnCoopEscorts() {
     for (const kind of ["tetherSentinel", "mineWarden"] as const) {
       const config = COOP_CONFIG[kind];
@@ -399,143 +396,20 @@ export class CoopCampaign extends Game {
     this.spawnCoopEscorts();
   }
 
-  override updateDrone(d: Drone, dt: number) {
-    super.updateDrone(d, dt);
-    const extra = d.coop;
-    if (!extra) return;
-    extra.timer -= dt;
-    if (extra.kind === "mineWarden") {
-      if (
-        extra.timer <= 0 &&
-        this.rocks.filter((r) => r.coopMine).length < COOP_CONFIG.mineWarden.mineCap
-      ) {
-        const c = COOP_CONFIG.mineWarden;
-        const mine = this.makeRock(d.x, d.y, 1, 0, 0, "boom");
-        mine.r = c.mineRadius;
-        mine.hp = mine.maxHp = c.mineHp;
-        mine.coopMine = {
-          ownerId: d.id,
-          armTimer: c.mineArmSeconds,
-          triggerTimer: -1,
-          life: c.mineLifetime,
-        };
-        this.rocks.push(mine);
-        this.emit({ type: "mineDeployed", tick: this.match.tick, entityId: mine.id });
-        extra.timer = this.rnd(c.deploymentMin, c.deploymentMax);
-      }
-      return;
-    }
-    const config = COOP_CONFIG.tetherSentinel;
-    if (extra.warning > 0) {
-      extra.warning -= dt;
-      if (extra.warning <= 0 && extra.target && !this.match.players[extra.target].disabled) {
-        this.match.tethers.push({
-          id: this.nextId++,
-          sourceId: d.id,
-          targetPlayerId: extra.target,
-          strength: config.strength,
-          minimumDistance: config.minimumDistance,
-          maximumDistance: config.maximumDistance,
-        });
-        this.emit({
-          type: "tetherStarted",
-          tick: this.match.tick,
-          entityId: d.id,
-          playerId: extra.target,
-        });
-        extra.timer = config.cooldownSeconds;
-      }
-    } else if (extra.timer <= 0 && !this.match.tethers.some((t) => t.sourceId === d.id)) {
-      extra.target = this.activeId;
-      extra.warning = config.telegraphSeconds;
-      this.rings.push({
-        x: d.x,
-        y: d.y,
-        r: d.r,
-        max: d.r * 2,
-        life: config.telegraphSeconds,
-        color: "#6fe7ff",
-        w: 2,
-      });
-    }
+  override specialPilots() {
+    return Object.values(this.match.players);
   }
-
-  override updateRockSpecial(r: Rock, dt: number) {
-    const mine = r.coopMine;
-    if (!mine) return false;
-    mine.armTimer -= dt;
-    mine.life -= dt;
-    r.flash = Math.max(0, r.flash - dt * 4);
-    if (mine.life <= 0) {
-      this.rocks.splice(this.rocks.indexOf(r), 1);
-      return true;
-    }
-    if (mine.armTimer > 0) return true;
-    const config = COOP_CONFIG.mineWarden;
-    if (
-      mine.triggerTimer < 0 &&
-      PILOTS.some((id) => {
-        const p = this.match.players[id];
-        return (
-          !p.disabled && Math.hypot(p.ship.x - r.x, p.ship.y - r.y) <= config.mineBlastRadius * 0.8
-        );
-      })
-    ) {
-      mine.triggerTimer = config.mineWarningSeconds;
-      this.rings.push({
-        x: r.x,
-        y: r.y,
-        r: r.r,
-        max: config.mineBlastRadius,
-        life: config.mineWarningSeconds,
-        color: "#ff3d6e",
-        w: 2,
-      });
-    }
-    if (mine.triggerTimer >= 0) {
-      mine.triggerTimer -= dt;
-      if (mine.triggerTimer <= 0) this.breakRock(this.rocks.indexOf(r), 0, 0);
-    }
-    return true;
+  override specialPilotId() {
+    return this.activeId;
   }
-
-  override rockBoom(r: Rock) {
-    if (!r.coopMine) return super.rockBoom(r);
-    this.enemyBlast(
-      r.x,
-      r.y,
-      COOP_CONFIG.mineWarden.mineBlastRadius,
-      COOP_CONFIG.mineWarden.mineDamage,
-      "Mine Warden mine",
-    );
-    this.emit({
-      type: "mineDestroyed",
-      tick: this.match.tick,
-      entityId: r.id,
-      playerId: this.activeId,
-    });
+  override specialTethers() {
+    return this.match.tethers;
   }
-
-  updateTethers(dt: number) {
-    this.match.tethers = this.match.tethers.filter((t) => {
-      const source = this.drones.find((d) => d.id === t.sourceId),
-        p = this.match.players[t.targetPlayerId];
-      const distance = source ? Math.hypot(source.x - p.ship.x, source.y - p.ship.y) : Infinity;
-      if (!source || p.disabled || distance > t.maximumDistance) {
-        this.emit({
-          type: "tetherBroken",
-          tick: this.match.tick,
-          entityId: t.sourceId,
-          playerId: p.id,
-        });
-        return false;
-      }
-      if (distance > t.minimumDistance) {
-        p.ship.vx += ((source.x - p.ship.x) / distance) * t.strength * dt;
-        p.ship.vy += ((source.y - p.ship.y) / distance) * t.strength * dt;
-      }
-      return true;
-    });
+  override specialEvent(event: CoopEvent) {
+    this.emit(event);
+  }
+  override specialTick() {
+    return this.match.tick;
   }
 
   override weaponStats(w: WeaponId, level: number) {

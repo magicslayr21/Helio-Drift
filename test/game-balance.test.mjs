@@ -1037,11 +1037,13 @@ test("pre-update saves migrate shield, caps, derived stats and health fractions 
   save.begin(g);
   const old = JSON.parse(data);
   delete old.balanceVersion;
+  delete old.state.campaignTethers;
   delete old.state.salvageDrone.upgrades.shield;
   data = JSON.stringify(old);
   const restored = game();
   assert.equal(save.restore(restored), true);
   assert.equal(restored.salvageDrone.upgrades.shield, 0);
+  assert.deepEqual(restored.campaignTethers, []);
   assert.equal(restored.p.weapons.pulse, 3);
   assert.equal(restored.p.weapons.seeker, 4);
   assert.equal(restored.stacks.crit, 3);
@@ -1288,4 +1290,42 @@ test("leaderboard retries old Worker shield rejection and retains failed reports
   t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ accepted: true })));
   await client.flushPendingRuns();
   assert.deepEqual(JSON.parse(store.get("helios-leaderboard-pending-v1")), []);
+});
+
+test("campaign specialist enemies, mines and active tethers survive save and continue", async (t) => {
+  const { RunSave } = await import("../src/game/run-save.ts");
+  let data = null;
+  t.mock.method(localStorage, "getItem", () => data);
+  t.mock.method(localStorage, "setItem", (_key, value) => {
+    data = value;
+  });
+  const g = game();
+  g.devSpawnMob("tetherSentinel", 1, 2);
+  g.devSpawnMob("mineWarden", 1, 2);
+  const [tether, warden] = g.drones;
+  tether.x = g.p.x + 300;
+  tether.y = g.p.y;
+  tether.coop.timer = 0;
+  g.updateDroneSpecial(tether, 0.01);
+  g.updateDroneSpecial(tether, 1);
+  warden.coop.timer = 0;
+  g.updateDroneSpecial(warden, 0.01);
+  for (let i = 0; i < 6; i++) g.addRocks(g.makeRock(50 + i * 50, 50, 1, 0, 0, "boom"));
+  assert.equal(g.rocks.length, 7);
+  const expected = {
+    drones: structuredClone(g.drones),
+    rocks: structuredClone(g.rocks),
+    tethers: structuredClone(g.campaignTethers),
+  };
+  const save = new RunSave();
+  save.begin(g);
+  const restored = game();
+  assert.equal(save.restore(restored), true);
+  assert.deepEqual(restored.drones, expected.drones);
+  assert.deepEqual(restored.rocks, expected.rocks);
+  assert.deepEqual(restored.campaignTethers, expected.tethers);
+  assert.equal(restored.boomRoom(), 0);
+  restored.mode = "playing";
+  restored.updateTethers(0.1);
+  assert.ok(Math.hypot(restored.p.vx, restored.p.vy) > 0);
 });

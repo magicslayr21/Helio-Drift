@@ -25,7 +25,7 @@ export async function multiplayerFixture(t) {
   let mf = new Miniflare(options);
   let db = await mf.getD1Database("DB");
   const migrations = await Promise.all(
-    ["0001_leaderboard.sql", "0002_coop_leaderboard.sql"].map((name) =>
+    ["0001_leaderboard.sql", "0002_coop_leaderboard.sql", "0003_coop_moderation.sql"].map((name) =>
       readFile(new URL(`../../worker/migrations/${name}`, import.meta.url), "utf8"),
     ),
   );

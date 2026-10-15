@@ -1,3 +1,12 @@
+import {
+  coopRanking,
+  coopVisible,
+  coopEntry,
+  getCoopRun,
+  coopDetails,
+  validateCoopEdit,
+  moderateCoopRun,
+} from "./coop-records.mjs";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { sanitizeUsername } from "../server/moderation.mjs";
 import {
@@ -225,36 +234,15 @@ export async function handleRequest(request, env) {
       await limit(`coop-read:${address}`, 240, 60_000);
       const offset = integer(Number(url.searchParams.get("offset") ?? 0), "Offset", 0, 1_000_000);
       const pageSize = integer(Number(url.searchParams.get("limit") ?? 25), "Limit", 1, 100);
-      const ranking = `completed DESC, wave DESC, score DESC, bosses_defeated DESC,
-        duration_seconds DESC, id ASC`;
       const [page, count] = await db.batch([
         db
           .prepare(
-            `SELECT id, player_one, player_two, score, wave, sector, duration_seconds,
-              bosses_defeated, status, completed, finished_at,
-              ROW_NUMBER() OVER (ORDER BY ${ranking}) AS rank
-            FROM coop_runs ORDER BY ${ranking} LIMIT ? OFFSET ?`,
+            `WITH visible AS (${coopVisible}) SELECT *, ROW_NUMBER() OVER (ORDER BY ${coopRanking}) AS rank FROM visible ORDER BY ${coopRanking} LIMIT ? OFFSET ?`,
           )
           .bind(pageSize, offset),
-        db.prepare("SELECT COUNT(*) AS total FROM coop_runs"),
+        db.prepare(`SELECT COUNT(*) AS total FROM (${coopVisible})`),
       ]);
-      return send(200, {
-        entries: page.results.map((row) => ({
-          id: row.id,
-          playerOne: row.player_one,
-          playerTwo: row.player_two,
-          score: row.score,
-          wave: row.wave,
-          sector: row.sector,
-          durationSeconds: row.duration_seconds,
-          bossesDefeated: row.bosses_defeated,
-          status: row.status,
-          completed: Boolean(row.completed),
-          finishedAt: row.finished_at,
-          rank: row.rank,
-        })),
-        total: count.results[0].total,
-      });
+      return send(200, { entries: page.results.map(coopEntry), total: count.results[0].total });
     }
     if (request.method === "POST" && path === "/api/players") {
       await limit(`register:${address}`, 40, 3_600_000);
@@ -380,6 +368,27 @@ export async function handleRequest(request, env) {
       const tokenHash = await authenticateAdmin(request);
       await db.prepare("DELETE FROM admin_sessions WHERE token_hash = ?").bind(tokenHash).run();
       return send(200, { signedOut: true });
+    }
+    const coopAdminRoute = path.match(/^\/api\/admin\/coop-runs\/([a-zA-Z0-9_-]{1,80})$/);
+    if (coopAdminRoute && ["GET", "PATCH", "DELETE"].includes(request.method)) {
+      const tokenHash = await authenticateAdmin(request);
+      await limit(`admin:${tokenHash}`, 120, 60000);
+      const id = coopAdminRoute[1];
+      const row = await getCoopRun(db, id);
+      if (request.method === "GET") return send(200, coopDetails(row));
+      await moderateCoopRun(
+        db,
+        id,
+        request.method,
+        request.method === "PATCH" ? validateCoopEdit(await readBody(request)) : null,
+        iso(),
+      );
+      return send(
+        200,
+        request.method === "DELETE"
+          ? { deleted: true }
+          : { entry: coopDetails(await getCoopRun(db, id)) },
+      );
     }
     const adminRunRoute = path.match(/^\/api\/admin\/runs\/([a-zA-Z0-9_-]+)$/);
     if (adminRunRoute && ["GET", "PATCH", "DELETE"].includes(request.method)) {

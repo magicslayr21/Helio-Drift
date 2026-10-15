@@ -24,7 +24,7 @@ export function coopResultFromRoom(room, status) {
 /** Only the authoritative MatchRoom calls this; clients have no result-write route. */
 export async function writeCoopResult(db, room, status) {
   const result = coopResultFromRoom(room, status);
-  await db
+  const insert = db
     .prepare(
       `INSERT OR IGNORE INTO coop_runs
         (id, room_code, player_one, player_two, score, wave, sector, duration_seconds,
@@ -45,7 +45,48 @@ export async function writeCoopResult(db, room, status) {
       result.completed,
       result.createdAt,
       result.finishedAt,
-    )
-    .run();
+    );
+  const hasTelemetry = Object.values(room.match.players).every((p) => p.ship && p.drone && p.stats);
+  const pilots = hasTelemetry
+    ? Object.fromEntries(
+        Object.entries(room.match.players).map(([id, p]) => [
+          id,
+          {
+            callsign: p.callsign,
+            level: p.level,
+            credits: p.credits,
+            hull: p.ship.hull,
+            maxHull: p.ship.maxHull,
+            primary: p.ship.primary,
+            weapons: p.ship.weapons,
+            upgrades: p.upgrades,
+            stats: p.stats,
+            drone: {
+              purchased: p.drone.purchased,
+              weapon: p.drone.weapon,
+              upgrades: p.drone.upgrades,
+            },
+          },
+        ]),
+      )
+    : null;
+  await db.batch([
+    insert,
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO coop_run_details(run_id, telemetry_json, updated_at) VALUES (?, ?, ?)`,
+      )
+      .bind(
+        result.id,
+        pilots
+          ? JSON.stringify({
+              pilots,
+              directive: room.match.team.directive,
+              bonusDefeated: room.match.team.bonusDefeated,
+            })
+          : null,
+        result.finishedAt,
+      ),
+  ]);
   return result;
 }
