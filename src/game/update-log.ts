@@ -1,5 +1,26 @@
 export const UPDATE_LOG = [
   {
+    version: "0.6.3-alpha.1",
+    date: "2026-10-15",
+    title: "Systems ascending",
+    sections: [
+      {
+        title: "UPGRADES",
+        items: [
+          "New level-up screen with illuminated icons, rarity colours and reward effects.",
+          "Shorter upgrade descriptions and clearer stack progress in campaign and co-op.",
+        ],
+      },
+      {
+        title: "CAMPAIGN",
+        items: [
+          "Rift Spikers now appear from wave 16, with occasional pairs from wave 21.",
+          "Late boss waves and the MK6 encounter include Rift Spikers.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.6.2-alpha.1",
     date: "2026-10-15",
     title: "Mine warning",

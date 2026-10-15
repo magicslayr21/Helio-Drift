@@ -308,7 +308,8 @@ async function evaluate(client, page, expression) {
     { expression, awaitPromise: true, returnByValue: true },
     page.sessionId,
   );
-  if (result.exceptionDetails) throw new Error(result.exceptionDetails.text);
+  if (result.exceptionDetails)
+    throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
   return result.result.value;
 }
 
@@ -490,6 +491,158 @@ try {
     () => chromeDiagnostics,
     () => chromeLaunchError,
   );
+  // Drive the real campaign overlay with deterministic upgrade choices. Fixtures stay
+  // in the test browser: production has no additional globals or developer access.
+  const campaign = await makePage(cdp, "Smoke Campaign");
+  await waitFor(
+    cdp,
+    campaign,
+    "document.querySelector('.launch-deploy') || document.body?.innerText.includes('DEPLOY')",
+    "campaign menu",
+  );
+  await evaluate(
+    cdp,
+    campaign,
+    `(async () => {
+    const resources = performance.getEntriesByType('resource');
+    const {Game} = await import(resources.find(e => e.name.includes('/src/game/engine.ts')).name);
+    const {STAT_UPGRADES} = await import(resources.find(e => e.name.includes('/src/game/balance.ts')).name);
+    const start = Game.prototype.startGame;
+    Game.prototype.startGame = function(...args) {
+      start.apply(this, args);
+      window.__campaignUpgradeGame = this;
+      this.god = true;
+      this.level = 8;
+      this.credits = 2000;
+      this.stacks.range = 1;
+      this.stacks.armor = 1;
+      this.rebuildStatUpgrades();
+      this.rollChoices = () => ['range', 'armor', 'crit'].map(id => {
+        const u = STAT_UPGRADES.find(entry => entry.id === id);
+        return {id, name:u.name, desc:u.desc, tag:u.tag, rarity:u.rarity, kind:'stat', level:this.stacks[id] ?? 0};
+      });
+      this.triggerLevelUp();
+      this.onHud(this.snapshot());
+    };
+  })()`,
+  );
+  await evaluate(cdp, campaign, clickText("Deploy"));
+  await waitFor(
+    cdp,
+    campaign,
+    "document.querySelector('button[aria-label=Campaign]')",
+    "campaign mode",
+  );
+  await evaluate(cdp, campaign, "document.querySelector('button[aria-label=Campaign]').click()");
+  await waitFor(
+    cdp,
+    campaign,
+    clickText("Start new run", ".campaign-panel button"),
+    "campaign launch",
+  );
+  await waitFor(
+    cdp,
+    campaign,
+    "document.querySelectorAll('.upgrade-option').length === 3",
+    "level-up reward cards",
+  );
+  await delay(650);
+  const reward = await evaluate(
+    cdp,
+    campaign,
+    `(() => {
+    const cards = [...document.querySelectorAll('.upgrade-option')];
+    const panel = document.querySelector('.upgrade-screen');
+    return {icons:cards.filter(c => c.querySelector('.upgrade-icon svg path')).length,
+      unique:new Set(cards.map(c => c.querySelector('.upgrade-icon path').getAttribute('d'))).size,
+      rarity:cards.map(c => getComputedStyle(c).getPropertyValue('--rarity-color').trim()),
+      scroll:panel.scrollWidth <= panel.clientWidth,
+      pending:cards.filter(c => c.querySelector('.is-next')).length};
+  })()`,
+  );
+  assert.equal(reward.icons, 3);
+  assert.equal(reward.unique, 3);
+  assert.equal(new Set(reward.rarity).size, 2);
+  assert.equal(reward.pending, 3);
+  assert.equal(reward.scroll, true);
+  await capture(cdp, campaign, "helio-campaign-upgrades.png");
+  if (process.env.HELIO_UPGRADE_SCREENSHOT) {
+    const { data } = await cdp.send(
+      "Page.captureScreenshot",
+      { format: "png" },
+      campaign.sessionId,
+    );
+    await writeFile(process.env.HELIO_UPGRADE_SCREENSHOT, Buffer.from(data, "base64"));
+  }
+  await evaluate(cdp, campaign, clickText("Reroll", ".upgrade-screen button"));
+  await waitFor(
+    cdp,
+    campaign,
+    "window.__campaignUpgradeGame.credits === 1970 && document.querySelector('.upgrade-screen').textContent.includes('54 CR')",
+    "upgrade reroll cost and updated choices",
+  );
+  await cdp.send(
+    "Emulation.setEmulatedMedia",
+    { features: [{ name: "prefers-reduced-motion", value: "reduce" }] },
+    campaign.sessionId,
+  );
+  assert.equal(
+    await evaluate(
+      cdp,
+      campaign,
+      "getComputedStyle(document.querySelector('.upgrade-option')).animationName",
+    ),
+    "none",
+  );
+  await evaluate(cdp, campaign, "document.querySelector('.upgrade-option').focus()");
+  assert.equal(
+    await evaluate(
+      cdp,
+      campaign,
+      "document.activeElement === document.querySelector('.upgrade-option')",
+    ),
+    true,
+  );
+  await cdp.send(
+    "Input.dispatchKeyEvent",
+    {
+      type: "keyDown",
+      code: "Enter",
+      key: "Enter",
+      windowsVirtualKeyCode: 13,
+      text: "\r",
+      unmodifiedText: "\r",
+    },
+    campaign.sessionId,
+  );
+  await cdp.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyUp", code: "Enter", key: "Enter", windowsVirtualKeyCode: 13 },
+    campaign.sessionId,
+  );
+  await waitFor(
+    cdp,
+    campaign,
+    "!document.querySelector('.upgrade-screen') && window.__campaignUpgradeGame.stacks.range === 2 && window.__campaignUpgradeGame.mode === 'playing'",
+    "keyboard upgrade installation resumes campaign",
+  );
+  await evaluate(
+    cdp,
+    campaign,
+    "window.__campaignUpgradeGame.setMode('paused');window.__campaignUpgradeGame.saveRun()",
+  );
+  assert.equal(
+    await evaluate(
+      cdp,
+      campaign,
+      "JSON.parse(localStorage.getItem('helios-run-v1')).state.stacks.range",
+    ),
+    2,
+  );
+  console.info(
+    "[upgrade readiness] campaign reward cards, distinct icons, rarity, stack progress, reroll, reduced motion, keyboard selection and save passed",
+  );
+  await cdp.send("Target.disposeBrowserContext", { browserContextId: campaign.browserContextId });
   const alpha = await makePage(cdp, "Smoke Alpha");
   const bravo = await makePage(cdp, "Smoke Bravo");
   await Promise.all([enterMultiplayer(cdp, alpha), enterMultiplayer(cdp, bravo)]);

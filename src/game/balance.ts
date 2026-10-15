@@ -143,7 +143,7 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     rarity: "common",
     weight: GAME_CONFIG.statUpgrades.range.weight,
     max: GAME_CONFIG.statUpgrades.range.max,
-    desc: "Weapon and drone range +13.3% per level; +40% at maximum.",
+    desc: "+13.3% weapon and drone range. Max +40%.",
     apply: (g) => {
       g.p.rangeMul = (g.p.rangeMul ?? 1) + GAME_CONFIG.statUpgrades.range.rangePerStack;
     },
@@ -155,7 +155,7 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     rarity: GAME_CONFIG.statUpgrades.overclock.rarity,
     weight: GAME_CONFIG.statUpgrades.overclock.weight,
     max: GAME_CONFIG.statUpgrades.overclock.max,
-    desc: "Cyclic rate +9% on every weapon.",
+    desc: "+9% attack speed for all weapons.",
     apply: (g) => {
       g.p.fireRateMul *= GAME_CONFIG.statUpgrades.overclock.fireRateMultiplier;
     },
@@ -167,7 +167,7 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     rarity: GAME_CONFIG.statUpgrades.hollow.rarity,
     weight: GAME_CONFIG.statUpgrades.hollow.weight,
     max: GAME_CONFIG.statUpgrades.hollow.max,
-    desc: "All weapon damage +12%.",
+    desc: "+12% damage for all weapons.",
     apply: (g) => {
       g.p.damageMul *= GAME_CONFIG.statUpgrades.hollow.damageMultiplier;
     },
@@ -179,7 +179,7 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     rarity: GAME_CONFIG.statUpgrades.thruster.rarity,
     weight: GAME_CONFIG.statUpgrades.thruster.weight,
     max: GAME_CONFIG.statUpgrades.thruster.max,
-    desc: "Thrust +9%, top speed +6%, turn rate +4%.",
+    desc: "+9% thrust, +6% speed, +4% turning.",
     apply: (g) => {
       g.p.thrust *= GAME_CONFIG.statUpgrades.thruster.thrustMultiplier;
       g.p.maxSpeed *= GAME_CONFIG.statUpgrades.thruster.speedMultiplier;
@@ -193,7 +193,7 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     rarity: GAME_CONFIG.statUpgrades.hull.rarity,
     weight: GAME_CONFIG.statUpgrades.hull.weight,
     max: GAME_CONFIG.statUpgrades.hull.max,
-    desc: "Max health +18 and immediately restore 18 health.",
+    desc: "+18 max health. Repair 18 health now.",
     apply: (g) => {
       const hull = GAME_CONFIG.statUpgrades.hull.hullPerStack;
       g.p.maxHull += hull;
@@ -207,7 +207,7 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     rarity: GAME_CONFIG.statUpgrades.armor.rarity,
     weight: GAME_CONFIG.statUpgrades.armor.weight,
     max: GAME_CONFIG.statUpgrades.armor.max,
-    desc: "All incoming damage −12%. Stacks to −36%.",
+    desc: "Take 12% less damage. Max 36% reduction.",
     apply: (g) => {
       g.p.armor = Math.min(
         GAME_CONFIG.statUpgrades.armor.maxDamageReduction,
@@ -222,7 +222,7 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     rarity: GAME_CONFIG.statUpgrades.twin.rarity,
     weight: GAME_CONFIG.statUpgrades.twin.weight,
     max: GAME_CONFIG.statUpgrades.twin.max,
-    desc: "+1 projectile per volley on every projectile weapon.",
+    desc: "+1 shot per volley for projectile weapons.",
     apply: (g) => {
       g.p.extraShots += GAME_CONFIG.statUpgrades.twin.extraShotsPerStack;
     },
@@ -234,7 +234,7 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     rarity: GAME_CONFIG.statUpgrades.pierce.rarity,
     weight: GAME_CONFIG.statUpgrades.pierce.weight,
     max: GAME_CONFIG.statUpgrades.pierce.max,
-    desc: "Projectiles pierce one extra target.",
+    desc: "Shots pass through 1 extra target.",
     apply: (g) => {
       g.p.pierce += GAME_CONFIG.statUpgrades.pierce.extraPiercePerStack;
     },
@@ -246,7 +246,7 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     rarity: GAME_CONFIG.statUpgrades.crit.rarity,
     weight: GAME_CONFIG.statUpgrades.crit.weight,
     max: GAME_CONFIG.statUpgrades.crit.max,
-    desc: "+20 percentage points critical chance and +0.1× critical damage per level; max 2.5× damage.",
+    desc: "+20% crit chance and +0.1× crit damage. Max 2.5× damage.",
     apply: (g) => {
       g.p.crit += GAME_CONFIG.statUpgrades.crit.critPerStack;
       g.p.critMult = Math.min(

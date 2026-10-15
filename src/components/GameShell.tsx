@@ -18,6 +18,7 @@ import {
 } from "../game/engine";
 import { PlayerStatus } from "./PlayerStatus";
 import { FlightSettings } from "./FlightSettings";
+import { UpgradeIcon, UpgradeOption } from "./UpgradeOption";
 import { LevelPips } from "./LevelPips";
 import { PauseMenu } from "./PauseMenu";
 import { DeveloperConsole } from "./DeveloperConsole";
@@ -631,110 +632,83 @@ export default function GameShell({
               {mode === "levelup" && (
                 <motion.div
                   key="levelup"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="upgrade-title"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.2 }}
-                  className="absolute inset-0 flex flex-col justify-center overflow-y-auto bg-void/78 px-3 py-6 sm:px-8"
+                  className="upgrade-screen absolute inset-0 flex flex-col justify-center overflow-y-auto px-3 py-6 sm:px-8"
                 >
-                  <div className="mb-4 flex items-end justify-between">
-                    <div>
-                      <p className="legend text-amber">Upgrade Available · Game Paused</p>
-                      <h2 className="font-display text-[clamp(1.5rem,4.6vw,2.6rem)] leading-none text-amber-hot">
-                        LEVEL {String(hud.level).padStart(2, "0")}
-                      </h2>
-                    </div>
-                    <div className="hidden text-right sm:block">
-                      <p className="legend">Available Credits</p>
-                      <p className="font-display text-2xl leading-none text-amber">
-                        {hud.credits} CR
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col gap-2.5 sm:flex-row">
-                    {choices.map((c, i) => {
-                      const accent =
-                        c.rarity === "epic"
-                          ? "#ff3d6e"
-                          : c.rarity === "rare"
-                            ? "#6fe7ff"
-                            : "#ffb03a";
-                      return (
-                        <motion.button
-                          key={c.id}
-                          initial={{ opacity: 0, x: 90, skewX: -6 }}
-                          animate={{ opacity: 1, x: 0, skewX: 0 }}
-                          transition={{
-                            delay: i * 0.075,
-                            type: "spring",
-                            stiffness: 260,
-                            damping: 26,
-                          }}
-                          onClick={() => gameRef.current?.chooseUpgrade(c.id)}
-                          className={`group flex-1 border p-4 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber ${
-                            c.rarity === "epic"
-                              ? "border-magenta/70 bg-magenta/10 hover:bg-magenta/20"
-                              : c.rarity === "rare"
-                                ? "border-ice/50 bg-ice/5 hover:bg-ice/15"
-                                : "border-steel/60 bg-graphite/70 hover:bg-amber/15"
-                          }`}
+                  <div className="upgrade-screen-inner">
+                    <div className="upgrade-heading">
+                      <div className="upgrade-reward-mark" aria-hidden="true">
+                        <UpgradeIcon id="crit" />
+                      </div>
+                      <div>
+                        <p className="legend text-amber">Level up · Choose your upgrade</p>
+                        <h2
+                          id="upgrade-title"
+                          className="font-display text-[clamp(1.5rem,4.6vw,2.6rem)] leading-none text-amber-hot"
                         >
-                          <div className="flex items-center justify-between">
-                            <p className="legend" style={{ color: accent }}>
-                              {c.tag}
-                            </p>
-                            <p className="legend text-amber/35">{c.rarity}</p>
-                          </div>
-                          <h3 className="mt-2 text-[13px] font-semibold uppercase leading-tight tracking-[0.06em] text-amber-hot">
-                            {c.name}
-                          </h3>
-                          <div className="mt-1.5 flex items-center gap-2">
-                            <span className="legend text-amber/45">
-                              {c.level === 0 ? "New" : `Owned ×${c.level} → ×${c.level + 1}`}
-                            </span>
-                          </div>
-                          <p className="mt-2 text-[11px] leading-relaxed text-amber/60">{c.desc}</p>
-                        </motion.button>
-                      );
-                    })}
-                  </div>
-
-                  <div className="mt-5 border-t border-steel/30 pt-4">
-                    <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                      <p className="legend">Not satisfied with the rack?</p>
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          disabled={hud.credits < (gameRef.current?.rerollCost ?? 9999)}
-                          onClick={() => {
-                            const g = gameRef.current;
-                            if (!g) return;
-                            const paid = g.rerollChoices();
-                            if (paid !== null) {
-                              setChoices([...g.choices]);
-                              setHud(g.snapshot());
-                              forceTick((v) => v + 1);
-                            }
-                          }}
-                          className={`border px-5 py-2.5 text-[10px] uppercase tracking-[0.24em] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber ${
-                            hud.credits >= (gameRef.current?.rerollCost ?? 9999)
-                              ? "border-amber/60 text-amber hover:bg-amber/15"
-                              : "cursor-not-allowed border-steel/30 text-amber/25"
-                          }`}
-                        >
-                          Reroll · {gameRef.current?.rerollCost ?? 30} CR
-                        </button>
-                        <button
-                          onClick={openShop}
-                          className="border border-ice/60 px-5 py-2.5 text-[10px] uppercase tracking-[0.24em] text-ice transition-colors hover:bg-ice/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-ice"
-                        >
-                          Weapon Shop
-                        </button>
+                          LEVEL {String(hud.level).padStart(2, "0")}
+                        </h2>
+                        <p className="upgrade-reward-note">Hull patched · Systems ready</p>
+                      </div>
+                      <div className="upgrade-credit hidden sm:block">
+                        <p className="legend">Available Credits</p>
+                        <p className="font-display text-2xl leading-none text-amber">
+                          {hud.credits} CR
+                        </p>
                       </div>
                     </div>
-                    <p className="text-[10px] leading-relaxed text-amber/40">
-                      Credits only reroll stat options or purchase and level weapons in the shop.
-                    </p>
+                    <div className="upgrade-choices">
+                      {choices.map((card, i) => (
+                        <UpgradeOption
+                          key={card.id}
+                          card={card}
+                          index={i}
+                          onChoose={() => gameRef.current?.chooseUpgrade(card.id)}
+                        />
+                      ))}
+                    </div>
+                    <div className="mt-5 border-t border-steel/30 pt-4">
+                      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                        <p className="legend">Choose one system · Flight paused</p>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            disabled={hud.credits < (gameRef.current?.rerollCost ?? 9999)}
+                            onClick={() => {
+                              const g = gameRef.current;
+                              if (!g) return;
+                              const paid = g.rerollChoices();
+                              if (paid !== null) {
+                                setChoices([...g.choices]);
+                                setHud(g.snapshot());
+                                forceTick((v) => v + 1);
+                              }
+                            }}
+                            className={`border px-5 py-2.5 text-[10px] uppercase tracking-[0.24em] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber ${
+                              hud.credits >= (gameRef.current?.rerollCost ?? 9999)
+                                ? "border-amber/60 text-amber hover:bg-amber/15"
+                                : "cursor-not-allowed border-steel/30 text-amber/25"
+                            }`}
+                          >
+                            Reroll · {gameRef.current?.rerollCost ?? 30} CR
+                          </button>
+                          <button
+                            onClick={openShop}
+                            className="border border-ice/60 px-5 py-2.5 text-[10px] uppercase tracking-[0.24em] text-ice transition-colors hover:bg-ice/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-ice"
+                          >
+                            Weapon Shop
+                          </button>
+                        </div>
+                      </div>
+                      <p className="text-[10px] leading-relaxed text-amber/40">
+                        Install one upgrade to resume. Weapons are available in the shop.
+                      </p>
+                    </div>
                   </div>
                 </motion.div>
               )}

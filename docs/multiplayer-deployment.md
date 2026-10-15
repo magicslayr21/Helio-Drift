@@ -380,3 +380,9 @@ new database migration is required. New patrols use a 1920×1080 arena; existing
 keep their dimensions. The fixed camera fits the entire arena without panning or stretching.
 Rift Spikers fire four shots before wave 20 and eight from wave 20, and can also be spawned
 in the campaign developer console.
+
+## Updating to 0.6.3-alpha.1
+
+Publish the frontend and redeploy the multiplayer Worker for the refreshed co-op upgrade
+descriptions. No leaderboard Worker deployment or database migration is required. Campaign
+Rift Spiker encounters and the new level-up screen are included in the frontend.

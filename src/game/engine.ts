@@ -2231,21 +2231,45 @@ export class Game {
     ).length;
     const amount = Math.max(0, Math.min(count, this.spikerCap() - live));
     for (let i = 0; i < amount; i++) {
-      // Choose the edge furthest from the ship to leave a clear entry path.
-      const margin = GAME_CONFIG.enemies.spikers.radius + 20;
-      const candidates = [
-        { x: margin, y: this.rnd(margin, this.h - margin) },
-        { x: this.w - margin, y: this.rnd(margin, this.h - margin) },
-        { x: this.rnd(margin, this.w - margin), y: margin },
-        { x: this.rnd(margin, this.w - margin), y: this.h - margin },
-      ];
-      const point = candidates.reduce((best, next) =>
-        Math.hypot(next.x - this.p.x, next.y - this.p.y) >
-        Math.hypot(best.x - this.p.x, best.y - this.p.y)
-          ? next
-          : best,
-      );
+      const point = this.spikerEntryPoint(GAME_CONFIG.enemies.spikers.radius);
       this.drones.push(this.spawnDrone(point.x, point.y, this.spikerHp(), "spiker"));
+    }
+    return amount;
+  }
+
+  /** Enter from the furthest edge so both radial heavies telegraph their arrival. */
+  spikerEntryPoint(radius: number) {
+    const margin = radius + 20;
+    const candidates = [
+      { x: margin, y: this.rnd(margin, this.h - margin) },
+      { x: this.w - margin, y: this.rnd(margin, this.h - margin) },
+      { x: this.rnd(margin, this.w - margin), y: margin },
+      { x: this.rnd(margin, this.w - margin), y: this.h - margin },
+    ];
+    return candidates.reduce((best, next) =>
+      Math.hypot(next.x - this.p.x, next.y - this.p.y) >
+      Math.hypot(best.x - this.p.x, best.y - this.p.y)
+        ? next
+        : best,
+    );
+  }
+
+  spawnCampaignRiftSpikers() {
+    // Co-op schedules its specialists independently through spawnCoopEscorts.
+    if (this.cooperative) return 0;
+    const c = COOP_CONFIG.riftSpiker;
+    if (this.wave < (this.boss ? c.bossEscortFromWave : c.unlockWave)) return 0;
+    const live = this.drones.filter((d) => d.coop?.kind === "riftSpiker").length;
+    const cap = this.wave >= 21 ? c.lateCap : c.cap;
+    const target =
+      cap > 1 && this.random() < GAME_CONFIG.enemies.spikers.secondSpawnChance ? cap : 1;
+    const amount = Math.max(0, target - live);
+    for (let i = 0; i < amount; i++) {
+      const point = this.spikerEntryPoint(c.radius);
+      const d = this.spawnDrone(point.x, point.y, c.baseHp + this.wave * c.hpPerWave, "spiker");
+      d.r = c.radius;
+      d.coop = { kind: "riftSpiker", timer: c.cooldownSeconds, warning: 0, target: null };
+      this.drones.push(d);
     }
     return amount;
   }
@@ -4355,6 +4379,8 @@ export class Game {
       const spawned = this.spawnSpikers(Math.max(0, target - live));
       if (spawned) this.bannerSub += ` · +${spawned} SPIKER${spawned > 1 ? "S" : ""}`;
     }
+    const rifts = this.spawnCampaignRiftSpikers();
+    if (rifts) this.bannerSub += ` · +${rifts} RIFT SPIKER${rifts > 1 ? "S" : ""}`;
     this.p.missiles = Math.min(this.p.maxMissiles, this.p.missiles + 1);
     this.sound.play("wave");
     // Between-wave salvage is generous enough that a player can afford the
@@ -6286,6 +6312,7 @@ export class Game {
     this.p.missiles = this.p.maxMissiles;
     this.themeIdx = 6;
     this.theme = THEMES[6];
+    this.spawnCampaignRiftSpikers();
     this.banner = "THE METEOR";
     this.bannerSub = "MK6 · OMEGAZELL — PRIMORDIAL CATACLYSM";
     this.bannerT = 3;

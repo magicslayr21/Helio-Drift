@@ -509,7 +509,7 @@ test("Spikers appear from wave 11, including one with the wave-15 boss", (t) => 
     const g = game();
     g.wave = wave - 1;
     g.nextWave();
-    const spikers = g.drones.filter((d) => d.kind === "spiker");
+    const spikers = g.drones.filter((d) => d.kind === "spiker" && d.coop?.kind !== "riftSpiker");
     assert.equal(spikers.length, wave >= 11 ? 1 : 0, `wave ${wave}`);
     if (wave === 15) assert.equal(g.boss.mk, 3);
     for (const d of spikers) {
@@ -531,9 +531,15 @@ test("late waves sometimes spawn a second Spiker and natural spawns obey the cap
       const g = game();
       g.wave = wave - 1;
       g.nextWave();
-      assert.equal(g.drones.filter((d) => d.kind === "spiker").length, expected);
+      assert.equal(
+        g.drones.filter((d) => d.kind === "spiker" && d.coop?.kind !== "riftSpiker").length,
+        expected,
+      );
       g.spawnSpikers(50);
-      assert.equal(g.drones.filter((d) => d.kind === "spiker").length, 2);
+      assert.equal(
+        g.drones.filter((d) => d.kind === "spiker" && d.coop?.kind !== "riftSpiker").length,
+        2,
+      );
     }
   }
   const g = game();
@@ -1427,4 +1433,32 @@ test("ship visibility reads old preferences safely and clamps its persisted slid
   assert.equal(readFlightSettings().shipVisibility, 1);
   saved.shipVisibility = "bright";
   assert.equal(readFlightSettings().shipVisibility, 0);
+});
+
+test("campaign waves naturally deploy Rift Spikers from 16 with bounded late pairs and boss escorts", (t) => {
+  let roll = 0.9;
+  t.mock.method(Math, "random", () => roll);
+  for (const wave of [1, 11, 15, 16, 19, 20, 21, 24, 25]) {
+    const g = game();
+    g.wave = wave - 1;
+    g.nextWave();
+    const rifts = g.drones.filter((d) => d.coop?.kind === "riftSpiker");
+    assert.equal(rifts.length, wave >= 16 ? 1 : 0, `wave ${wave}`);
+    if (wave < 16) continue;
+    const d = rifts[0];
+    assert.equal(d.kind, "spiker");
+    assert.ok(Math.hypot(d.x - g.p.x, d.y - g.p.y) > 240);
+    assert.ok(d.coop.timer > 0);
+    g.spawnCampaignRiftSpikers();
+    assert.equal(g.drones.filter((d) => d.coop?.kind === "riftSpiker").length, 1);
+    roll = 0.1;
+    g.spawnCampaignRiftSpikers();
+    g.spawnCampaignRiftSpikers();
+    assert.equal(g.drones.filter((d) => d.coop?.kind === "riftSpiker").length, wave >= 21 ? 2 : 1);
+    roll = 0.9;
+  }
+  const bonus = game();
+  bonus.wave = 25;
+  bonus.startBonusBoss();
+  assert.equal(bonus.drones.filter((d) => d.coop?.kind === "riftSpiker").length, 1);
 });

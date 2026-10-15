@@ -12,11 +12,11 @@ import {
   SALVAGE_BASE_PRICE,
   SALVAGE_UPGRADES,
   SALVAGE_UPGRADE_ORDER,
-  STAT_UPGRADES,
   WEAPON_DEFS,
   WEAPON_ORDER,
   weaponMaxLevel,
 } from "../game/balance";
+import { UpgradeOption } from "./UpgradeOption";
 import { audio } from "../game/audio";
 import type {
   AuthoritativeSnapshot,
@@ -1226,19 +1226,14 @@ function CoopShop({
         {player.upgradePoints > 0 && (
           <>
             <h3>Upgrade points · {player.upgradePoints}</h3>
-            <div className="coop-shop-grid">
-              {(player.campaign?.choices ?? []).map((upgrade) => (
-                <button
-                  key={upgrade.id}
-                  onClick={() => send({ type: "chooseUpgrade", upgrade: upgrade.id })}
-                >
-                  <strong>{upgrade.name}</strong>
-                  <span>{upgrade.desc}</span>
-                  <small>
-                    {upgrade.rarity} · {player.upgrades[upgrade.id] ?? 0}/
-                    {STAT_UPGRADES.find((entry) => entry.id === upgrade.id)?.max}
-                  </small>
-                </button>
+            <div className="upgrade-choices">
+              {(player.campaign?.choices ?? []).map((card, i) => (
+                <UpgradeOption
+                  key={card.id}
+                  card={{ ...card, level: player.upgrades[card.id] ?? 0 }}
+                  index={i}
+                  onChoose={() => send({ type: "chooseUpgrade", upgrade: card.id })}
+                />
               ))}
             </div>
             <button
