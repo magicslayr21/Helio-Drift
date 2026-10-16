@@ -114,7 +114,6 @@ export function validDeveloperCommand(value: unknown): value is DeveloperCommand
 /** Shared bounded engine operations. Network callers authorize before applying them. */
 export function applyDeveloperCommand(g: Game, c: DeveloperCommand) {
   if (!validDeveloperCommand(c)) return false;
-  if (c.action === "enemy" && c.kind === "riftSpiker" && !g.cooperative) return false;
   g.markLeaderboardAssisted();
   switch (c.action) {
     case "heal":

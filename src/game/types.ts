@@ -199,6 +199,7 @@ export interface Bullet {
   target?: number;
   turn: number;
   bounces: number;
+  wallBounces?: number;
   fuse: number;
   extra: number; // flak: shrapnel count
   extraDmg: number; // flak: shrapnel damage

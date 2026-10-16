@@ -2257,26 +2257,6 @@ export class Game {
     );
   }
 
-  spawnCampaignRiftSpikers() {
-    // Co-op schedules its specialists independently through spawnCoopEscorts.
-    if (this.cooperative) return 0;
-    const c = COOP_CONFIG.riftSpiker;
-    if (this.wave < (this.boss ? c.bossEscortFromWave : c.unlockWave)) return 0;
-    const live = this.drones.filter((d) => d.coop?.kind === "riftSpiker").length;
-    const cap = this.wave >= 21 ? c.lateCap : c.cap;
-    const target =
-      cap > 1 && this.random() < GAME_CONFIG.enemies.spikers.secondSpawnChance ? cap : 1;
-    const amount = Math.max(0, target - live);
-    for (let i = 0; i < amount; i++) {
-      const point = this.spikerEntryPoint(c.radius);
-      const d = this.spawnDrone(point.x, point.y, c.baseHp + this.wave * c.hpPerWave, "spiker");
-      d.r = c.radius;
-      d.coop = { kind: "riftSpiker", timer: c.cooldownSeconds, warning: 0, target: null };
-      this.drones.push(d);
-    }
-    return amount;
-  }
-
   updateSpiker(d: Drone, dt: number) {
     const tuning = GAME_CONFIG.enemies.spikers;
     d.flash = Math.max(0, d.flash - dt * 4);
@@ -2978,6 +2958,10 @@ export class Game {
             continue;
           }
           b.bounces--;
+          const previousBounces = b.wallBounces ?? 0;
+          b.wallBounces = previousBounces + 1;
+          const multiplier = (count: number) => [1, 2, 3.5, 5][Math.min(3, count)];
+          b.dmg *= multiplier(b.wallBounces) / multiplier(previousBounces);
           b.hitIds.clear();
           this.burst(b.x, b.y, 5, ICE);
           this.sound.play("ricochet");
@@ -3304,8 +3288,13 @@ export class Game {
 
   beamDamage(dt: number, dps: number) {
     const p = this.p;
-    const a = p.angle;
-    this.beamAngle = a;
+    this.beamAngle = p.angle;
+    this.beamDamageDirection(dt, dps, p.angle);
+    if (p.extraShots > 0) this.beamDamageDirection(dt, dps, p.angle + Math.PI);
+  }
+
+  beamDamageDirection(dt: number, dps: number, a: number) {
+    const p = this.p;
     const dx = Math.cos(a),
       dy = Math.sin(a);
     const beam = this.laserStats(p.weapons.laser || 1);
@@ -4382,8 +4371,6 @@ export class Game {
       const spawned = this.spawnSpikers(Math.max(0, target - live));
       if (spawned) this.bannerSub += ` · +${spawned} SPIKER${spawned > 1 ? "S" : ""}`;
     }
-    const rifts = this.spawnCampaignRiftSpikers();
-    if (rifts) this.bannerSub += ` · +${rifts} RIFT SPIKER${rifts > 1 ? "S" : ""}`;
     this.p.missiles = Math.min(this.p.maxMissiles, this.p.missiles + 1);
     this.sound.play("wave");
     // Between-wave salvage is generous enough that a player can afford the
@@ -6315,7 +6302,6 @@ export class Game {
     this.p.missiles = this.p.maxMissiles;
     this.themeIdx = 6;
     this.theme = THEMES[6];
-    this.spawnCampaignRiftSpikers();
     this.banner = "THE METEOR";
     this.bannerSub = "MK6 · OMEGAZELL — PRIMORDIAL CATACLYSM";
     this.bannerT = 3;
@@ -6797,20 +6783,22 @@ export class Game {
       const p = this.p,
         ba = this.beamAngle;
       const beam = this.laserStats(p.weapons.laser || 1);
-      ctx.beginPath();
-      ctx.moveTo(p.x + Math.cos(ba) * 22, p.y + Math.sin(ba) * 22);
-      ctx.lineTo(p.x + Math.cos(ba) * beam.range, p.y + Math.sin(ba) * beam.range);
-      ctx.strokeStyle = beam.color;
-      ctx.lineWidth = beam.width + (this.random() - 0.5) * 2;
-      ctx.shadowBlur = 26;
-      ctx.shadowColor = beam.color;
-      ctx.globalAlpha = 0.95;
-      ctx.stroke();
-      ctx.lineWidth = Math.max(1.2, beam.width * 0.18);
-      ctx.strokeStyle = "#ffffff";
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-      ctx.shadowBlur = 0;
+      for (const angle of p.extraShots > 0 ? [ba, ba + Math.PI] : [ba]) {
+        ctx.beginPath();
+        ctx.moveTo(p.x + Math.cos(angle) * 22, p.y + Math.sin(angle) * 22);
+        ctx.lineTo(p.x + Math.cos(angle) * beam.range, p.y + Math.sin(angle) * beam.range);
+        ctx.strokeStyle = beam.color;
+        ctx.lineWidth = beam.width + (this.random() - 0.5) * 2;
+        ctx.shadowBlur = 26;
+        ctx.shadowColor = beam.color;
+        ctx.globalAlpha = 0.95;
+        ctx.stroke();
+        ctx.lineWidth = Math.max(1.2, beam.width * 0.18);
+        ctx.strokeStyle = "#ffffff";
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.shadowBlur = 0;
+      }
     }
   }
 

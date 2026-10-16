@@ -67,7 +67,7 @@ export const WEAPON_DEFS: Record<
     name: "Pulse Cannon",
     short: "PULSE",
     desc: "Reliable twin-fed plasma. The baseline everything is measured against.",
-    perLevel: "+12% damage · +7% rate · +1 shot every 2 levels",
+    perLevel: "+4% damage · +2.5% rate",
     rarity: GAME_CONFIG.weaponProgression.weapons.pulse.rarity,
     weight: GAME_CONFIG.weaponProgression.weapons.pulse.weight,
   },
@@ -90,8 +90,8 @@ export const WEAPON_DEFS: Record<
   ricochet: {
     name: "Ricochet Blaster",
     short: "RICOCHET",
-    desc: "Heavy slugs that bounce off the sector edges instead of leaving.",
-    perLevel: "+15% damage · +1 bounce every 2 levels",
+    desc: "Wall-bouncing slugs: 2× damage after one bounce, 3.5× after two, 5× after three.",
+    perLevel: "+15% damage · +1 bounce per level",
     rarity: GAME_CONFIG.weaponProgression.weapons.ricochet.rarity,
     weight: GAME_CONFIG.weaponProgression.weapons.ricochet.weight,
   },
@@ -222,7 +222,7 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     rarity: GAME_CONFIG.statUpgrades.twin.rarity,
     weight: GAME_CONFIG.statUpgrades.twin.weight,
     max: GAME_CONFIG.statUpgrades.twin.max,
-    desc: "+1 shot per volley for projectile weapons.",
+    desc: "+1 shot per volley; Beam also fires behind the ship.",
     apply: (g) => {
       g.p.extraShots += GAME_CONFIG.statUpgrades.twin.extraShotsPerStack;
     },

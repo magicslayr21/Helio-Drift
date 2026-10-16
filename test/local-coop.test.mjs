@@ -714,3 +714,27 @@ test("Rift Spikers unlock only in co-op, warn before gravity pulses and survive 
   campaign.updateDroneSpecial(devRift, 0.01);
   assert.ok(devRift.coop.warning > 0);
 });
+
+test("ricochet bounce damage progression survives co-op checkpoints and old shots", () => {
+  const sim = fixture(),
+    g = sim.game;
+  g.p.primary = "ricochet";
+  g.p.weapons.ricochet = 4;
+  g.fire();
+  const b = g.bullets[0],
+    base = b.dmg;
+  b.x = g.w + 1;
+  g.updateBullets(0);
+  const saved = sim.snapshot();
+  const restored = LocalCoopSimulation.restore(JSON.parse(JSON.stringify(saved)));
+  const shot = restored.game.bullets.find((shot) => shot.id === b.id);
+  assert.equal(shot.wallBounces, 1);
+  shot.x = restored.game.w + 1;
+  restored.game.updateBullets(0);
+  assert.ok(Math.abs(shot.dmg - base * 3.5) < 1e-8);
+  delete saved.campaign;
+  for (const shot of saved.projectiles) delete shot.wallBounces;
+  assert.ok(
+    LocalCoopSimulation.restore(saved).game.bullets.every((shot) => shot.wallBounces === 0),
+  );
+});

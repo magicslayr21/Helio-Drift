@@ -1,5 +1,23 @@
 export const UPDATE_LOG = [
   {
+    version: "0.6.6-alpha.1",
+    date: "2026-10-16",
+    title: "Crossfire tuning",
+    sections: [
+      {
+        title: "COMBAT",
+        items: [
+          "Rift Spikers no longer spawn naturally in campaign; developer spawning now works.",
+          "Pulse upgrades offer small damage and fire-rate boosts without adding a projectile.",
+          "Twin-Linked Feeder adds a rear-facing beam alongside the forward beam.",
+          "Flak fires faster and hits harder; Arc lightning deals more damage.",
+          "Ricochet damage rises to 2×, 3.5× and 5× after one, two and three wall bounces.",
+          "Railgun fires much slower with heavier damage; Scatter hits harder across a wider spread.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.6.5-alpha.1",
     date: "2026-10-16",
     title: "Reliable boarding",

@@ -83,6 +83,7 @@ export interface CoopProjectileState {
   life: number;
   pierce: number;
   bounces: number;
+  wallBounces?: number;
   homing: number;
   hitIds: number[];
   weapon: WeaponId;

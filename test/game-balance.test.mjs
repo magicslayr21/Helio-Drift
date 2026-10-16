@@ -716,7 +716,7 @@ test("weapon purchases, shop previews, and stats obey rarity caps", async () => 
 test("Pulse growth is gently nerfed and every rare/epic damage source is buffed", () => {
   const g = game();
   assert.equal(g.weaponStats("pulse", 1).dmg, 16);
-  assert.equal(g.weaponStats("pulse", 3).dmg, 16 * 1.24);
+  assert.equal(g.weaponStats("pulse", 3).dmg, 16 * 1.08);
   for (const [id, previous] of [
     ["spread", 11.5],
     ["seeker", 6.5],
@@ -1440,32 +1440,96 @@ test("ship visibility reads old preferences safely and clamps its persisted slid
   assert.equal(readFlightSettings().shipVisibility, 0);
 });
 
-test("campaign waves naturally deploy Rift Spikers from 16 with bounded late pairs and boss escorts", (t) => {
-  let roll = 0.9;
-  t.mock.method(Math, "random", () => roll);
-  for (const wave of [1, 11, 15, 16, 19, 20, 21, 24, 25]) {
+test("campaign never naturally spawns Rift Spikers, but developer commands can spawn them", async () => {
+  const { applyDeveloperCommand } = await import("../src/game/developer-command.ts");
+  for (let wave = 1; wave <= 25; wave++) {
     const g = game();
     g.wave = wave - 1;
     g.nextWave();
-    const rifts = g.drones.filter((d) => d.coop?.kind === "riftSpiker");
-    assert.equal(rifts.length, wave >= 16 ? 1 : 0, `wave ${wave}`);
-    if (wave < 16) continue;
-    const d = rifts[0];
-    assert.equal(d.kind, "spiker");
-    assert.ok(Math.hypot(d.x - g.p.x, d.y - g.p.y) > 240);
-    assert.ok(d.coop.timer > 0);
-    g.spawnCampaignRiftSpikers();
-    assert.equal(g.drones.filter((d) => d.coop?.kind === "riftSpiker").length, 1);
-    roll = 0.1;
-    g.spawnCampaignRiftSpikers();
-    g.spawnCampaignRiftSpikers();
-    assert.equal(g.drones.filter((d) => d.coop?.kind === "riftSpiker").length, wave >= 21 ? 2 : 1);
-    roll = 0.9;
+    assert.equal(g.drones.filter((d) => d.coop?.kind === "riftSpiker").length, 0, `wave ${wave}`);
   }
-  const bonus = game();
-  bonus.wave = 25;
-  bonus.startBonusBoss();
-  assert.equal(bonus.drones.filter((d) => d.coop?.kind === "riftSpiker").length, 1);
+  const g = game();
+  g.startBonusBoss();
+  assert.ok(!g.drones.some((d) => d.coop?.kind === "riftSpiker"));
+  assert.equal(
+    applyDeveloperCommand(g, { action: "enemy", kind: "riftSpiker", count: 2, size: 2 }),
+    true,
+  );
+  assert.equal(g.drones.filter((d) => d.coop?.kind === "riftSpiker").length, 2);
+});
+
+test("Twin-Linked Feeder beams hit front and rear targets but not the sides", () => {
+  const g = game();
+  g.p.x = 700;
+  g.p.y = 450;
+  g.p.angle = 0;
+  g.p.weapons.laser = 1;
+  g.drones = [
+    [900, 450],
+    [500, 450],
+    [700, 650],
+  ].map(([x, y]) => g.spawnDrone(x, y, 100, "sentinel"));
+  g.beamDamage(0.1, 10);
+  assert.deepEqual(
+    g.drones.map((d) => d.hp),
+    [99, 100, 100],
+  );
+  g.p.extraShots = 1;
+  g.beamDamage(0.1, 10);
+  assert.deepEqual(
+    g.drones.map((d) => d.hp),
+    [98, 99, 100],
+  );
+  g.p.primary = "laser";
+  g.p.beamOn = true;
+  const ends = [];
+  const ctx = { beginPath: noop, moveTo: noop, lineTo: (x, y) => ends.push([x, y]), stroke: noop };
+  g.renderBeam(ctx);
+  assert.equal(ends.length, 2);
+  assert.ok(ends[0][0] > g.p.x && ends[1][0] < g.p.x);
+});
+
+test("Ricochet wall bounces scale from original damage and survive saves", async (t) => {
+  const g = game();
+  g.p.primary = "ricochet";
+  g.p.weapons.ricochet = 4;
+  g.fire();
+  const b = g.bullets[0],
+    base = b.dmg;
+  b.life = 100;
+  for (const [index, multiplier] of [2, 3.5, 5].entries()) {
+    b.x = g.w + 1;
+    g.updateBullets(0);
+    assert.equal(b.wallBounces, index + 1);
+    assert.ok(Math.abs(b.dmg - base * multiplier) < 1e-8);
+  }
+  const { RunSave } = await import("../src/game/run-save.ts");
+  let data = null;
+  t.mock.method(localStorage, "getItem", () => data);
+  t.mock.method(localStorage, "setItem", (_key, value) => {
+    data = value;
+  });
+  const save = new RunSave();
+  save.begin(g);
+  const restored = game();
+  assert.equal(save.restore(restored), true);
+  assert.equal(restored.bullets[0].wallBounces, 3);
+  assert.equal(restored.bullets[0].dmg, b.dmg);
+});
+
+test("weapon tuning keeps Pulse growth small and gives the other guns their intended roles", () => {
+  const g = game();
+  const pulse = g.weaponStats("pulse", 1),
+    maxPulse = g.weaponStats("pulse", 3);
+  assert.equal(maxPulse.shots, pulse.shots);
+  assert.ok(maxPulse.rate * maxPulse.dmg < pulse.rate * pulse.dmg * 1.15);
+  assert.ok(g.weaponStats("spread", 1).dmg > pulse.dmg);
+  assert.ok(g.weaponStats("spread", 1).arc > 0.13);
+  assert.ok(g.weaponStats("flak", 1).rate > 1.48);
+  assert.ok(g.weaponStats("flak", 1).extraDmg > 9.5);
+  assert.ok(g.arcStats(1).dmg > 10.8);
+  assert.ok(g.weaponStats("rail", 1).rate < 1);
+  assert.ok(g.weaponStats("rail", 1).dmg > 100);
 });
 
 test("resuming a modal never integrates backwards when a queued frame timestamp predates the mode change", (t) => {
