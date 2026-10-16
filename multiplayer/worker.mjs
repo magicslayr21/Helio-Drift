@@ -1,0 +1,1475 @@
+import { COOP_FIXED_DT } from "../src/game/simulation/coop-config.ts";
+import { LocalCoopSimulation } from "../src/game/simulation/local-coop.ts";
+import { readRoomCheckpoint, writeRoomCheckpoint } from "./checkpoint.mjs";
+import { createWireState } from "../src/game/network/wire-state.ts";
+import {
+  NETWORK_CONFIG,
+  ROOM_CODE_ALPHABET,
+  ROOM_CODE_LENGTH,
+  TOKEN_PATTERN,
+  normalizeCallsign,
+  normalizeRoomCode,
+  normalizeRoomName,
+} from "./config.mjs";
+import { writeCoopResult } from "./results.mjs";
+
+const encoder = new TextEncoder();
+const requestBuckets = new Map();
+const WEAPONS = new Set(["pulse", "spread", "seeker", "ricochet", "flak", "arc", "laser", "rail"]);
+const DRONE_UPGRADES = new Set([
+  "twinCannons",
+  "overcharge",
+  "piercing",
+  "armor",
+  "shield",
+  "repairPulse",
+  "magnet",
+  "scan",
+  "speed",
+]);
+
+class RequestError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+
+const json = (status, value, headers = new Headers()) => {
+  headers.set("Content-Type", "application/json; charset=utf-8");
+  headers.set("Cache-Control", "no-store");
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("Referrer-Policy", "no-referrer");
+  return new Response(value === undefined ? null : JSON.stringify(value), { status, headers });
+};
+
+async function readJson(request, maximumBytes = NETWORK_CONFIG.maximumMessageBytes) {
+  if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get("Content-Type") ?? "")) {
+    throw new RequestError(415, "Send JSON with Content-Type: application/json.");
+  }
+  if (Number(request.headers.get("Content-Length") ?? 0) > maximumBytes) {
+    throw new RequestError(413, "Request is too large.");
+  }
+  const reader = request.body?.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let size = 0;
+  if (reader) {
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > maximumBytes) {
+          await reader.cancel();
+          throw new RequestError(413, "Request is too large.");
+        }
+        text += decoder.decode(value, { stream: true });
+      }
+      text += decoder.decode();
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  try {
+    const value = JSON.parse(text);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
+    return value;
+  } catch {
+    throw new RequestError(400, "Invalid JSON body.");
+  }
+}
+
+function newToken() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+function newRoomCode() {
+  const bytes = new Uint8Array(ROOM_CODE_LENGTH);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => ROOM_CODE_ALPHABET[byte % ROOM_CODE_ALPHABET.length]).join("");
+}
+
+function encodeLobbyCursor(room) {
+  return `${room.createdAt}.${room.code}`;
+}
+
+function parseLobbyCursor(value) {
+  if (!value) return null;
+  const match = value.match(/^(\d{10,16})\.([23456789ABCDEFGHJKMNPQRSTUVWXYZ]{6})$/);
+  if (!match) return null;
+  const createdAt = Number(match[1]);
+  return Number.isSafeInteger(createdAt) ? { createdAt, code: match[2] } : null;
+}
+
+function randomSeed() {
+  const value = new Uint32Array(1);
+  crypto.getRandomValues(value);
+  return value[0];
+}
+
+async function hash(value) {
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function bearer(request) {
+  const authorization = request.headers.get("Authorization");
+  if (!authorization?.startsWith("Bearer ")) return null;
+  const token = authorization.slice(7);
+  return TOKEN_PATTERN.test(token) ? token : null;
+}
+
+function joinTokenFrom(body) {
+  if (body.joinToken === undefined) return null;
+  if (typeof body.joinToken !== "string" || !TOKEN_PATTERN.test(body.joinToken)) {
+    throw new RequestError(400, "Join token is invalid.");
+  }
+  return body.joinToken;
+}
+
+async function requireDeveloperSession(request, env) {
+  const token = bearer(request);
+  if (!token) throw new RequestError(401, "Developer authorization is required to host a room.");
+  const session = await env.DB.prepare("SELECT expires_at FROM admin_sessions WHERE token_hash = ?")
+    .bind(await hash(token))
+    .first();
+  if (!session || session.expires_at <= Date.now())
+    throw new RequestError(401, "Developer session expired. Enter the code again.");
+}
+
+function rateLimit(key, maximum, windowMs) {
+  const now = Date.now();
+  let bucket = requestBuckets.get(key);
+  if (!bucket || bucket.expiresAt <= now) {
+    if (requestBuckets.size >= 5000) {
+      for (const [id, candidate] of requestBuckets) {
+        if (candidate.expiresAt <= now) requestBuckets.delete(id);
+      }
+    }
+    bucket = { count: 0, expiresAt: now + windowMs };
+    requestBuckets.set(key, bucket);
+  }
+  bucket.count++;
+  if (bucket.count > maximum) throw new RequestError(429, "Too many requests.");
+}
+
+async function roomRequest(env, code, path, init) {
+  const id = env.MATCH_ROOMS.idFromName(code);
+  return env.MATCH_ROOMS.get(id).fetch(`https://room.internal${path}`, init);
+}
+
+async function lobbyRequest(env, path, init) {
+  const id = env.LOBBY_INDEX.idFromName("global");
+  return env.LOBBY_INDEX.get(id).fetch(`https://lobby.internal${path}`, init);
+}
+
+function withCors(response, headers) {
+  const merged = new Headers(response.headers);
+  merged.delete("X-Helio-Room-Revision");
+  for (const [name, value] of headers) merged.set(name, value);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: merged,
+  });
+}
+
+export async function handleRequest(request, env) {
+  const headers = new Headers({ Vary: "Origin" });
+  try {
+    const origins = new Set(
+      (env.MULTIPLAYER_ORIGINS ?? "http://localhost:5173")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    );
+    for (const allowed of origins) {
+      if (new URL(allowed).origin !== allowed || !/^https?:/.test(allowed)) {
+        throw new Error("Invalid multiplayer origin configuration");
+      }
+    }
+    const origin = request.headers.get("Origin");
+    if (origin && !origins.has(origin)) throw new RequestError(403, "This origin is not allowed.");
+    if (origin) headers.set("Access-Control-Allow-Origin", origin);
+    if (request.method === "OPTIONS") {
+      headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      headers.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
+      headers.set("Access-Control-Max-Age", "600");
+      return new Response(null, { status: 204, headers });
+    }
+
+    const url = new URL(request.url);
+    const path = url.pathname.replace(/\/$/, "");
+    const address = request.headers.get("CF-Connecting-IP") ?? "unknown";
+    if (request.method === "GET" && path === "/api/health") {
+      return json(200, { ok: true, service: "helio-drift-multiplayer" }, headers);
+    }
+    if (request.method === "POST" && path === "/api/rooms/private") {
+      rateLimit(`create:${address}`, 20, 60_000);
+      await requireDeveloperSession(request, env);
+      const body = await readJson(request);
+      const callsign = normalizeCallsign(body.callsign);
+      if (!callsign) throw new RequestError(400, "Callsign must be 2–24 safe characters.");
+      for (let attempt = 0; attempt < 12; attempt++) {
+        const code = newRoomCode();
+        const response = await roomRequest(env, code, "/internal/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code, callsign, visibility: "private" }),
+        });
+        if (response.status === 409) continue;
+        return withCors(response, headers);
+      }
+      throw new RequestError(503, "Unable to allocate a room. Try again.");
+    }
+    if (request.method === "GET" && path === "/api/rooms/public") {
+      rateLimit(`public-list:${address}`, 120, 60_000);
+      const limit = url.searchParams.get("limit") ?? "";
+      const cursor = url.searchParams.get("cursor") ?? "";
+      return withCors(
+        await lobbyRequest(
+          env,
+          `/internal/list?limit=${encodeURIComponent(limit)}&cursor=${encodeURIComponent(cursor)}`,
+          { method: "GET" },
+        ),
+        headers,
+      );
+    }
+    if (request.method === "POST" && path === "/api/rooms/public") {
+      rateLimit(`public-create:${address}`, 20, 60_000);
+      await requireDeveloperSession(request, env);
+      const body = await readJson(request);
+      const callsign = normalizeCallsign(body.callsign);
+      const name = normalizeRoomName(body.name);
+      if (!callsign) throw new RequestError(400, "Callsign must be 2–24 safe characters.");
+      if (!name) throw new RequestError(400, "Room name must be 3–32 safe characters.");
+      return withCors(
+        await lobbyRequest(env, "/internal/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ callsign, name }),
+        }),
+        headers,
+      );
+    }
+    if (request.method === "POST" && path === "/api/rooms/quick") {
+      rateLimit(`quick:${address}`, 40, 60_000);
+      const body = await readJson(request);
+      const callsign = normalizeCallsign(body.callsign);
+      const joinToken = joinTokenFrom(body);
+      if (!callsign) throw new RequestError(400, "Callsign must be 2–24 safe characters.");
+      return withCors(
+        await lobbyRequest(env, "/internal/quick", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ callsign, ...(joinToken ? { joinToken } : {}) }),
+        }),
+        headers,
+      );
+    }
+
+    const route = path.match(/^\/api\/rooms\/([^/]+)(?:\/(join|tickets|socket))?$/);
+    if (!route) throw new RequestError(404, "Route not found.");
+    const code = normalizeRoomCode(route[1]);
+    if (!code) throw new RequestError(400, "Room code is invalid.");
+    const action = route[2] ?? "status";
+    if (request.method === "GET" && action === "status") {
+      rateLimit(`status:${address}`, 120, 60_000);
+      return withCors(await roomRequest(env, code, "/internal/status", { method: "GET" }), headers);
+    }
+    if (request.method === "POST" && action === "join") {
+      rateLimit(`join:${address}`, 40, 60_000);
+      const body = await readJson(request);
+      const callsign = normalizeCallsign(body.callsign);
+      const joinToken = joinTokenFrom(body);
+      if (!callsign) throw new RequestError(400, "Callsign must be 2–24 safe characters.");
+      return withCors(
+        await roomRequest(env, code, "/internal/join", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ callsign, ...(joinToken ? { joinToken } : {}) }),
+        }),
+        headers,
+      );
+    }
+    if (request.method === "POST" && action === "tickets") {
+      rateLimit(`ticket:${address}`, 120, 60_000);
+      const token = bearer(request);
+      if (!token) throw new RequestError(401, "A valid reconnect token is required.");
+      return withCors(
+        await roomRequest(env, code, "/internal/ticket", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+        headers,
+      );
+    }
+    if (request.method === "GET" && action === "socket") {
+      if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+        throw new RequestError(426, "A WebSocket upgrade is required.");
+      }
+      const ticket = url.searchParams.get("ticket");
+      if (!ticket || !TOKEN_PATTERN.test(ticket))
+        throw new RequestError(401, "Socket ticket is invalid.");
+      return roomRequest(
+        env,
+        code,
+        `/internal/socket?ticket=${encodeURIComponent(ticket)}`,
+        request,
+      );
+    }
+    throw new RequestError(405, "Method not allowed.");
+  } catch (error) {
+    if (error instanceof RequestError) return json(error.status, { error: error.message }, headers);
+    console.error("multiplayer request failed", error);
+    return json(500, { error: "Multiplayer service failed." }, headers);
+  }
+}
+
+export class MatchRoom {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+    this.room = null;
+    this.simulation = null;
+    this.clock = null;
+    this.lastClockAt = 0;
+    this.lastPersistedTick = 0;
+    this.resultSubmission = null;
+    this.messageBuckets = new Map();
+    this.operationTail = Promise.resolve();
+    this.lobbySyncTail = Promise.resolve();
+    this.ready = state.blockConcurrencyWhile(async () => {
+      this.room = await readRoomCheckpoint(state.storage);
+      if (!this.room) return;
+      this.room.matchId ??= crypto.randomUUID();
+      this.room.resultSubmittedAt ??= null;
+      this.room.finishedAt ??= null;
+      const now = Date.now();
+      this.room.tickets = (this.room.tickets ?? []).filter((ticket) => ticket.expiresAt > now);
+      const connectedIds = new Set(
+        this.state
+          .getWebSockets()
+          .map((socket) => socket.deserializeAttachment()?.playerId)
+          .filter(Boolean),
+      );
+      for (const [id, player] of Object.entries(this.room.players)) {
+        if (player) player.connected = connectedIds.has(id);
+      }
+      if (this.room.match) {
+        this.simulation = LocalCoopSimulation.restore(this.room.match);
+        this.lastPersistedTick = this.room.match.tick;
+      }
+      await this.persist();
+      if (this.room.phase === "running" && this.state.getWebSockets().length > 0)
+        this.ensureClock();
+    });
+  }
+
+  async fetch(request) {
+    await this.ready;
+    return this.exclusive(() => this.handleFetch(request));
+  }
+
+  async handleFetch(request) {
+    const url = new URL(request.url);
+    try {
+      if (request.method === "POST" && url.pathname === "/internal/create") {
+        if (this.room) return json(409, { error: "Room already exists." });
+        const body = await readJson(request);
+        const code = normalizeRoomCode(body.code);
+        const callsign = normalizeCallsign(body.callsign);
+        const visibility = body.visibility === "public" ? "public" : "private";
+        const name = visibility === "public" ? normalizeRoomName(body.name) : null;
+        if (!code || !callsign || (visibility === "public" && !name))
+          throw new RequestError(400, "Room details are invalid.");
+        const reconnectToken = newToken();
+        const now = Date.now();
+        this.room = {
+          version: 1,
+          matchId: crypto.randomUUID(),
+          code,
+          visibility,
+          name,
+          seed: randomSeed(),
+          phase: "waiting",
+          createdAt: now,
+          updatedAt: now,
+          expiresAt: now + NETWORK_CONFIG.waitingRoomLifetimeMs,
+          lastAdvancedAt: now,
+          players: {
+            p1: await this.makePlayer("p1", callsign, reconnectToken, now),
+            p2: null,
+          },
+          tickets: [],
+          match: null,
+          finishedAt: null,
+          resultSubmittedAt: null,
+        };
+        await this.persist();
+        await this.scheduleAlarm();
+        return this.sessionResponse(201, "p1", reconnectToken);
+      }
+      if (!this.room) return json(404, { error: "Room not found." });
+      if (request.method === "GET" && url.pathname === "/internal/status") {
+        return json(200, { room: this.view() });
+      }
+      if (request.method === "POST" && url.pathname === "/internal/join") {
+        const body = await readJson(request);
+        const callsign = normalizeCallsign(body.callsign);
+        if (!callsign) throw new RequestError(400, "Callsign is invalid.");
+        const joinToken = joinTokenFrom(body);
+        const tokenHash = joinToken ? await hash(joinToken) : null;
+        const previousAttempt = tokenHash ? this.room.joinAttempts?.[tokenHash] : null;
+        if (previousAttempt) {
+          const player = this.room.players[previousAttempt];
+          if (!player || player.left || player.tokenHash !== tokenHash) {
+            return json(409, { error: "This player has left the room.", code: "join_unavailable" });
+          }
+          if (player.callsign !== callsign) {
+            return json(409, { error: "Join details do not match.", code: "join_conflict" });
+          }
+          return this.sessionResponse(200, player.id, joinToken);
+        }
+        if (this.room.phase !== "waiting") return json(409, { error: "Match already started." });
+        const playerId = !this.room.players.p1 ? "p1" : !this.room.players.p2 ? "p2" : null;
+        if (!playerId) return json(409, { error: "Room is full." });
+        const reconnectToken = joinToken ?? newToken();
+        const previousUpdatedAt = this.room.updatedAt;
+        this.room.players[playerId] = await this.makePlayer(
+          playerId,
+          callsign,
+          reconnectToken,
+          Date.now(),
+        );
+        if (tokenHash) {
+          this.room.joinAttempts ??= {};
+          this.room.joinAttempts[tokenHash] = playerId;
+        }
+        this.touch();
+        try {
+          await this.persist();
+        } catch (error) {
+          // A retry must not recover an in-memory slot that was never committed.
+          this.room.players[playerId] = null;
+          if (tokenHash) delete this.room.joinAttempts[tokenHash];
+          this.room.updatedAt = previousUpdatedAt;
+          throw error;
+        }
+        if (this.room.visibility === "public" && !body.managedByLobby) {
+          // Lobby contention must not hold up a successfully committed direct join.
+          this.state.waitUntil(this.syncLobby());
+        }
+        this.broadcastRoom();
+        return this.sessionResponse(200, playerId, reconnectToken);
+      }
+      if (request.method === "POST" && url.pathname === "/internal/ticket") {
+        const token = bearer(request);
+        if (!token) return json(401, { error: "Reconnect token is invalid." });
+        const tokenHash = await hash(token);
+        const player = Object.values(this.room.players).find(
+          (candidate) => candidate?.tokenHash === tokenHash && !candidate.left,
+        );
+        if (!player) return json(401, { error: "Reconnect token is invalid." });
+        const socketTicket = newToken();
+        const now = Date.now();
+        const liveTickets = this.room.tickets.filter((ticket) => ticket.expiresAt > now);
+        // An aborted/slow HTTP attempt can finish after a newer ticket request.
+        // Keep a small overlap so it cannot invalidate the ticket already in flight.
+        this.room.tickets = liveTickets
+          .filter((ticket) => ticket.playerId !== player.id)
+          .concat(liveTickets.filter((ticket) => ticket.playerId === player.id).slice(-2))
+          .concat({
+            tokenHash: await hash(socketTicket),
+            playerId: player.id,
+            expiresAt: now + NETWORK_CONFIG.ticketLifetimeMs,
+          });
+        this.touch();
+        await this.persist();
+        return json(200, { socketTicket, expiresAt: now + NETWORK_CONFIG.ticketLifetimeMs });
+      }
+      if (request.method === "GET" && url.pathname === "/internal/socket") {
+        return this.connectSocket(request, url.searchParams.get("ticket"));
+      }
+      return json(404, { error: "Room route not found." });
+    } catch (error) {
+      if (error instanceof RequestError) return json(error.status, { error: error.message });
+      console.error("match room request failed", error);
+      return json(500, { error: "Match room failed." });
+    }
+  }
+
+  async makePlayer(id, callsign, reconnectToken, now) {
+    return {
+      id,
+      callsign,
+      tokenHash: await hash(reconnectToken),
+      ready: false,
+      connected: false,
+      left: false,
+      joinedAt: now,
+      lastSeenAt: now,
+      disconnectedAt: null,
+      connectionVersion: 0,
+    };
+  }
+
+  async connectSocket(request, ticket) {
+    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+      return json(426, { error: "A WebSocket upgrade is required." });
+    }
+    if (!ticket || !TOKEN_PATTERN.test(ticket))
+      return json(401, { error: "Socket ticket is invalid." });
+    const now = Date.now();
+    const ticketHash = await hash(ticket);
+    const index = this.room.tickets.findIndex(
+      (candidate) => candidate.tokenHash === ticketHash && candidate.expiresAt > now,
+    );
+    if (index < 0) return json(401, { error: "Socket ticket expired or was already used." });
+    const [{ playerId }] = this.room.tickets.splice(index, 1);
+    const player = this.room.players[playerId];
+    if (!player || player.left) return json(401, { error: "Player session is unavailable." });
+
+    for (const existing of this.state.getWebSockets()) {
+      if (existing.deserializeAttachment()?.playerId !== playerId) continue;
+      try {
+        this.sendError(existing, "session_replaced", "Connected from another tab.");
+        existing.close(4001, "Reconnected from another tab");
+      } catch {}
+    }
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+    this.state.acceptWebSocket(server, [playerId]);
+    player.connectionVersion = (player.connectionVersion ?? 0) + 1;
+    server.serializeAttachment({ playerId, connectionVersion: player.connectionVersion });
+    player.connected = true;
+    player.disconnectedAt = null;
+    player.lastSeenAt = now;
+    this.touch();
+    await this.persist();
+    await this.state.storage.deleteAlarm();
+    this.send(server, { type: "welcome", playerId, room: this.view() });
+    if (this.simulation) this.sendSnapshot(server);
+    this.broadcastRoom();
+    this.ensureClock();
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async webSocketMessage(socket, payload) {
+    await this.ready;
+    return this.exclusive(() => this.handleWebSocketMessage(socket, payload));
+  }
+
+  async handleWebSocketMessage(socket, payload) {
+    const attachment = socket.deserializeAttachment();
+    const playerId = attachment?.playerId;
+    const player = this.room?.players[playerId];
+    if (!player || player.left) return socket.close(4003, "Session is no longer valid");
+    if (attachment.connectionVersion !== player.connectionVersion) {
+      return socket.close(4001, "Session was replaced");
+    }
+    const size =
+      typeof payload === "string" ? encoder.encode(payload).byteLength : payload.byteLength;
+    if (size > NETWORK_CONFIG.maximumMessageBytes)
+      return socket.close(4009, "Message is too large");
+    if (!this.allowMessage(playerId)) return socket.close(4008, "Input rate exceeded");
+    let message;
+    try {
+      message = JSON.parse(
+        typeof payload === "string" ? payload : new TextDecoder().decode(payload),
+      );
+    } catch {
+      return this.sendError(socket, "invalid_json", "Message must be valid JSON.");
+    }
+    if (!message || typeof message !== "object" || Array.isArray(message)) {
+      return this.sendError(socket, "invalid_message", "Message must be an object.");
+    }
+    player.lastSeenAt = Date.now();
+    switch (message.type) {
+      case "heartbeat":
+        this.send(socket, { type: "pong", serverTime: Date.now() });
+        return;
+      case "ready":
+        if (this.room.phase !== "waiting" || typeof message.ready !== "boolean") {
+          return this.sendError(socket, "invalid_ready", "Ready state cannot be changed now.");
+        }
+        player.ready = message.ready;
+        this.touch();
+        await this.persist();
+        this.broadcastRoom();
+        return;
+      case "start":
+        return this.startMatch(socket);
+      case "developer":
+        return this.applyDeveloperCommand(socket, playerId, message);
+      case "pause":
+      case "resume":
+        return this.setPause(socket, playerId, message.type === "pause");
+      case "input":
+        return this.applyInput(socket, playerId, message);
+      case "buyWeapon":
+      case "selectWeapon":
+      case "buyDrone":
+      case "buyDroneUpgrade":
+      case "equipDroneWeapon":
+      case "chooseUpgrade":
+      case "rerollUpgrades":
+      case "activateOverdrive":
+      case "startBonusBoss":
+      case "declineBonusBoss":
+        return this.applyCombatCommand(socket, playerId, message);
+      case "leave":
+        return this.leave(socket, playerId);
+      default:
+        return this.sendError(socket, "unknown_message", "Message type is not supported.");
+    }
+  }
+
+  async webSocketClose(socket) {
+    // Complete the close handshake before persistence; otherwise browsers can
+    // remain CLOSING while the old room connection blocks recovery.
+    try {
+      socket.close(1000, "Connection closed");
+    } catch {
+      /* Already closed. */
+    }
+    await this.ready;
+    await this.exclusive(() => this.disconnect(socket));
+  }
+
+  async webSocketError(socket) {
+    try {
+      socket.close(4000, "Connection interrupted");
+    } catch {
+      /* Already closed. */
+    }
+    await this.ready;
+    await this.exclusive(() => this.disconnect(socket));
+  }
+
+  async disconnect(socket) {
+    const attachment = socket.deserializeAttachment();
+    const playerId = attachment?.playerId;
+    const player = this.room?.players[playerId];
+    if (!player) return;
+    if (attachment.connectionVersion !== player.connectionVersion) return;
+    const stillConnected = this.state
+      .getWebSockets(playerId)
+      .some((candidate) => candidate !== socket && candidate.readyState === WebSocket.OPEN);
+    player.connected = stillConnected;
+    if (!stillConnected) player.disconnectedAt = Date.now();
+    this.touch();
+    await this.persist();
+    this.broadcastRoom();
+    if (
+      !this.state
+        .getWebSockets()
+        .some((candidate) => candidate !== socket && candidate.readyState === WebSocket.OPEN)
+    ) {
+      this.stopClock();
+      await this.scheduleAlarm(1000);
+    }
+  }
+
+  allowMessage(playerId) {
+    const now = Date.now();
+    let bucket = this.messageBuckets.get(playerId);
+    if (!bucket || bucket.expiresAt <= now) {
+      bucket = { count: 0, expiresAt: now + 1000 };
+      this.messageBuckets.set(playerId, bucket);
+    }
+    bucket.count++;
+    return bucket.count <= NETWORK_CONFIG.inputMessagesPerSecond;
+  }
+
+  async startMatch(socket) {
+    if (this.room.phase !== "waiting")
+      return this.sendError(socket, "already_started", "Match already started.");
+    const players = Object.values(this.room.players);
+    if (
+      players.length !== NETWORK_CONFIG.maximumPlayers ||
+      players.some((player) => !player?.ready || player.left)
+    ) {
+      return this.sendError(socket, "not_ready", "Both players must be ready.");
+    }
+    this.simulation = new LocalCoopSimulation({
+      seed: this.room.seed,
+      callsigns: [this.room.players.p1.callsign, this.room.players.p2.callsign],
+    });
+    this.room.phase = "running";
+    this.room.match = this.simulation.snapshot(false);
+    this.room.lastAdvancedAt = Date.now();
+    this.lastClockAt = this.room.lastAdvancedAt;
+    this.lastPersistedTick = this.room.match.tick;
+    this.touch();
+    await this.persist();
+    this.state.waitUntil(this.syncLobby());
+    this.broadcastRoom();
+    this.broadcastSnapshot();
+    this.ensureClock();
+  }
+
+  applyInput(socket, playerId, message) {
+    if (this.room.pause) return;
+    if (this.room.phase !== "running" || !this.simulation) {
+      return this.sendError(socket, "not_running", "Match has not started.");
+    }
+    const values = [message.sequence, message.moveX, message.moveY, message.aimAngle];
+    if (!values.every(Number.isFinite) || !Number.isSafeInteger(message.sequence)) {
+      return this.sendError(socket, "invalid_input", "Input values are invalid.");
+    }
+    const accepted = this.simulation.submit({
+      type: "input",
+      playerId,
+      sequence: message.sequence,
+      moveX: message.moveX,
+      moveY: message.moveY,
+      aimAngle: message.aimAngle,
+      fire: Boolean(message.fire),
+      missile: Boolean(message.missile),
+      interact: Boolean(message.interact),
+    });
+    if (!accepted) this.sendError(socket, "stale_input", "Input sequence was already processed.");
+  }
+
+  async applyDeveloperCommand(socket, playerId, message) {
+    if (this.room.phase !== "running" || !this.simulation)
+      return this.sendError(socket, "not_running", "Match has not started.");
+    try {
+      if (typeof message.token !== "string" || !TOKEN_PATTERN.test(message.token))
+        throw new RequestError(401, "Developer authorization is required.");
+      await requireDeveloperSession(
+        new Request("https://internal/", {
+          headers: { Authorization: `Bearer ${message.token}` },
+        }),
+        this.env,
+      );
+    } catch {
+      return this.sendError(
+        socket,
+        "developer_required",
+        "Developer authorization expired or was denied.",
+      );
+    }
+    if (!this.simulation.developer(playerId, message.command))
+      return this.sendError(socket, "invalid_command", "Developer command was invalid.");
+    // Console-assisted runs must never become competitive records.
+    this.room.assisted = true;
+    this.room.match = this.simulation.snapshot(false);
+    await this.persist();
+    this.broadcastRoom();
+    this.broadcastSnapshot();
+  }
+
+  async applyCombatCommand(socket, playerId, message) {
+    if (this.room.phase !== "running" || !this.simulation) {
+      return this.sendError(socket, "not_running", "Match has not started.");
+    }
+    if (!Number.isSafeInteger(message.sequence))
+      return this.sendError(socket, "invalid_command", "Command sequence is invalid.");
+    const command = { type: message.type, playerId, sequence: message.sequence };
+    if (message.type === "buyWeapon" || message.type === "selectWeapon") {
+      if (!WEAPONS.has(message.weapon))
+        return this.sendError(socket, "invalid_command", "Weapon is invalid.");
+      command.weapon = message.weapon;
+    } else if (message.type === "buyDroneUpgrade") {
+      if (!DRONE_UPGRADES.has(message.upgrade))
+        return this.sendError(socket, "invalid_command", "Drone upgrade is invalid.");
+      command.upgrade = message.upgrade;
+    } else if (message.type === "equipDroneWeapon") {
+      if (message.weapon !== null && !WEAPONS.has(message.weapon))
+        return this.sendError(socket, "invalid_command", "Drone weapon is invalid.");
+      command.weapon = message.weapon;
+    } else if (message.type === "chooseUpgrade") {
+      if (
+        typeof message.upgrade !== "string" ||
+        message.upgrade.length < 1 ||
+        message.upgrade.length > 48
+      )
+        return this.sendError(socket, "invalid_command", "Upgrade is invalid.");
+      command.upgrade = message.upgrade;
+    }
+    if (this.room.pause) {
+      if (!this.simulation.pausedCommand(command))
+        return this.sendError(
+          socket,
+          "rejected_command",
+          "Command was stale or not permitted while paused.",
+        );
+      this.room.match = this.simulation.snapshot(false);
+      await this.persist();
+      this.broadcastSnapshot();
+      return;
+    }
+    if (!this.simulation.submit(command))
+      this.sendError(socket, "rejected_command", "Command was stale or not permitted.");
+  }
+
+  async leave(socket, playerId) {
+    const player = this.room.players[playerId];
+    player.left = true;
+    player.ready = false;
+    player.connected = false;
+    player.disconnectedAt = Date.now();
+    player.tokenHash = null;
+    this.room.tickets = this.room.tickets.filter((ticket) => ticket.playerId !== playerId);
+    if (this.room.phase === "waiting") this.room.players[playerId] = null;
+    if (Object.values(this.room.players).filter(Boolean).length === 0) {
+      this.room.phase = "closed";
+      this.room.expiresAt = Date.now() + NETWORK_CONFIG.completedRoomLifetimeMs;
+      this.stopClock();
+    }
+    this.touch();
+    await this.persist();
+    this.broadcastRoom();
+    socket.close(1000, "Left room");
+    if (
+      this.room.phase !== "waiting" &&
+      Object.values(this.room.players)
+        .filter(Boolean)
+        .every((candidate) => candidate.left)
+    ) {
+      this.room.phase = "closed";
+      this.room.finishedAt ??= Date.now();
+      this.room.expiresAt = Date.now() + NETWORK_CONFIG.completedRoomLifetimeMs;
+      this.stopClock();
+    }
+    this.state.waitUntil(this.syncLobby());
+    await this.persist();
+    if (this.room.match && this.room.phase === "closed") await this.submitResult("abandoned");
+    await this.scheduleAlarm(this.room.resultSubmittedAt ? undefined : 1000);
+  }
+
+  ensureClock() {
+    if (this.clock || this.room?.phase !== "running" || !this.simulation) return;
+    this.lastClockAt = Date.now();
+    this.clock = setInterval(() => this.tick(), 1000 / 30);
+  }
+
+  async setPause(socket, playerId, paused) {
+    if (this.room.phase !== "running" || this.simulation?.state.phase !== "running")
+      return this.sendError(socket, "not_running", "Pause is available during flight.");
+    if (paused && this.room.pause) return; // Repeated requests cannot extend the deadline.
+    if (!paused && !this.room.pause) return;
+    this.room.pause = paused ? { playerId, until: Date.now() + 30_000 } : null;
+    this.simulation.clearControls();
+    this.lastClockAt = Date.now();
+    this.room.lastAdvancedAt = this.lastClockAt;
+    this.room.match = this.simulation.snapshot(false);
+    this.broadcastSnapshot(this.room.match);
+    await this.persist();
+  }
+
+  stopClock() {
+    if (this.clock) clearInterval(this.clock);
+    this.clock = null;
+  }
+
+  tick() {
+    if (!this.simulation || this.room.phase !== "running") return this.stopClock();
+    const now = Date.now();
+    if (this.room.pause) {
+      this.lastClockAt = now;
+      this.room.lastAdvancedAt = now;
+      if (now < this.room.pause.until) return;
+      this.room.pause = null;
+      this.simulation.clearControls();
+      this.room.match = this.simulation.snapshot(false);
+      this.broadcastSnapshot(this.room.match);
+      this.state.waitUntil(this.persist());
+      return;
+    }
+    const elapsed = Math.max(0, (now - this.lastClockAt) / 1000);
+    this.lastClockAt = now;
+    const steps = this.simulation.advance(elapsed);
+    this.room.lastAdvancedAt = now;
+    if (steps === 0) return;
+    const current = this.simulation.state;
+    const shouldBroadcast =
+      current.tick - (this.lastBroadcastTick ?? 0) >= NETWORK_CONFIG.snapshotEveryTicks;
+    const shouldPersist = current.tick - this.lastPersistedTick >= 30;
+    const finished = current.phase === "victory" || current.phase === "defeat";
+    if (!shouldBroadcast && !shouldPersist && !finished) return;
+    this.room.match = this.simulation.snapshot(false);
+    if (shouldBroadcast) {
+      this.lastBroadcastTick = current.tick;
+      this.broadcastSnapshot(this.room.match);
+    }
+    if (shouldPersist) {
+      this.closeIdleSockets(now);
+      this.lastPersistedTick = this.room.match.tick;
+      this.touch();
+      this.state.waitUntil(this.persist());
+    }
+    if (finished) {
+      const outcome = this.room.match.phase;
+      this.room.phase = "finished";
+      this.room.finishedAt ??= now;
+      this.room.expiresAt = now + NETWORK_CONFIG.completedRoomLifetimeMs;
+      this.stopClock();
+      this.broadcastSnapshot();
+      this.broadcastRoom();
+      this.state.waitUntil(
+        this.persist()
+          .then(() => this.submitResult(outcome))
+          .then(() => this.scheduleAlarm(this.room?.resultSubmittedAt ? undefined : 5000)),
+      );
+    }
+  }
+
+  async alarm() {
+    await this.ready;
+    await this.exclusive(() => this.handleAlarm());
+  }
+
+  async handleAlarm() {
+    if (!this.room) return;
+    const now = Date.now();
+    if (this.room.expiresAt <= now) {
+      this.stopClock();
+      this.state.waitUntil(this.syncLobby(true));
+      await this.state.storage.deleteAll();
+      this.room = null;
+      this.simulation = null;
+      return;
+    }
+    if (
+      this.room.phase === "running" &&
+      this.simulation &&
+      this.state.getWebSockets().length === 0
+    ) {
+      if (this.room.pause) {
+        this.room.lastAdvancedAt = Math.min(now, this.room.pause.until);
+        if (now >= this.room.pause.until) this.room.pause = null;
+      }
+      const elapsedTicks = this.room.pause
+        ? 0
+        : Math.min(30, Math.floor((now - this.room.lastAdvancedAt) / (COOP_FIXED_DT * 1000)));
+      if (elapsedTicks > 0) {
+        this.simulation.stepTicks(elapsedTicks);
+        this.room.lastAdvancedAt += elapsedTicks * COOP_FIXED_DT * 1000;
+        this.room.match = this.simulation.snapshot(false);
+      }
+      const active = Object.values(this.room.players).filter((player) => player && !player.left);
+      const latestDisconnect = Math.max(...active.map((player) => player.disconnectedAt ?? now));
+      if (active.length === 0 || now - latestDisconnect >= NETWORK_CONFIG.reconnectGraceMs) {
+        this.room.phase = "closed";
+        this.room.finishedAt ??= now;
+        this.room.expiresAt = now + NETWORK_CONFIG.completedRoomLifetimeMs;
+      }
+      if (this.room.match?.phase === "victory" || this.room.match?.phase === "defeat") {
+        this.room.phase = "finished";
+        this.room.finishedAt ??= now;
+        this.room.expiresAt = now + NETWORK_CONFIG.completedRoomLifetimeMs;
+      }
+      this.touch();
+      await this.persist();
+    }
+    if (
+      !this.room.resultSubmittedAt &&
+      this.room.match &&
+      (this.room.phase === "finished" || this.room.phase === "closed")
+    ) {
+      const status =
+        this.room.match.phase === "victory" || this.room.match.phase === "defeat"
+          ? this.room.match.phase
+          : "abandoned";
+      await this.submitResult(status);
+    }
+    await this.scheduleAlarm(
+      this.room.phase === "running" ? 1000 : this.room.resultSubmittedAt ? undefined : 5000,
+    );
+  }
+
+  async scheduleAlarm(delay) {
+    if (!this.room) return;
+    const target =
+      delay === undefined ? this.room.expiresAt : Math.min(this.room.expiresAt, Date.now() + delay);
+    await this.state.storage.setAlarm(target);
+  }
+
+  view() {
+    if (!this.room) return null;
+    const playerCount = Object.values(this.room.players).filter(
+      (player) => player && !player.left,
+    ).length;
+    return {
+      code: this.room.code,
+      visibility: this.room.visibility ?? "private",
+      name: this.room.name ?? null,
+      phase: this.room.phase,
+      assisted: Boolean(this.room.assisted),
+      playerCount,
+      capacity: NETWORK_CONFIG.maximumPlayers,
+      joinable: this.room.phase === "waiting" && playerCount < NETWORK_CONFIG.maximumPlayers,
+      createdAt: this.room.createdAt,
+      expiresAt: this.room.expiresAt,
+      players: Object.fromEntries(
+        Object.entries(this.room.players).map(([id, player]) => [
+          id,
+          player
+            ? {
+                id: player.id,
+                callsign: player.callsign,
+                ready: player.ready,
+                connected: player.connected,
+                left: player.left,
+              }
+            : null,
+        ]),
+      ),
+    };
+  }
+
+  sessionResponse(status, playerId, reconnectToken) {
+    return json(
+      status,
+      {
+        roomCode: this.room.code,
+        playerId,
+        reconnectToken,
+        room: this.view(),
+      },
+      new Headers({ "X-Helio-Room-Revision": String(this.room.updatedAt) }),
+    );
+  }
+
+  async syncLobby(remove = false) {
+    if (!this.room || (this.room.visibility ?? "private") !== "public") return;
+    // Never await this while holding the room's operation lock: Quick Join
+    // holds the lobby lock while asking a room to allocate its final slot.
+    const body = JSON.stringify(
+      remove
+        ? { code: this.room.code, revision: this.room.updatedAt }
+        : { room: { ...this.view(), revision: this.room.updatedAt } },
+    );
+    const synchronize = this.lobbySyncTail.then(async () => {
+      let timeout;
+      try {
+        const response = await Promise.race([
+          lobbyRequest(this.env, remove ? "/internal/delete" : "/internal/upsert", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body,
+          }),
+          new Promise((_, reject) => {
+            timeout = setTimeout(() => reject(new Error("Lobby timeout")), 5000);
+          }),
+        ]);
+        if (!response.ok) throw new Error("Lobby update rejected");
+      } catch (error) {
+        console.error(
+          "lobby synchronization failed",
+          error instanceof Error ? error.name : "Error",
+        );
+      } finally {
+        clearTimeout(timeout);
+      }
+    });
+    this.lobbySyncTail = synchronize;
+    return synchronize;
+  }
+
+  touch() {
+    if (this.room) this.room.updatedAt = Math.max(Date.now(), (this.room.updatedAt ?? 0) + 1);
+  }
+
+  async persist() {
+    if (this.room) await writeRoomCheckpoint(this.state.storage, this.room);
+  }
+
+  async submitResult(status) {
+    if (!this.room?.match || this.room.resultSubmittedAt) return true;
+    if (this.room.assisted) {
+      this.room.resultSubmittedAt = Date.now();
+      await this.persist();
+      return true;
+    }
+    if (this.resultSubmission) return this.resultSubmission;
+    this.resultSubmission = (async () => {
+      try {
+        const finishedAt = this.room.finishedAt ?? Date.now();
+        this.room.finishedAt = finishedAt;
+        await writeCoopResult(this.env.DB, this.room, status);
+        this.room.resultSubmittedAt = Date.now();
+        await this.persist();
+        return true;
+      } catch (error) {
+        console.error(
+          "co-op result submission failed",
+          error instanceof Error ? error.name : "Error",
+        );
+        return false;
+      } finally {
+        this.resultSubmission = null;
+      }
+    })();
+    return this.resultSubmission;
+  }
+
+  async exclusive(operation) {
+    let release;
+    const previous = this.operationTail;
+    this.operationTail = new Promise((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  closeIdleSockets(now) {
+    for (const socket of this.state.getWebSockets()) {
+      const player = this.room.players[socket.deserializeAttachment()?.playerId];
+      if (player && now - player.lastSeenAt > NETWORK_CONFIG.heartbeatTimeoutMs) {
+        try {
+          socket.close(4000, "Heartbeat timed out");
+        } catch {}
+      }
+    }
+  }
+
+  send(socket, message) {
+    try {
+      socket.send(JSON.stringify(message));
+    } catch {}
+  }
+
+  sendError(socket, code, message) {
+    this.send(socket, { type: "error", code, message });
+  }
+
+  broadcast(message) {
+    const encoded = JSON.stringify(message);
+    for (const socket of this.state.getWebSockets()) {
+      try {
+        socket.send(encoded);
+      } catch {}
+    }
+  }
+
+  broadcastRoom() {
+    this.broadcast({ type: "room", room: this.view() });
+  }
+
+  sendSnapshot(socket) {
+    if (!this.simulation) return;
+    const state = this.simulation.snapshot(false);
+    this.send(socket, {
+      type: "snapshot",
+      pause: this.room.pause ?? null,
+      serverTime: Date.now(),
+      serverTick: state.tick,
+      acknowledgements: {
+        p1: state.players.p1.lastInputSequence,
+        p2: state.players.p2.lastInputSequence,
+      },
+      state: createWireState(state),
+      events: [],
+    });
+  }
+
+  broadcastSnapshot(snapshot) {
+    if (!this.simulation) return;
+    const state = snapshot ?? this.simulation.snapshot(false);
+    this.broadcast({
+      type: "snapshot",
+      pause: this.room.pause ?? null,
+      serverTime: Date.now(),
+      serverTick: state.tick,
+      acknowledgements: {
+        p1: state.players.p1.lastInputSequence,
+        p2: state.players.p2.lastInputSequence,
+      },
+      state: createWireState(state),
+      events: this.simulation.drainEvents(),
+    });
+  }
+}
+
+export class LobbyIndex {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+    this.rooms = {};
+    this.operationTail = Promise.resolve();
+    this.ready = state.blockConcurrencyWhile(async () => {
+      this.rooms = (await state.storage.get("rooms")) ?? {};
+      await this.pruneAndPersist();
+    });
+  }
+
+  async fetch(request) {
+    await this.ready;
+    return this.exclusive(() => this.handleFetch(request));
+  }
+
+  async handleFetch(request) {
+    const url = new URL(request.url);
+    try {
+      if (request.method === "GET" && url.pathname === "/internal/list") {
+        await this.pruneAndPersist();
+        const requested = Number(url.searchParams.get("limit") || NETWORK_CONFIG.publicListDefault);
+        if (!Number.isSafeInteger(requested) || requested < 1)
+          throw new RequestError(400, "List limit is invalid.");
+        const limit = Math.min(requested, NETWORK_CONFIG.publicListMaximum);
+        const rawCursor = url.searchParams.get("cursor") || "";
+        const cursor = parseLobbyCursor(rawCursor);
+        if (rawCursor && !cursor) throw new RequestError(400, "List cursor is invalid.");
+        const rooms = this.sortedRooms().filter(
+          (room) =>
+            !cursor ||
+            room.createdAt > cursor.createdAt ||
+            (room.createdAt === cursor.createdAt && room.code > cursor.code),
+        );
+        const page = rooms.slice(0, limit);
+        const nextCursor = rooms.length > limit ? encodeLobbyCursor(page.at(-1)) : null;
+        return json(200, { rooms: page, nextCursor });
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/create") {
+        const body = await readJson(request);
+        const callsign = normalizeCallsign(body.callsign);
+        const name = normalizeRoomName(body.name);
+        if (!callsign || !name) throw new RequestError(400, "Public room details are invalid.");
+        for (let attempt = 0; attempt < 20; attempt++) {
+          const code = newRoomCode();
+          const response = await roomRequest(this.env, code, "/internal/create", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              code,
+              callsign,
+              name,
+              visibility: "public",
+              managedByLobby: true,
+            }),
+          });
+          if (response.status === 409) continue;
+          const data = await response.json();
+          if (!response.ok) return json(response.status, data);
+          this.upsert({
+            ...data.room,
+            revision: Number(response.headers.get("X-Helio-Room-Revision")),
+          });
+          await this.persist();
+          return json(201, data);
+        }
+        throw new RequestError(503, "Unable to allocate a public room. Try again.");
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/quick") {
+        const body = await readJson(request);
+        const callsign = normalizeCallsign(body.callsign);
+        if (!callsign) throw new RequestError(400, "Callsign is invalid.");
+        const joinToken = joinTokenFrom(body);
+        const attemptKey = joinToken ? `join:${await hash(joinToken)}` : null;
+        const previous = attemptKey ? await this.state.storage.get(attemptKey) : null;
+        if (previous && previous.callsign !== callsign) {
+          return json(409, { error: "Join details do not match.", code: "join_conflict" });
+        }
+        await this.pruneAndPersist();
+        const rooms = this.sortedRooms().filter((candidate) => candidate.joinable);
+        // The target is durable before allocation. A lost response or a Worker
+        // restart therefore resumes this room instead of claiming another slot.
+        if (previous) rooms.unshift({ code: previous.roomCode });
+        const tried = new Set();
+        for (const room of rooms) {
+          if (tried.has(room.code)) continue;
+          tried.add(room.code);
+          let expiresAt = previous?.expiresAt;
+          if (attemptKey && room.code !== previous?.roomCode) {
+            expiresAt = Date.now() + NETWORK_CONFIG.waitingRoomLifetimeMs;
+            await this.state.storage.put(attemptKey, {
+              roomCode: room.code,
+              callsign,
+              expiresAt,
+            });
+          }
+          if (attemptKey) {
+            const alarm = await this.state.storage.getAlarm();
+            if (!alarm || alarm > expiresAt) await this.state.storage.setAlarm(expiresAt);
+          }
+          const response = await roomRequest(this.env, room.code, "/internal/join", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              callsign,
+              managedByLobby: true,
+              ...(joinToken ? { joinToken } : {}),
+            }),
+          });
+          const data = await response.json();
+          if (response.ok) {
+            this.upsert({
+              ...data.room,
+              revision: Number(response.headers.get("X-Helio-Room-Revision")),
+            });
+            try {
+              await this.persist();
+            } catch (error) {
+              // The room owns the allocation, and its retry target is already
+              // durable. A stale discovery summary cannot invalidate the join.
+              console.error("joined room listing update failed", error);
+            }
+            return json(200, data);
+          }
+          if (data.code === "join_unavailable" || data.code === "join_conflict") {
+            return json(response.status, data);
+          }
+          if (response.status === 404 || response.status === 409) {
+            if (attemptKey) await this.state.storage.delete(attemptKey);
+            if (this.rooms[room.code]?.phase === "waiting") {
+              this.upsert({
+                code: room.code,
+                phase: "closed",
+                revision: this.rooms[room.code].revision,
+              });
+            }
+            await this.persist();
+            continue;
+          }
+          return json(response.status, data);
+        }
+        return json(404, { error: "No joinable public rooms are available." });
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/upsert") {
+        const body = await readJson(request);
+        this.upsert(body.room);
+        await this.persist();
+        return new Response(null, { status: 204 });
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/delete") {
+        const body = await readJson(request);
+        const code = normalizeRoomCode(body.code);
+        if (!code) throw new RequestError(400, "Room code is invalid.");
+        this.upsert({ code, phase: "closed", revision: body.revision });
+        await this.persist();
+        return new Response(null, { status: 204 });
+      }
+      return json(404, { error: "Lobby route not found." });
+    } catch (error) {
+      if (error instanceof RequestError) return json(error.status, { error: error.message });
+      console.error("lobby index request failed", error);
+      return json(500, { error: "Lobby index failed." });
+    }
+  }
+
+  upsert(room) {
+    const code = normalizeRoomCode(room?.code);
+    const name = normalizeRoomName(room?.name);
+    if (!code) return;
+    const revision = Number.isSafeInteger(room.revision)
+      ? room.revision
+      : Number(room.createdAt) || 0;
+    const previous = this.rooms[code];
+    if (
+      previous &&
+      (revision < (previous.revision ?? 0) ||
+        (revision === (previous.revision ?? 0) &&
+          (previous.phase !== "waiting" || room.phase === "waiting")))
+    )
+      return;
+    if (!code || !name || room.visibility !== "public" || room.phase !== "waiting") {
+      // A late waiting-room RPC cannot resurrect a newer started/deleted room.
+      this.rooms[code] = {
+        code,
+        phase: "closed",
+        revision,
+        expiresAt: Date.now() + NETWORK_CONFIG.waitingRoomLifetimeMs,
+      };
+      return;
+    }
+    const playerCount = Math.max(
+      0,
+      Math.min(NETWORK_CONFIG.maximumPlayers, Math.floor(Number(room.playerCount) || 0)),
+    );
+    this.rooms[code] = {
+      code,
+      name,
+      phase: "waiting",
+      revision,
+      playerCount,
+      capacity: NETWORK_CONFIG.maximumPlayers,
+      joinable: playerCount < NETWORK_CONFIG.maximumPlayers,
+      createdAt: Number.isFinite(room.createdAt) ? room.createdAt : Date.now(),
+      expiresAt: Number.isFinite(room.expiresAt)
+        ? room.expiresAt
+        : Date.now() + NETWORK_CONFIG.waitingRoomLifetimeMs,
+    };
+  }
+
+  sortedRooms() {
+    return Object.values(this.rooms)
+      .filter((room) => room.phase === "waiting")
+      .sort(
+        (left, right) => left.createdAt - right.createdAt || left.code.localeCompare(right.code),
+      )
+      .map(({ expiresAt: _expiresAt, revision: _revision, ...room }) => room);
+  }
+
+  async pruneAndPersist() {
+    const now = Date.now();
+    let changed = false;
+    for (const [code, room] of Object.entries(this.rooms)) {
+      if (room.expiresAt > now) continue;
+      delete this.rooms[code];
+      changed = true;
+    }
+    if (changed) await this.persist();
+  }
+
+  async persist() {
+    await this.state.storage.put("rooms", this.rooms);
+  }
+
+  async alarm() {
+    await this.ready;
+    await this.exclusive(async () => {
+      await this.pruneAndPersist();
+      const now = Date.now();
+      let nextExpiry = Infinity;
+      let startAfter;
+      while (true) {
+        const attempts = await this.state.storage.list({
+          prefix: "join:",
+          startAfter,
+          limit: 1000,
+        });
+        for (const [key, attempt] of attempts) {
+          if (attempt.expiresAt <= now) await this.state.storage.delete(key);
+          else nextExpiry = Math.min(nextExpiry, attempt.expiresAt);
+          startAfter = key;
+        }
+        if (attempts.size < 1000) break;
+      }
+      if (Number.isFinite(nextExpiry)) await this.state.storage.setAlarm(nextExpiry);
+    });
+  }
+
+  async exclusive(operation) {
+    let release;
+    const previous = this.operationTail;
+    this.operationTail = new Promise((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+}
+
+export default { fetch: handleRequest };

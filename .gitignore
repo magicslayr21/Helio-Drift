@@ -1,2 +1,13 @@
 node_modules/
 dist/
+
+server/data/
+.env
+.env.local
+.env.*.local
+.wrangler/
+.dev.vars
+.dev.vars.*
+worker-dist/
+multiplayer-dist/
+leaderboard-backup*.sql

@@ -26,11 +26,17 @@ const MANUAL_ROWS = [
   {
     n: "05",
     title: "Pick up where you left off",
-    body: "Your run saves automatically in this browser. Reopen the game to continue with your wave, hull, weapons, credits, and upgrades. Death clears that run immediately; high scores remain.",
+    body: "Your run saves automatically in this browser. Reopen the game to continue with your wave, health, weapons, credits, and upgrades. Death clears that run immediately; high scores remain.",
   },
 ];
 
-export default function SpecSection({ developer }: { developer: boolean }) {
+export default function SpecSection({
+  developer,
+  multiplayer = false,
+}: {
+  developer: boolean;
+  multiplayer?: boolean;
+}) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
@@ -87,7 +93,11 @@ export default function SpecSection({ developer }: { developer: boolean }) {
                       <h3 className="text-[12px] font-semibold uppercase tracking-[0.18em] text-amber-hot">
                         {row.title}
                       </h3>
-                      <p className="mt-2 text-[11.5px] leading-relaxed text-amber/58">{row.body}</p>
+                      <p className="mt-2 text-[11.5px] leading-relaxed text-amber/58">
+                        {multiplayer && row.n === "05"
+                          ? "Reconnect from the multiplayer menu to reclaim your pilot while the room is still available. Campaign saves are separate. Multiplayer progress and records may be wiped during alpha."
+                          : row.body}
+                      </p>
                     </div>
                   </li>
                 ))}
@@ -97,21 +107,35 @@ export default function SpecSection({ developer }: { developer: boolean }) {
               <p className="legend text-amber/70">Control Map</p>
               <dl className="mt-3 space-y-2 text-[11px]">
                 {[
-                  [
-                    "Steer / Thrust",
-                    "WASD · Arrow keys · Left-half touch stick · Mouse or Hybrid Aim (setting)",
-                  ],
-                  ["Fire", "Space · Ctrl · Hold right half of screen · Auto (setting)"],
-                  ["Cycle weapon", "Tab / Q · 1–8 direct · On-screen WEAPON button"],
-                  ["Missiles", "E · On-screen MISSILE button"],
-                  ["Pause", "P or Esc"],
-                  ["Instant restart", "R (pause & game over)"],
-                  ["Mute audio", "♪ toggle, top-right of the bezel"],
-                  [
-                    "Weapon shop",
-                    "SHOP bezel button · Pause → Weapon Shop · Level-up intermission",
-                  ],
-                  ["Settings", "Pause → Settings (also on the start screen)"],
+                  ...(multiplayer
+                    ? [
+                        ["Move / aim", "WASD / arrows · Pointer aim · On-screen movement buttons"],
+                        ["Fire", "Space / click · Auto-fire or Trackpad in Settings"],
+                        ["Weapon slots", "1 / 2 · Choose weapons in the weapon bar"],
+                        ["Missiles", "E · On-screen MISSILE button"],
+                        ["Revive", "Hold F near a disabled teammate"],
+                        ["Overdrive", "Q · Shared Overdrive button"],
+                        ["Pause", "Esc · Both pilots pause for up to 30 seconds"],
+                        ["Loadout", "Loadout button · Combat continues while browsing"],
+                        ["Audio / settings", "Pause → Settings"],
+                      ]
+                    : [
+                        [
+                          "Steer / Thrust",
+                          "WASD · Arrow keys · Left-half touch stick · Mouse or Hybrid Aim (setting)",
+                        ],
+                        ["Fire", "Space · Ctrl · Hold right half of screen · Auto (setting)"],
+                        ["Cycle weapon", "Tab / Q · 1 / 2 quick slots · On-screen WEAPON button"],
+                        ["Missiles", "E · On-screen MISSILE button"],
+                        ["Pause", "P or Esc"],
+                        ["Instant restart", "R (pause & game over)"],
+                        ["Mute audio", "♪ toggle, top-right of the bezel"],
+                        [
+                          "Weapon shop",
+                          "SHOP bezel button · Pause → Weapon Shop · Level-up intermission",
+                        ],
+                        ["Settings", "Pause → Settings (also on the start screen)"],
+                      ]),
                 ].map(([k, v]) => (
                   <div
                     key={k}
@@ -125,6 +149,26 @@ export default function SpecSection({ developer }: { developer: boolean }) {
             </div>
           </div>
         </div>
+
+        {multiplayer && (
+          <div className="mt-6 border border-steel/40 plate p-4">
+            <p className="legend">Co-op specialist signatures</p>
+            <ul className="mt-3 space-y-2 text-[11px] text-amber-hot/75">
+              <li>
+                <strong className="text-ice">Tether Sentinel:</strong> shields nearby asteroids and
+                enemies. Destroy the emitter to collapse its links. Bosses are never shielded.
+              </li>
+              <li>
+                <strong className="text-amber">Mine Warden:</strong> a three-pronged siege hull that
+                leaves armed mines behind.
+              </li>
+              <li>
+                <strong className="text-magenta">Rift Spiker:</strong> from wave 16, rotating
+                volleys and a purple gravity warning. Leave the marked ring before it detonates.
+              </li>
+            </ul>
+          </div>
+        )}
 
         {developer && (
           <details className="border border-steel/40 bg-graphite/40">

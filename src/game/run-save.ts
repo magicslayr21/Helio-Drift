@@ -1,4 +1,21 @@
 import type { Game } from "./engine";
+import type { RunReport } from "../leaderboard/types";
+import {
+  weaponMaxLevel,
+  WEAPON_ORDER,
+  SALVAGE_UPGRADES,
+  SALVAGE_UPGRADE_ORDER,
+  STAT_UPGRADES,
+} from "./balance";
+
+export interface SavedLeaderboardRun {
+  runId: string;
+  revision: number;
+  durationSeconds: number;
+  deathCause: string | null;
+  assisted: boolean;
+  finalReport: RunReport | null;
+}
 
 const KEY = "helios-run-v1";
 // Only simulation data belongs in a save. Developer access, god mode, input,
@@ -9,6 +26,7 @@ const FIELDS = [
   "stacks",
   "rocks",
   "drones",
+  "campaignTethers",
   "boss",
   "bullets",
   "pickups",
@@ -36,7 +54,13 @@ const FIELDS = [
   "bannerT",
 ] as const;
 type RunState = Pick<Game, (typeof FIELDS)[number]>;
-type SavedRun = { version: 1; id: string; state: RunState | null };
+type SavedRun = {
+  version: 1;
+  balanceVersion?: number;
+  id: string;
+  state: RunState | null;
+  leaderboard?: SavedLeaderboardRun;
+};
 
 function read(): SavedRun | null {
   const raw = localStorage.getItem(KEY);
@@ -50,6 +74,53 @@ function finiteData(value: unknown): boolean {
   if (Array.isArray(value)) return value.every(finiteData);
   if (value && typeof value === "object") return Object.values(value).every(finiteData);
   return value === null || ["string", "boolean"].includes(typeof value);
+}
+
+function validLeaderboard(value: unknown, id: string, game: Game): value is SavedLeaderboardRun {
+  if (!value || typeof value !== "object" || !finiteData(value)) return false;
+  const run = value as SavedLeaderboardRun;
+  if (
+    run.runId !== id ||
+    !Number.isSafeInteger(run.revision) ||
+    run.revision < 0 ||
+    typeof run.durationSeconds !== "number" ||
+    run.durationSeconds < 0 ||
+    (run.deathCause !== null && typeof run.deathCause !== "string") ||
+    typeof run.assisted !== "boolean"
+  )
+    return false;
+  const report = run.finalReport;
+  return (
+    report === null ||
+    (!!report &&
+      report.runId === id &&
+      Number.isSafeInteger(report.revision) &&
+      report.revision >= 0 &&
+      report.revision <= run.revision &&
+      [
+        report.score,
+        report.credits,
+        report.wave,
+        report.level,
+        report.durationSeconds,
+        report.sector,
+      ].every((n) => Number.isSafeInteger(n) && n >= 0) &&
+      ["sectors", "mk6", "mk6-cleared"].includes(report.stage) &&
+      ["dead", "victory"].includes(report.status) &&
+      typeof report.assisted === "boolean" &&
+      (report.deathCause === null || typeof report.deathCause === "string") &&
+      Object.prototype.hasOwnProperty.call(game.p.weapons, report.primary) &&
+      matches(report.weapons, game.p.weapons) &&
+      !!report.upgrades &&
+      typeof report.upgrades === "object" &&
+      Object.values(report.upgrades).every((n) => Number.isSafeInteger(n) && n >= 0) &&
+      !!report.drone &&
+      typeof report.drone.purchased === "boolean" &&
+      (report.drone.weapon === null ||
+        Object.prototype.hasOwnProperty.call(game.p.weapons, report.drone.weapon)) &&
+      !!report.drone.upgrades &&
+      matches({ shield: 0, ...report.drone.upgrades }, game.salvageDrone.upgrades))
+  );
 }
 
 // Match required fields against a fresh run before assigning any saved data.
@@ -72,10 +143,18 @@ function matches(value: unknown, template: unknown): boolean {
 export class RunSave {
   private id: string | null = null;
   private ended = false;
+  private written = false;
+  private previousId: string | null = null;
 
   begin(game: Game) {
-    this.id = crypto.randomUUID();
+    this.id = game.leaderboardRun?.runId ?? crypto.randomUUID();
     this.ended = false;
+    this.written = false;
+    try {
+      this.previousId = read()?.id ?? null;
+    } catch {
+      this.previousId = null;
+    }
     this.write(game, true);
   }
 
@@ -83,6 +162,12 @@ export class RunSave {
     try {
       const saved = read();
       const state = saved?.state;
+      if (state?.p && state.p.rangeMul === undefined)
+        state.p.rangeMul = 1 + Math.min(3, Math.max(0, state.stacks?.range ?? 0)) * (0.4 / 3);
+      if (state && state.campaignTethers === undefined) state.campaignTethers = [];
+      // New modules default to unpurchased in saves from earlier alpha releases.
+      if (state?.salvageDrone?.upgrades && state.salvageDrone.upgrades.shield === undefined)
+        state.salvageDrone.upgrades.shield = 0;
       if (
         !saved ||
         !state ||
@@ -122,9 +207,63 @@ export class RunSave {
         return false;
       this.id = saved.id;
       this.ended = false;
+      this.written = true;
       for (const key of FIELDS) {
         Object.assign(game, { [key]: state[key] });
       }
+      for (const id of WEAPON_ORDER)
+        game.p.weapons[id] = Math.max(
+          0,
+          Math.min(weaponMaxLevel(id), Math.floor(game.p.weapons[id])),
+        );
+      for (const id of SALVAGE_UPGRADE_ORDER)
+        game.salvageDrone.upgrades[id] = Math.max(
+          0,
+          Math.min(SALVAGE_UPGRADES[id].max, Math.floor(game.salvageDrone.upgrades[id])),
+        );
+      if (!saved.balanceVersion) {
+        game.rebuildStatUpgrades();
+        for (const rock of game.rocks) {
+          if (rock.trait === "fast") {
+            rock.hp *= 1.2;
+            rock.maxHp *= 1.2;
+          }
+        }
+        if (game.boss && game.boss.mk >= 3) {
+          const max = game.makeBoss(game.boss.final, game.boss.mk).maxHp;
+          game.boss.hp = max * (game.boss.hp / game.boss.maxHp);
+          game.boss.maxHp = max;
+        }
+        // Refresh offered descriptions and discard offers now at their cap.
+        game.choices = game.choices.flatMap((choice) => {
+          const def = STAT_UPGRADES.find((item) => item.id === choice.id);
+          return def && (game.stacks[def.id] ?? 0) < def.max
+            ? [{ ...choice, name: def.name, desc: def.desc, rarity: def.rarity }]
+            : [];
+        });
+      }
+      game.quietTime = 0;
+      game.salvageDrone.pulseTimer = game.repairInterval();
+      // Apply current spawn caps to fights saved before the balance update.
+      const savedRocks = game.rocks;
+      game.rocks = [];
+      game.addRocks(...savedRocks);
+      if (game.boss?.mk6) {
+        const liveIds = new Set(game.rocks.map((rock) => rock.id));
+        game.boss.mk6.fieldIds = game.boss.mk6.fieldIds.filter((id) => liveIds.has(id));
+      }
+      // Older saves keep their existing stable ID and start telemetry here.
+      // Metadata stays outside FIELDS so adding it never invalidates a run save.
+      game.leaderboardRun = validLeaderboard(saved.leaderboard, saved.id, game)
+        ? saved.leaderboard
+        : {
+            runId: saved.id,
+            revision: 0,
+            durationSeconds: 0,
+            deathCause: null,
+            assisted: false,
+            finalReport: null,
+          };
       game.p.beamOn = false;
       game.p.missileHeld = false;
       game.p.thrusting = false;
@@ -148,11 +287,39 @@ export class RunSave {
     try {
       const current = replace ? null : read();
       // A dead or superseded run cannot be resurrected by another open tab.
-      if (!replace && (!current || current.id !== this.id || !current.state)) return;
+      if (
+        !replace &&
+        ((!current && this.written) ||
+          (current &&
+            (current.id !== this.id || !current.state) &&
+            (this.written || current.id !== this.previousId)))
+      )
+        return false;
+      if (
+        !replace &&
+        current?.id === this.id &&
+        current.state &&
+        (current.state.wave > game.wave ||
+          current.state.score > game.score ||
+          (current.leaderboard?.durationSeconds ?? 0) > (game.leaderboardRun?.durationSeconds ?? 0))
+      )
+        return false;
       const state = Object.fromEntries(FIELDS.map((key) => [key, game[key]]));
-      localStorage.setItem(KEY, JSON.stringify({ version: 1, id: this.id, state }));
+      localStorage.setItem(
+        KEY,
+        JSON.stringify({
+          version: 1,
+          balanceVersion: 1,
+          id: this.id,
+          state,
+          leaderboard: game.leaderboardRun,
+        }),
+      );
+      this.written = true;
+      return true;
     } catch {
       // Play remains available when the browser blocks or fills storage.
+      return false;
     }
   }
 

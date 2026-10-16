@@ -1,0 +1,27 @@
+# Persistent disks require a paid Render service. Review pricing before deploying.
+services:
+  - type: web
+    name: helio-drift-leaderboard
+    runtime: node
+    plan: starter
+    numInstances: 1
+    buildCommand: node --version
+    startCommand: node server/index.mjs
+    healthCheckPath: /api/health
+    disk:
+      name: leaderboard-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: 24.19.0
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: LEADERBOARD_DB
+        value: /data/leaderboard.sqlite
+      - key: LEADERBOARD_ORIGINS
+        value: https://magicslayr21.github.io
+      - key: LEADERBOARD_ADMIN_CODE
+        generateValue: true

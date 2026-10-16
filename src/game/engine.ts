@@ -8,7 +8,7 @@
    tables first, with the class consuming them. */
 
 import { audio, type Sfx } from "./audio";
-import { TAU, rnd, clamp, wrapAngle } from "./math";
+import { TAU, clamp, wrapAngle } from "./math";
 import {
   AMBER,
   AMBER_HOT,
@@ -32,8 +32,8 @@ import {
   sentinelWaveCount,
   WEAPON_ORDER,
   MAX_WEAPON_LEVEL,
+  weaponMaxLevel,
   WEAPON_DEFS,
-  WEAPON_BASE_PRICE,
   STAT_UPGRADES,
   SALVAGE_BASE_PRICE,
   SALVAGE_UPGRADES,
@@ -71,20 +71,267 @@ import type {
   SalvageClone,
   SectorTheme,
 } from "./types";
+import { renderSpecialist } from "./render-specialists";
+import { DEFAULT_SETTINGS } from "./preferences";
+import { boostSummary } from "./boost-summary";
+import { COOP_CONFIG } from "./simulation/coop-config";
+import type { CoopEvent, CoopTetherState, CoopPlayerId } from "./simulation/coop-types";
+import type { DeveloperEnemy } from "./developer-command";
 import { GAME_CONFIG } from "./game-config";
-import { RunSave } from "./run-save";
+import { stepPlayerMovement, type FlightIntent } from "./simulation/movement";
+import {
+  salvageUpgradePrice as calculateSalvageUpgradePrice,
+  weaponPrice as calculateWeaponPrice,
+  weaponSimulationStats,
+} from "./simulation/weapons";
+import { RunSave, type SavedLeaderboardRun } from "./run-save";
+import type { RunReport, RunStatus } from "../leaderboard/types";
 
 /* The React shell imports everything from "./engine" — keep that surface
    stable by re-exporting the extracted modules. */
 export * from "./types";
 export * from "./math";
 export * from "./balance";
+export * from "./simulation/movement";
+export * from "./simulation/weapons";
 
 /* ------------------------------------------------------------ game */
 
+export type GameSound = Pick<
+  typeof audio,
+  "play" | "unlock" | "silence" | "beamHeat" | "setMusic" | "stopMusic" | "hasMusicOverride"
+>;
+export const SILENT_GAME_SOUND: GameSound = {
+  play() {},
+  unlock() {},
+  silence() {},
+  beamHeat() {},
+  setMusic() {},
+  stopMusic() {},
+  hasMusicOverride: false,
+};
+export interface GameRuntime {
+  headless?: boolean;
+  width?: number;
+  height?: number;
+  random?: () => number;
+  sound?: GameSound;
+}
+
 export class Game {
+  cooperative = false;
+  readonly headless: boolean;
+  readonly random: () => number;
+  readonly sound: GameSound;
+  flightIntent: FlightIntent | null = null;
+  rnd(min: number, max: number) {
+    return min + this.random() * (max - min);
+  }
+  /** Multiplayer overrides context selection; campaign uses its one pilot. */
+  forEachPilot(action: () => void) {
+    action();
+  }
+  selectTarget(_x: number, _y: number) {}
+  selectBulletPilot(_bullet: Bullet) {}
+  campaignTethers: CoopTetherState[] = [];
+  specialPilots() {
+    return [{ id: "p1" as CoopPlayerId, ship: this.p, disabled: false }];
+  }
+  specialPilotId(): CoopPlayerId {
+    return "p1";
+  }
+  specialTethers() {
+    return this.campaignTethers;
+  }
+  specialEvent(_event: CoopEvent) {}
+  specialTick() {
+    return this.frame;
+  }
+  updateDroneSpecial(d: Drone, dt: number) {
+    const extra = d.coop;
+    if (!extra) return;
+    if (extra.kind === "tetherSentinel") {
+      extra.timer = 0;
+      extra.warning = 0;
+      extra.target = null;
+      return;
+    }
+    extra.timer -= dt;
+    if (extra.kind === "mineWarden") {
+      if (
+        extra.timer <= 0 &&
+        this.rocks.filter((r) => r.coopMine).length < COOP_CONFIG.mineWarden.mineCap
+      ) {
+        const c = COOP_CONFIG.mineWarden;
+        const mine = this.makeRock(d.x, d.y, 1, 0, 0, "boom");
+        mine.r = c.mineRadius;
+        mine.hp = mine.maxHp = c.mineHp;
+        mine.coopMine = {
+          ownerId: d.id,
+          armTimer: c.mineArmSeconds,
+          triggerTimer: -1,
+          life: c.mineLifetime,
+        };
+        this.rocks.push(mine);
+        this.specialEvent({ type: "mineDeployed", tick: this.specialTick(), entityId: mine.id });
+        extra.timer = this.rnd(c.deploymentMin, c.deploymentMax);
+      }
+      return;
+    }
+    if (extra.kind === "riftSpiker") {
+      const c = COOP_CONFIG.riftSpiker;
+      if (extra.warning > 0) {
+        extra.warning -= dt;
+        for (const pilot of this.specialPilots()) {
+          if (pilot.disabled) continue;
+          const dx = d.x - pilot.ship.x,
+            dy = d.y - pilot.ship.y,
+            distance = Math.hypot(dx, dy);
+          if (distance > 30 && distance < c.pullRadius) {
+            pilot.ship.vx += (dx / distance) * c.pullStrength * dt;
+            pilot.ship.vy += (dy / distance) * c.pullStrength * dt;
+          }
+        }
+        if (extra.warning <= 0) {
+          this.enemyBlast(d.x, d.y, c.pulseRadius, c.damage, "Rift Spiker gravity pulse");
+          for (const pilot of this.specialPilots()) {
+            const dx = pilot.ship.x - d.x,
+              dy = pilot.ship.y - d.y,
+              distance = Math.hypot(dx, dy);
+            if (!pilot.disabled && distance < c.pulseRadius) {
+              pilot.ship.vx += (distance ? dx / distance : 1) * c.knockback;
+              pilot.ship.vy += (distance ? dy / distance : 0) * c.knockback;
+            }
+          }
+          extra.timer = c.cooldownSeconds;
+        }
+      } else if (extra.timer <= 0) {
+        extra.warning = c.telegraphSeconds;
+        this.sound.play("bossCharge");
+      }
+    }
+  }
+
+  updateRockSpecial(r: Rock, dt: number) {
+    const mine = r.coopMine;
+    if (!mine) return false;
+    mine.armTimer -= dt;
+    mine.life -= dt;
+    r.flash = Math.max(0, r.flash - dt * 4);
+    if (mine.life <= 0) {
+      this.rocks.splice(this.rocks.indexOf(r), 1);
+      return true;
+    }
+    if (mine.armTimer > 0) return true;
+    const config = COOP_CONFIG.mineWarden;
+    if (
+      mine.triggerTimer < 0 &&
+      this.specialPilots().some((p) => {
+        return (
+          !p.disabled && Math.hypot(p.ship.x - r.x, p.ship.y - r.y) <= config.mineBlastRadius * 0.8
+        );
+      })
+    ) {
+      mine.triggerTimer = config.mineWarningSeconds;
+      this.rings.push({
+        x: r.x,
+        y: r.y,
+        r: r.r,
+        max: config.mineBlastRadius,
+        life: config.mineWarningSeconds,
+        color: "#ff3d6e",
+        w: 2,
+      });
+    }
+    if (mine.triggerTimer >= 0) {
+      mine.triggerTimer -= dt;
+      if (mine.triggerTimer <= 0) this.breakRock(this.rocks.indexOf(r), 0, 0);
+    }
+    return true;
+  }
+
+  updateTethers(dt: number) {
+    // Retire saved player tethers from older co-op rooms. This unit now shields allies.
+    this.specialTethers().length = 0;
+    const c = COOP_CONFIG.tetherSentinel;
+    const sources = this.drones.filter((d) => d.coop?.kind === "tetherSentinel" && d.hp > 0);
+    for (const target of [...this.rocks, ...this.drones]) {
+      let source: Drone | undefined,
+        nearest: number = c.shieldRange;
+      for (const candidate of sources) {
+        if (candidate.id === target.id) continue;
+        const distance = Math.hypot(candidate.x - target.x, candidate.y - target.y);
+        if (distance <= nearest) {
+          source = candidate;
+          nearest = distance;
+        }
+      }
+      if (!source) {
+        delete target.supportShield;
+        continue;
+      }
+      const maxHp = clamp(target.maxHp * c.shieldFraction, c.shieldMin, c.shieldMax);
+      if (!target.supportShield) target.supportShield = { hp: maxHp, maxHp, sourceId: source.id };
+      else {
+        target.supportShield.sourceId = source.id;
+        target.supportShield.maxHp = maxHp;
+        target.supportShield.hp = Math.min(maxHp, target.supportShield.hp + c.shieldRecharge * dt);
+      }
+    }
+  }
+
+  absorbSupportShield(target: Rock | Drone, amount: number) {
+    const shield = target.supportShield;
+    if (!shield) return amount;
+    const source = this.drones.find(
+      (d) => d.id === shield.sourceId && d.hp > 0 && d.coop?.kind === "tetherSentinel",
+    );
+    if (
+      !source ||
+      Math.hypot(source.x - target.x, source.y - target.y) > COOP_CONFIG.tetherSentinel.shieldRange
+    ) {
+      delete target.supportShield;
+      return amount;
+    }
+    const absorbed = Math.min(shield.hp, Math.max(0, amount));
+    shield.hp -= absorbed;
+    return amount - absorbed;
+  }
+
+  mineBoom(r: Rock) {
+    this.enemyBlast(
+      r.x,
+      r.y,
+      COOP_CONFIG.mineWarden.mineBlastRadius,
+      COOP_CONFIG.mineWarden.mineDamage,
+      "Mine Warden mine",
+    );
+    this.specialEvent({
+      type: "mineDestroyed",
+      tick: this.specialTick(),
+      entityId: r.id,
+      playerId: this.specialPilotId(),
+    });
+  }
+
+  updateBossContactCooldown(boss: Boss, dt: number) {
+    if (boss.mk6) boss.mk6.beamCd -= dt;
+  }
+  pickupCollected(_pickup: Pickup) {}
+  loseRockHp(rock: Rock, amount: number) {
+    rock.hp -= this.absorbSupportShield(rock, amount);
+  }
+  addBullet(...bullets: Bullet[]) {
+    this.bullets.push(...bullets);
+  }
+  spawnClearance(x: number, y: number) {
+    return Math.hypot(x - this.p.x, y - this.p.y);
+  }
+
   private readonly runSave = new RunSave();
   private lastSave = 0;
+  leaderboardRun: SavedLeaderboardRun | null = null;
+  inputSuspended = false;
 
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
@@ -95,9 +342,11 @@ export class Game {
   raf = 0;
   last = 0;
   frame = 0;
+  private lastIdleRender = 0;
 
   onHud: (h: Hud) => void;
   onMode: (m: Mode) => void;
+  onRunReport?: (report: RunReport) => void;
 
   p = freshPlayer();
   salvageDrone = freshSalvageDrone();
@@ -124,10 +373,26 @@ export class Game {
   wave = 0;
   level = 1;
   xp = 0;
-  xpNext = GAME_CONFIG.progression.startingXpNext;
+  xpNext: number = GAME_CONFIG.progression.startingXpNext;
   combo = 0;
   comboTimer = 0;
-  shake = 0;
+  quietTime = 0;
+  private shakeAmount = 0;
+  get shake() {
+    return this.shakeAmount;
+  }
+  set shake(value: number) {
+    this.shakeAmount = clamp(value, 0, GAME_CONFIG.simulation.maxScreenShake);
+  }
+
+  decayShake(dt: number) {
+    this.shake *= Math.pow(GAME_CONFIG.simulation.shakeDecayPerSecond, dt);
+    if (this.shake < 0.1) this.shake = 0;
+  }
+
+  screenShakeAmount() {
+    return this.settings.shake ? this.shake * (this.reduced ? 0.15 : 1) : 0;
+  }
   timeScale = 1;
   flashAlpha = 0;
   banner = "";
@@ -149,13 +414,7 @@ export class Game {
 
   reduced = false;
   god = false;
-  settings = {
-    autoFire: false,
-    mouseControl: false,
-    hybridAim: true,
-    legacyMovement: false,
-    shake: true,
-  };
+  settings = { ...DEFAULT_SETTINGS };
   mouse = { x: 0, y: 0 };
   mouseDown = false;
 
@@ -165,13 +424,28 @@ export class Game {
   private ro: ResizeObserver | null = null;
 
   constructor(
-    canvas: HTMLCanvasElement,
-    cb: { onHud: (h: Hud) => void; onMode: (m: Mode) => void },
+    canvas: HTMLCanvasElement | null,
+    cb: {
+      onHud: (h: Hud) => void;
+      onMode: (m: Mode) => void;
+      onRunReport?: (report: RunReport) => void;
+    },
+    runtime: GameRuntime = {},
   ) {
-    this.canvas = canvas;
-    this.ctx = canvas.getContext("2d", { alpha: true })!;
+    this.headless = runtime.headless ?? false;
+    this.random = runtime.random ?? (() => Math.random());
+    this.sound = runtime.sound ?? (this.headless ? SILENT_GAME_SOUND : audio);
+    this.canvas = canvas!;
+    this.ctx = canvas?.getContext("2d", { alpha: true })!;
     this.onHud = cb.onHud;
     this.onMode = cb.onMode;
+    this.onRunReport = cb.onRunReport;
+    if (this.headless) {
+      this.w = runtime.width ?? 1000;
+      this.h = runtime.height ?? 700;
+      this.resetRun();
+      return;
+    }
     this.resize();
     this.reduced =
       typeof window.matchMedia === "function" &&
@@ -183,27 +457,31 @@ export class Game {
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
     window.addEventListener("resize", this.resize);
+    window.addEventListener("blur", this.onBlur);
     // the playfield now fills whatever the HUD leaves free, so follow its box, not just the window
     if (typeof ResizeObserver !== "undefined") {
       this.ro = new ResizeObserver(() => this.resize());
-      this.ro.observe(canvas);
+      this.ro.observe(canvas!);
     }
-    canvas.addEventListener("pointerdown", this.onPointerDown);
-    canvas.addEventListener("pointermove", this.onPointerMove);
-    canvas.addEventListener("pointerup", this.onPointerUp);
-    canvas.addEventListener("pointercancel", this.onPointerUp);
+    canvas!.addEventListener("pointerdown", this.onPointerDown);
+    canvas!.addEventListener("pointermove", this.onPointerMove);
+    canvas!.addEventListener("pointerup", this.onPointerUp);
+    canvas!.addEventListener("pointercancel", this.onPointerUp);
     this.last = performance.now();
     this.raf = requestAnimationFrame(this.loop);
   }
 
   destroy() {
+    if (this.headless) return;
     this.saveRun();
+    this.sound.silence();
     window.removeEventListener("pagehide", this.onPageHide);
     document.removeEventListener("visibilitychange", this.onVisibilityChange);
     cancelAnimationFrame(this.raf);
     window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("keyup", this.onKeyUp);
     window.removeEventListener("resize", this.resize);
+    window.removeEventListener("blur", this.onBlur);
     this.ro?.disconnect();
     this.canvas.removeEventListener("pointerdown", this.onPointerDown);
     this.canvas.removeEventListener("pointermove", this.onPointerMove);
@@ -226,28 +504,103 @@ export class Game {
     this.stars = [];
     for (let i = 0; i < GAME_CONFIG.simulation.starCount; i++) {
       this.stars.push({
-        x: Math.random() * 2000,
-        y: Math.random() * 1400,
-        z: rnd(0.25, 1),
-        s: rnd(0.5, 1.9),
+        x: this.random() * 2000,
+        y: this.random() * 1400,
+        z: this.rnd(0.25, 1),
+        s: this.rnd(0.5, 1.9),
       });
     }
   }
 
   saveRun() {
-    this.runSave.write(this);
+    if (this.headless) return false;
+    return this.runSave.write(this);
   }
 
-  restoreRun() {
-    if (!this.runSave.restore(this)) return;
+  /** Detached snapshots keep networking and moderation outside the simulation. */
+  leaderboardReport(statusOverride?: RunStatus): RunReport | null {
+    const run = this.leaderboardRun;
+    if (!run || this.wave < 1) return null;
+    const report = run.finalReport ?? this.captureLeaderboardReport(statusOverride);
+    if (!report) return null;
+    const snapshot: RunReport = {
+      ...report,
+      revision: ++run.revision,
+      weapons: { ...report.weapons },
+      upgrades: { ...report.upgrades },
+      drone: { ...report.drone, upgrades: { ...report.drone.upgrades } },
+    };
+    this.saveRun();
+    return snapshot;
+  }
+
+  private captureLeaderboardReport(statusOverride?: RunStatus): RunReport | null {
+    const run = this.leaderboardRun;
+    if (!run || this.wave < 1) return null;
+    return {
+      runId: run.runId,
+      revision: run.revision,
+      score: Math.max(0, Math.floor(this.score)),
+      credits: Math.max(0, Math.floor(this.credits)),
+      wave: Math.floor(this.wave),
+      level: Math.floor(this.level),
+      stage: this.bonusDefeated ? "mk6-cleared" : this.bonusActive ? "mk6" : "sectors",
+      status:
+        statusOverride ??
+        (this.mode === "gameover"
+          ? "dead"
+          : this.mode === "victory"
+            ? "victory"
+            : this.mode === "playing"
+              ? "active"
+              : "paused"),
+      durationSeconds: Math.floor(run.durationSeconds),
+      sector: this.themeIdx + 1,
+      primary: this.p.primary,
+      weapons: { ...this.p.weapons },
+      upgrades: { ...this.stacks },
+      deathCause: run.deathCause,
+      assisted: run.assisted,
+      drone: {
+        purchased: this.salvageDrone.purchased,
+        weapon: this.salvageDrone.weapon,
+        upgrades: Object.fromEntries(
+          Object.entries(this.salvageDrone.upgrades).filter(
+            ([id, level]) => id !== "shield" || level > 0,
+          ),
+        ),
+      },
+    };
+  }
+
+  markLeaderboardAssisted() {
+    const run = this.leaderboardRun;
+    if (!run || run.assisted) return;
+    run.assisted = true;
+    if (run.finalReport) run.finalReport.assisted = true;
+    this.saveRun();
+  }
+
+  restoreRun(toMenu = false): boolean {
+    if (!this.runSave.restore(this)) return false;
     this.theme = THEMES[this.themeIdx];
-    this.setMode(
-      this.bonusAvailable || this.bonusDefeated
-        ? "victory"
-        : this.choices.length
-          ? "levelup"
-          : "paused",
-    );
+    this.setMode(toMenu ? "menu" : this.continueMode());
+    this.onHud(this.snapshot());
+    return true;
+  }
+
+  private continueMode(): Mode {
+    return this.bonusAvailable || this.bonusDefeated
+      ? "victory"
+      : this.choices.length
+        ? "levelup"
+        : "paused";
+  }
+
+  continueRun() {
+    if (this.wave < 1 || this.p.hull <= 0) return;
+    const next = this.continueMode();
+    this.setMode(next === "paused" ? "playing" : next);
     this.onHud(this.snapshot());
   }
 
@@ -257,7 +610,13 @@ export class Game {
   };
 
   private onVisibilityChange = () => {
-    if (document.visibilityState !== "hidden") return;
+    // Never carry an inactive tab's elapsed time into simulation or autosave.
+    this.last = this.lastSave = performance.now();
+    this.lastIdleRender = 0;
+    if (document.visibilityState === "hidden") this.onBlur();
+  };
+
+  private onBlur = () => {
     if (this.mode === "playing") this.setMode("paused");
     this.keys = {};
     this.mouseDown = false;
@@ -267,6 +626,7 @@ export class Game {
   };
 
   resetRun() {
+    this.leaderboardRun = null;
     this.choices = [];
     this.rerollCost = 0;
     this.p = freshPlayer();
@@ -276,6 +636,7 @@ export class Game {
     this.p.y = this.h / 2;
     this.stacks = {};
     this.rocks = [];
+    this.campaignTethers = [];
     this.drones = [];
     this.bullets = [];
     this.pickups = [];
@@ -294,6 +655,7 @@ export class Game {
     this.xpNext = GAME_CONFIG.progression.startingXpNext;
     this.combo = 0;
     this.comboTimer = 0;
+    this.quietTime = 0;
     this.shake = 0;
     this.timeScale = 1;
     this.shower = {
@@ -311,8 +673,20 @@ export class Game {
   }
 
   startGame() {
-    audio.unlock();
+    if (this.leaderboardRun && !this.leaderboardRun.finalReport) {
+      const abandoned = this.leaderboardReport("abandoned");
+      if (abandoned) this.onRunReport?.(abandoned);
+    }
+    this.sound.unlock();
     this.resetRun();
+    this.leaderboardRun = {
+      runId: crypto.randomUUID(),
+      revision: 0,
+      durationSeconds: 0,
+      deathCause: null,
+      assisted: this.god,
+      finalReport: null,
+    };
     this.setMode("playing");
     this.nextWave();
     this.runSave.begin(this);
@@ -320,8 +694,19 @@ export class Game {
 
   setMode(m: Mode) {
     this.mode = m;
+    if (m === "playing" && this.leaderboardRun) this.leaderboardRun.finalReport = null;
+    if ((m === "gameover" || m === "victory") && this.leaderboardRun) {
+      // Capture before callbacks and before the existing celebration/death effects
+      // can award more points or collect drops after the run has finished.
+      this.leaderboardRun.finalReport ??= this.captureLeaderboardReport();
+      const finalReport = this.leaderboardReport();
+      if (finalReport) this.onRunReport?.(finalReport);
+    }
+    this.last = performance.now();
+    this.lastIdleRender = 0;
+    if (m === "playing") this.timeScale = 1;
     if (m !== "playing") {
-      audio.silence();
+      this.sound.silence();
       this.p.beamOn = false;
     }
     this.onMode(m);
@@ -331,9 +716,11 @@ export class Game {
   /* ------------------------------------------------------------ input */
 
   onKeyDown = (e: KeyboardEvent) => {
+    if (this.inputSuspended || this.mode === "menu") return;
     const t = e.target as HTMLElement | null;
-    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+    if (t && (["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName) || t.isContentEditable)) return;
     const k = e.key.toLowerCase();
+    if (t && ["BUTTON", "A"].includes(t.tagName) && ["enter", " ", "tab"].includes(k)) return;
     if ([" ", "arrowup", "arrowdown", "arrowleft", "arrowright", "tab"].includes(k))
       e.preventDefault();
     this.keys[k] = true;
@@ -341,15 +728,8 @@ export class Game {
       if (this.mode === "playing") this.setMode("paused");
       else if (this.mode === "paused") this.setMode("playing");
     }
-    if (
-      k === "r" &&
-      (this.mode === "gameover" || this.mode === "paused" || this.mode === "victory")
-    )
-      this.startGame();
-    if (
-      (k === "enter" || k === " ") &&
-      (this.mode === "menu" || this.mode === "gameover" || this.mode === "victory")
-    )
+    if (k === "r" && (this.mode === "gameover" || this.mode === "victory")) this.startGame();
+    if ((k === "enter" || k === " ") && (this.mode === "gameover" || this.mode === "victory"))
       this.startGame();
     if (k === "tab") this.cycleWeapon(1);
     if (k === "q") this.cycleWeapon(-1);
@@ -367,8 +747,9 @@ export class Game {
   }
 
   onPointerDown = (e: PointerEvent) => {
-    audio.unlock();
+    this.sound.unlock();
     this.updateMouse(e);
+    if (this.inputSuspended) return;
     if (this.mode !== "playing") return;
     if (this.settings.mouseControl && e.pointerType === "mouse") {
       this.mouseDown = true;
@@ -377,7 +758,7 @@ export class Game {
     }
     // hybrid aim steers with the keyboard, so a mouse click is a trigger and
     // must never spawn the virtual thumbstick
-    if (this.settings.hybridAim && e.pointerType === "mouse") {
+    if ((this.settings.hybridAim || this.settings.trackpad) && e.pointerType === "mouse") {
       this.touchFire = true;
       this.canvas.setPointerCapture?.(e.pointerId);
       return;
@@ -402,7 +783,7 @@ export class Game {
   onPointerUp = (e: PointerEvent) => {
     if (e.pointerType === "mouse") {
       this.mouseDown = false;
-      if (this.settings.hybridAim) this.touchFire = false;
+      if (this.settings.hybridAim || this.settings.trackpad) this.touchFire = false;
     }
     if (e.pointerId === this.stick.id) this.stick = { on: false, id: -1, ox: 0, oy: 0, x: 0, y: 0 };
     else this.touchFire = false;
@@ -424,11 +805,11 @@ export class Game {
     this.p.heat = 0;
     this.p.overheated = false;
     if (this.p.beamOn) {
-      audio.play("beamStop");
+      this.sound.play("beamStop");
       this.p.beamOn = false;
     }
     this.p.fireTimer = Math.max(this.p.fireTimer, 0.12);
-    audio.play("cycle");
+    this.sound.play("cycle");
     this.floatText(this.p.x, this.p.y - 30, WEAPON_DEFS[w].short, AMBER_HOT, 12);
   }
 
@@ -440,138 +821,62 @@ export class Game {
   }
 
   weaponStats(W: WeaponId, L: number) {
-    const p = this.p;
-    const lv = Math.max(0, L - 1);
-    const weapon = GAME_CONFIG.weaponProgression.weapons[W];
-    const s = {
-      rate: weapon.baseRate,
-      dmg: "baseDamage" in weapon ? weapon.baseDamage : 16,
-      shots: "baseShots" in weapon ? weapon.baseShots : 1,
-      arc: 0.026,
-      speed: 720,
-      life: 1.15,
-      r: 3.6,
-      pierce: p.pierce,
-      bounces: 0,
-      fuse: 0,
-      turn: 0,
-      extra: 0,
-      extraDmg: 0,
-      kind: "plasma" as Bullet["kind"],
-      color: AMBER_HOT,
-      sfx: "pulse" as Sfx,
-    };
+    const simulation = weaponSimulationStats(this.p, this.salvageDrone, W, L);
+    let color: string = AMBER_HOT;
+    let sfx: Sfx = "pulse";
     switch (W) {
-      case "pulse":
-        s.rate *= 1 + weapon.ratePerLevel * lv;
-        s.dmg *= 1 + weapon.damagePerLevel * lv;
-        s.shots += Math.floor(lv / weapon.shotsEveryLevels);
-        break;
       case "spread":
-        s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
-        s.dmg = weapon.baseDamage * (1 + weapon.damagePerLevel * lv);
-        s.shots = weapon.baseShots + Math.floor(lv * weapon.shotsPerLevel);
-        s.arc = weapon.arc;
-        s.sfx = "spread";
+        sfx = "spread";
         break;
       case "seeker":
-        s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
-        s.dmg = weapon.baseDamage * (1 + weapon.damagePerLevel * lv);
-        s.shots = weapon.baseShots + Math.floor(lv / weapon.shotsEveryLevels);
-        s.speed = weapon.speed;
-        s.life = weapon.life;
-        s.r = weapon.radius;
-        s.arc = weapon.arc;
-        s.turn = weapon.turn;
-        s.kind = "seeker";
-        s.color = "#ff8fb0";
-        s.sfx = "seeker";
+        color = "#ff8fb0";
+        sfx = "seeker";
         break;
       case "ricochet":
-        s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
-        s.dmg = weapon.baseDamage * (1 + weapon.damagePerLevel * lv);
-        s.shots = weapon.baseShots + Math.floor(lv / weapon.shotsEveryLevels);
-        s.bounces = weapon.baseBounces + Math.floor(lv / weapon.bouncesEveryLevels);
-        s.speed = weapon.speed;
-        s.life = weapon.life;
-        s.r = weapon.radius;
-        s.kind = "ricochet";
-        s.color = ICE;
-        s.sfx = "ricochet";
+        color = ICE;
+        sfx = "ricochet";
         break;
       case "flak":
-        s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
-        s.dmg = weapon.baseDamage;
-        s.shots = weapon.baseShots + Math.floor(lv / weapon.shotsEveryLevels);
-        s.fuse = weapon.fuse;
-        s.speed = weapon.speed;
-        s.life = weapon.life;
-        s.r = weapon.radius;
-        s.kind = "flak";
-        s.color = AMBER;
-        s.sfx = "flak";
-        s.extra = weapon.baseShrapnel + weapon.shrapnelPerLevel * lv;
-        s.extraDmg = weapon.shrapnelDamage * (1 + weapon.shrapnelDamagePerLevel * lv);
+        color = AMBER;
+        sfx = "flak";
         break;
       case "rail":
-        s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
-        s.dmg =
-          weapon.baseDamage *
-          weapon.damageScale *
-          (1 + weapon.damagePerLevel * lv) *
-          (lv >= 5 ? weapon.maxLevelDamageBonus : 1);
-        s.pierce = weapon.basePierce + Math.floor(lv / weapon.pierceEveryLevels) + p.pierce;
-        s.speed = weapon.speed;
-        s.life = weapon.life;
-        s.r = weapon.radius;
-        s.turn = weapon.turn;
-        s.kind = "rail";
-        s.color = ICE;
-        s.sfx = "rail";
+        color = ICE;
+        sfx = "rail";
         break;
       case "laser":
-        // the player fires a raycast beam; a drone mount fires coherent bolts
-        // that still read unmistakably as beam energy
-        s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
-        s.dmg = weapon.damage * (1 + weapon.damagePerLevel * lv);
-        // never "beamStart" here: that opens the persistent beam voice, which
-        // only closes on beamStop and would leave a stuck drone whine
-        s.speed = weapon.speed;
-        s.life = weapon.life;
-        s.r = weapon.radius;
-        s.pierce = 1 + p.pierce;
-        s.color = ICE;
-        s.sfx = "arc";
+        color = ICE;
+        sfx = "arc";
         break;
       case "arc":
-        s.rate = weapon.baseRate * (1 + weapon.ratePerLevel * lv);
-        s.dmg = weapon.baseDamage * (1 + weapon.damagePerLevel * lv);
-        s.speed = weapon.speed;
-        s.life = weapon.life;
-        s.r = weapon.radius;
-        s.color = "#bff3ff";
-        s.sfx = "arc";
+        color = "#bff3ff";
+        sfx = "arc";
         break;
-      default:
+      case "pulse":
         break;
     }
-    s.rate *= p.fireRateMul;
-    s.dmg *= p.damageMul;
-    s.extraDmg *= p.damageMul;
-    s.shots += p.extraShots;
-    return s;
+    return {
+      rate: simulation.rate,
+      dmg: simulation.damage,
+      shots: simulation.shots,
+      arc: simulation.arc,
+      speed: simulation.speed,
+      life: simulation.life,
+      r: simulation.radius,
+      pierce: simulation.pierce,
+      bounces: simulation.bounces,
+      fuse: simulation.fuse,
+      turn: simulation.homing,
+      extra: simulation.extra,
+      extraDmg: simulation.extraDamage,
+      kind: simulation.kind,
+      color,
+      sfx,
+    };
   }
 
   weaponPrice(w: WeaponId): number | null {
-    const level = this.p.weapons[w];
-    if (level >= MAX_WEAPON_LEVEL) return null;
-    const base = WEAPON_BASE_PRICE[WEAPON_DEFS[w].rarity];
-    return (
-      Math.round(
-        (base * Math.pow(GAME_CONFIG.weaponProgression.priceMultiplier, level)) /
-          GAME_CONFIG.weaponProgression.priceRounding,
-      ) * GAME_CONFIG.weaponProgression.priceRounding
-    );
+    return calculateWeaponPrice(this.p, w);
   }
 
   equipSalvageWeapon(w: WeaponId | null): boolean {
@@ -589,7 +894,7 @@ export class Game {
       ICE,
       12,
     );
-    audio.play("buy");
+    this.sound.play("buy");
     return true;
   }
 
@@ -600,7 +905,15 @@ export class Game {
       return [
         { label: "Beam DPS", value: Math.round(s.dps).toString() },
         { label: "Heat / sec", value: s.heatRate.toFixed(2) },
-        { label: "Range", value: "1100" },
+        { label: "Range", value: Math.round(s.range).toString() },
+        { label: "Beam width", value: Math.round(s.width).toString() },
+        {
+          label: "Redline DPS",
+          value: Math.round(
+            s.dps *
+              (s.redline ? 1 : GAME_CONFIG.weaponProgression.weapons.laser.redlineDamageMultiplier),
+          ).toString(),
+        },
         { label: "Overheat lock", value: level >= MAX_WEAPON_LEVEL ? "None · max level" : "15%" },
       ];
     }
@@ -625,22 +938,23 @@ export class Game {
     if (s.extra > 0) rows.push({ label: "Shrapnel", value: s.extra.toString() });
     if (s.extraDmg > 0) rows.push({ label: "Shrapnel damage", value: s.extraDmg.toFixed(1) });
     if (s.turn > 0) rows.push({ label: "Homing turn", value: s.turn.toFixed(1) });
-    if (w === "rail") rows.push({ label: "Effective range", value: "2112" });
+    if (w === "rail")
+      rows.push({ label: "Effective range", value: Math.round(s.speed * s.life).toString() });
     return rows;
   }
 
   weaponShopInfo(w: WeaponId): WeaponShopInfo {
     const level = this.p.weapons[w];
-    const nextLevel = Math.min(MAX_WEAPON_LEVEL, Math.max(1, level + 1));
+    const nextLevel = Math.min(weaponMaxLevel(w), Math.max(1, level + 1));
     return {
       id: w,
       level,
-      maxLevel: MAX_WEAPON_LEVEL,
+      maxLevel: weaponMaxLevel(w),
       price: this.weaponPrice(w),
       rarity: WEAPON_DEFS[w].rarity,
       owned: level > 0,
       current: this.weaponRows(w, level),
-      next: level < MAX_WEAPON_LEVEL ? this.weaponRows(w, nextLevel) : [],
+      next: level < weaponMaxLevel(w) ? this.weaponRows(w, nextLevel) : [],
     };
   }
 
@@ -649,9 +963,9 @@ export class Game {
     if (price == null || this.credits < price) return false;
     const wasLocked = this.p.weapons[w] === 0;
     this.credits -= price;
-    this.p.weapons[w] = Math.min(MAX_WEAPON_LEVEL, this.p.weapons[w] + 1);
+    this.p.weapons[w] = Math.min(weaponMaxLevel(w), this.p.weapons[w] + 1);
     if (wasLocked) this.selectWeapon(w);
-    audio.play("buy");
+    this.sound.play("buy");
     this.floatText(
       this.p.x,
       this.p.y - 32,
@@ -663,17 +977,7 @@ export class Game {
   }
 
   salvageUpgradePrice(id: SalvageUpgradeId): number | null {
-    const def = SALVAGE_UPGRADES[id];
-    const level = this.salvageDrone.upgrades[id];
-    if (level >= def.max) return null;
-    const nextIsFinal = level + 1 === def.max;
-    const finalMultiplier = nextIsFinal ? GAME_CONFIG.salvage.finalUpgradePriceMultiplier : 1;
-    return (
-      Math.round(
-        (def.base * Math.pow(GAME_CONFIG.salvage.upgradePriceMultiplier, level) * finalMultiplier) /
-          GAME_CONFIG.weaponProgression.priceRounding,
-      ) * GAME_CONFIG.weaponProgression.priceRounding
-    );
+    return calculateSalvageUpgradePrice(this.salvageDrone, id);
   }
 
   salvageShopInfo(): SalvageShopInfo {
@@ -722,7 +1026,7 @@ export class Game {
     this.rings.push({ x: d.x, y: d.y, r: 8, max: 80, life: 0.65, color: ICE, w: 3 });
     this.burst(d.x, d.y, 22, ICE);
     this.floatText(d.x, d.y - 26, "DRONE ASSEMBLED", ICE, 14);
-    audio.play("droneAssemble");
+    this.sound.play("droneAssemble");
     return true;
   }
 
@@ -737,19 +1041,34 @@ export class Game {
       d.maxHp += 12;
       d.hp = Math.min(d.maxHp, d.hp + 12);
     }
-    if (id === "repairPulse") d.pulseTimer = 0.2;
+    if (id === "repairPulse") d.pulseTimer = this.repairInterval();
     this.floatText(d.x, d.y - 26, `${def.name.toUpperCase()} LV ${d.upgrades[id]}`, ICE, 12);
     this.burst(d.x, d.y, 8, ICE);
-    audio.play("buy");
+    this.sound.play("buy");
     return true;
   }
 
-  arcStats(L: number) {
+  playerAttackRate() {
+    return this.p.fireRateMul * this.feederRate(false);
+  }
+
+  feederRate(drone: boolean) {
+    return (
+      1 +
+      (this.salvageDrone.purchased ? this.salvageDrone.upgrades.piercing : 0) *
+        (drone
+          ? GAME_CONFIG.salvage.droneFeederRatePerLevel
+          : GAME_CONFIG.salvage.playerFeederRatePerLevel)
+    );
+  }
+
+  arcStats(L: number, drone = false) {
     const lv = Math.max(0, L - 1);
     return {
       range:
-        GAME_CONFIG.weaponProgression.weapons.arc.baseRange +
-        GAME_CONFIG.weaponProgression.weapons.arc.rangePerLevel * lv,
+        (GAME_CONFIG.weaponProgression.weapons.arc.baseRange +
+          GAME_CONFIG.weaponProgression.weapons.arc.rangePerLevel * lv) *
+        (this.p.rangeMul ?? 1),
       chains:
         GAME_CONFIG.weaponProgression.weapons.arc.baseChains +
         Math.floor(lv / GAME_CONFIG.weaponProgression.weapons.arc.chainsEveryLevels),
@@ -757,17 +1076,25 @@ export class Game {
         GAME_CONFIG.weaponProgression.weapons.arc.baseDamage *
         (1 + GAME_CONFIG.weaponProgression.weapons.arc.damagePerLevel * lv) *
         this.p.damageMul,
-      tick: GAME_CONFIG.simulation.arcTick / this.p.fireRateMul,
+      tick: GAME_CONFIG.simulation.arcTick / (this.p.fireRateMul * this.feederRate(drone)),
     };
   }
 
-  laserStats(L: number) {
+  laserStats(L: number, drone = false) {
     const lv = Math.max(0, L - 1);
+    const tuning = GAME_CONFIG.weaponProgression.weapons.laser;
+    const redline = !drone && L < MAX_WEAPON_LEVEL && this.p.heat >= tuning.redlineThreshold;
     return {
+      range: tuning.range * (this.p.rangeMul ?? 1),
+      width: tuning.baseWidth + lv * tuning.widthPerLevel,
+      color: redline ? "#ff3d45" : ICE,
+      redline,
       dps:
+        (redline ? tuning.redlineDamageMultiplier : 1) *
         GAME_CONFIG.weaponProgression.weapons.laser.baseDps *
         (1 + GAME_CONFIG.weaponProgression.weapons.laser.dpsPerLevel * lv) *
-        this.p.damageMul,
+        this.p.damageMul *
+        this.feederRate(drone),
       heatRate:
         L >= MAX_WEAPON_LEVEL
           ? 0
@@ -780,29 +1107,43 @@ export class Game {
 
   loop = (now: number) => {
     this.raf = requestAnimationFrame(this.loop);
-    let dt = (now - this.last) / 1000;
-    this.last = now;
+    if (document.hidden) {
+      this.sound.silence();
+      this.last = now;
+      return;
+    }
+    // Modal transitions can set last after a frame timestamp has already been queued.
+    // Never integrate physics or expanding effects backwards on that first frame.
+    let dt = Math.max(0, (now - this.last) / 1000);
+    this.last = Math.max(now, this.last);
     if (dt > GAME_CONFIG.simulation.frameDeltaCap) dt = GAME_CONFIG.simulation.frameDeltaCap;
     this.frame++;
+    this.decayShake(dt);
+    if (this.mode === "playing")
+      this.sound.setMusic(
+        this.boss?.mk === 6
+          ? this.boss.mk6?.enraged
+            ? "mk6Phase2"
+            : "mk6"
+          : this.boss
+            ? "boss"
+            : "flight",
+      );
+    else if (!this.sound.hasMusicOverride) this.sound.stopMusic();
 
-    if (
-      this.mode === "playing" ||
-      this.mode === "levelup" ||
-      this.mode === "gameover" ||
-      this.mode === "victory"
-    ) {
-      const target =
-        this.mode === "levelup"
-          ? 0.16
-          : this.mode === "gameover" || this.mode === "victory"
-            ? 0.3
-            : 1;
+    if (this.mode === "playing" || this.mode === "gameover" || this.mode === "victory") {
+      const target = this.mode === "gameover" || this.mode === "victory" ? 0.3 : 1;
       this.timeScale += (target - this.timeScale) * Math.min(1, dt * 7);
       this.update(dt * this.timeScale);
     }
-    if (now - this.lastSave >= 1000) {
+    if (this.mode === "playing" && now - this.lastSave >= 1000) {
       this.saveRun();
       this.lastSave = now;
+    }
+    // Static menus need occasional refreshes for HUD/dev changes, not 60 costly canvas draws.
+    if (this.mode === "paused" || this.mode === "levelup" || this.mode === "menu") {
+      if (now - this.lastIdleRender < 1000 / 15) return;
+      this.lastIdleRender = now;
     }
     this.render();
     if (this.frame % 4 === 0) this.onHud(this.snapshot());
@@ -859,120 +1200,70 @@ export class Game {
    * player state so it always agrees with what the game is actually doing.
    */
   boostSummary(): Hud["boosts"] {
-    const p = this.p;
-    const base = freshPlayer();
-    const taken = STAT_UPGRADES.filter((u) => (this.stacks[u.id] ?? 0) > 0).map((u) => ({
-      id: u.id,
-      name: u.name,
-      tag: u.tag,
-      level: this.stacks[u.id] ?? 0,
-      max: u.max,
-    }));
-    const pct = (mul: number) => `${mul >= 1 ? "+" : ""}${Math.round((mul - 1) * 100)}%`;
-    const totals: { label: string; value: string }[] = [];
-    if (p.fireRateMul !== 1) totals.push({ label: "Fire rate", value: pct(p.fireRateMul) });
-    if (p.damageMul !== 1) totals.push({ label: "Damage", value: pct(p.damageMul) });
-    if (p.extraShots > 0) totals.push({ label: "Extra projectiles", value: `+${p.extraShots}` });
-    if (p.pierce > 0) totals.push({ label: "Pierce", value: `+${p.pierce}` });
-    if (p.crit !== base.crit)
-      totals.push({ label: "Crit chance", value: `${Math.round(p.crit * 100)}%` });
-    if (p.thrust !== base.thrust)
-      totals.push({ label: "Thrust", value: pct(p.thrust / base.thrust) });
-    if (p.maxSpeed !== base.maxSpeed)
-      totals.push({ label: "Top speed", value: pct(p.maxSpeed / base.maxSpeed) });
-    if (p.maxHull !== base.maxHull)
-      totals.push({
-        label: "Max hull",
-        value: `${Math.round(p.maxHull)} (+${Math.round(p.maxHull - base.maxHull)})`,
-      });
-    if (p.armor > 0)
-      totals.push({ label: "Damage taken", value: `−${Math.round(p.armor * 100)}%` });
-    if (p.leech > 0) totals.push({ label: "Lifesteal", value: `${Math.round(p.leech * 100)}%` });
-    if (p.maxMissiles !== base.maxMissiles)
-      totals.push({
-        label: "Missile rack",
-        value: `${p.maxMissiles} (+${p.maxMissiles - base.maxMissiles})`,
-      });
-    if (p.blastDmg !== base.blastDmg)
-      totals.push({ label: "Blast damage", value: pct(p.blastDmg / base.blastDmg) });
-    return { taken, totals, totalStacks: taken.reduce((s, t) => s + t.level, 0) };
+    return boostSummary(this.p, this.salvageDrone, this.stacks);
   }
 
   /* ------------------------------------------------------------ update */
 
-  update(dt: number) {
+  updatePilot(dt: number) {
+    if (this.mode === "playing") this.quietTime += dt;
+    if (this.mode === "playing" && this.leaderboardRun) this.leaderboardRun.durationSeconds += dt;
     const p = this.p;
     const k = this.keys;
 
     // ---- flight ----
-    p.thrusting = false;
-    if (this.stick.on) {
+    let flight: FlightIntent;
+    if (this.flightIntent) {
+      flight = this.flightIntent;
+    } else if (this.stick.on) {
       const dx = this.stick.x - this.stick.ox,
         dy = this.stick.y - this.stick.oy;
       const dist = Math.hypot(dx, dy);
       if (dist > 12) {
         const desired = Math.atan2(dy, dx);
-        p.angle += clamp(wrapAngle(desired - p.angle), -p.turn * 1.9 * dt, p.turn * 1.9 * dt);
         const mag = clamp(dist / 90, 0, 1);
-        p.vx += Math.cos(p.angle) * p.thrust * mag * dt * 1.15;
-        p.vy += Math.sin(p.angle) * p.thrust * mag * dt * 1.15;
-        p.thrusting = true;
+        flight = {
+          aimAngle: desired,
+          aimTurnMultiplier: 1.9,
+          forward: mag,
+          thrustMultiplier: 1.15,
+        };
+      } else {
+        flight = {};
       }
     } else if (
       this.settings.legacyMovement ||
-      (!this.settings.hybridAim && !this.settings.mouseControl)
+      (!this.settings.hybridAim && !this.settings.mouseControl && !this.settings.trackpad)
     ) {
       // Legacy Movement: the classic cabinet scheme. Rotate with A/D or the
       // arrows, thrust with W. No mouse aiming whatsoever.
       const turn = (k["arrowleft"] || k["a"] ? -1 : 0) + (k["arrowright"] || k["d"] ? 1 : 0);
-      p.angle += turn * p.turn * dt;
-      if (k["arrowup"] || k["w"]) {
-        p.vx += Math.cos(p.angle) * p.thrust * dt;
-        p.vy += Math.sin(p.angle) * p.thrust * dt;
-        p.thrusting = true;
-      }
-    } else if (this.settings.hybridAim) {
+      flight = { turn, forward: k["arrowup"] || k["w"] ? 1 : 0 };
+    } else if (this.settings.hybridAim || this.settings.trackpad) {
       // twin-stick hybrid: the hull always tracks the cursor while WASD /
       // arrows push the ship in world space, decoupling aim from movement
       const desired = Math.atan2(this.mouse.y - p.y, this.mouse.x - p.x);
-      p.angle += clamp(wrapAngle(desired - p.angle), -p.turn * 3.2 * dt, p.turn * 3.2 * dt);
       const mx = (k["arrowleft"] || k["a"] ? -1 : 0) + (k["arrowright"] || k["d"] ? 1 : 0);
       const my = (k["arrowup"] || k["w"] ? -1 : 0) + (k["arrowdown"] || k["s"] ? 1 : 0);
-      if (mx !== 0 || my !== 0) {
-        const len = Math.hypot(mx, my) || 1;
-        p.vx += (mx / len) * p.thrust * dt;
-        p.vy += (my / len) * p.thrust * dt;
-        p.thrusting = true;
-      }
+      flight = { aimAngle: desired, aimTurnMultiplier: 3.2, moveX: mx, moveY: my };
     } else {
       // Mouse Control: the veteran scheme. The ship faces the cursor and holds
       // the left button to thrust.
       const desired = Math.atan2(this.mouse.y - p.y, this.mouse.x - p.x);
-      p.angle += clamp(wrapAngle(desired - p.angle), -p.turn * 1.9 * dt, p.turn * 1.9 * dt);
-      if (this.mouseDown) {
-        p.vx += Math.cos(p.angle) * p.thrust * dt;
-        p.vy += Math.sin(p.angle) * p.thrust * dt;
-        p.thrusting = true;
-      }
+      flight = { aimAngle: desired, aimTurnMultiplier: 1.9, forward: this.mouseDown ? 1 : 0 };
     }
+    stepPlayerMovement(p, flight, dt, { width: this.w, height: this.h });
     if (p.thrusting && this.frame % 3 === 0) this.thrustParticle();
-
-    const drag = Math.pow(GAME_CONFIG.player.movementDragPerFrame, dt * 60);
-    p.vx *= drag;
-    p.vy *= drag;
-    const sp = Math.hypot(p.vx, p.vy);
-    if (sp > p.maxSpeed) {
-      p.vx = (p.vx / sp) * p.maxSpeed;
-      p.vy = (p.vy / sp) * p.maxSpeed;
-    }
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
-    this.wrap(p);
 
     // ---- firing ----
     p.fireTimer -= dt;
     p.missileTimer -= dt;
-    const firing = this.settings.autoFire || !!k[" "] || this.touchFire || !!k["control"];
+    const firing =
+      this.settings.trackpad ||
+      this.settings.autoFire ||
+      !!k[" "] ||
+      this.touchFire ||
+      !!k["control"];
     const L = p.weapons[p.primary] || 1;
 
     if (p.primary === "laser") {
@@ -980,21 +1271,21 @@ export class Game {
       const unlimited = L >= MAX_WEAPON_LEVEL;
       if (firing && (unlimited || !p.overheated) && this.mode === "playing") {
         if (!p.beamOn) {
-          audio.play("beamStart");
+          this.sound.play("beamStart");
           p.beamOn = true;
         }
         p.heat = unlimited ? 0 : Math.min(1, p.heat + dt * ls.heatRate);
-        audio.beamHeat(p.heat);
+        this.sound.beamHeat(p.heat);
         if (!unlimited && p.heat >= 1) {
           p.overheated = true;
-          audio.play("beamStop");
+          this.sound.play("beamStop");
           p.beamOn = false;
-          audio.play("overheat");
+          this.sound.play("overheat");
         }
-        this.beamDamage(dt, ls.dps);
+        this.beamDamage(dt, this.laserStats(L).dps);
       } else {
         if (p.beamOn) {
-          audio.play("beamStop");
+          this.sound.play("beamStop");
           p.beamOn = false;
         }
         p.heat = unlimited ? 0 : Math.max(0, p.heat - dt * 0.5);
@@ -1027,15 +1318,18 @@ export class Game {
       if (p.missileCharge >= p.missileRegen) {
         p.missileCharge = 0;
         p.missiles++;
-        audio.play("pickup");
+        this.sound.play("pickup");
         this.floatText(p.x, p.y - 34, "MISSILE READY", MAGENTA, 12);
       }
     } else p.missileCharge = 0;
 
     this.comboTimer -= dt;
     if (this.comboTimer <= 0) this.combo = 0;
-    if (this.bannerT > 0) this.bannerT -= dt;
+  }
 
+  update(dt: number) {
+    if (this.bannerT > 0) this.bannerT -= dt;
+    this.forEachPilot(() => this.updatePilot(dt));
     // ---- meteor shower event ----
     this.updateShower(dt);
 
@@ -1044,6 +1338,9 @@ export class Game {
       const r = this.rocks[ri];
       // a boom chain-reaction can remove several rocks mid-pass, so the slot may already be gone
       if (!r) continue;
+      if (this.updateRockSpecial(r, dt)) continue;
+      this.selectTarget(r.x, r.y);
+      const p = this.p;
       // transient wall rocks quietly expire after their lifetime
       if (r.life != null) {
         r.life -= dt;
@@ -1063,12 +1360,12 @@ export class Game {
           this.particles.push({
             x: r.x,
             y: r.y,
-            vx: -r.vx * 0.12 + rnd(-15, 15),
-            vy: -r.vy * 0.12 + rnd(-15, 15),
+            vx: -r.vx * 0.12 + this.rnd(-15, 15),
+            vy: -r.vy * 0.12 + this.rnd(-15, 15),
             life: 0.42,
             max: 0.42,
-            size: rnd(1.6, 3),
-            color: Math.random() < 0.5 ? AMBER_HOT : "#ffd27a",
+            size: this.rnd(1.6, 3),
+            color: this.random() < 0.5 ? AMBER_HOT : "#ffd27a",
             drag: 0.92,
           });
         }
@@ -1092,7 +1389,8 @@ export class Game {
       }
       if (r.trait === "homing") {
         // steer directly at the ship at a constant, size-dependent pace
-        const spd = r.size === 3 ? 95 : r.size === 2 ? 88 : 78;
+        const spd =
+          r.size === 3 ? 95 : r.size === 2 ? 88 : GAME_CONFIG.asteroids.traits.homing.smallSpeed;
         const turn = r.size === 3 ? 2.4 : r.size === 2 ? 1.8 : 1.3;
         const desired = Math.atan2(p.y - r.y, p.x - r.x);
         const cur = Math.atan2(r.vy, r.vx);
@@ -1100,6 +1398,7 @@ export class Game {
         r.vx = Math.cos(a) * spd;
         r.vy = Math.sin(a) * spd;
       }
+      if (r.trait === "fast") this.updateFastRockSpeed(r);
       if (r.trait === "boom" && Math.hypot(p.x - r.x, p.y - r.y) < r.r + BOOM.homeRange) {
         // a slight pull toward a nearby ship: slow to turn, never faster than a brisk crawl
         const cruise = BOOM.speed[r.size] * 1.25;
@@ -1130,10 +1429,10 @@ export class Game {
           r.flash = Math.max(r.flash, 0.6);
           if (this.frame % 2 === 0) {
             this.particles.push({
-              x: r.x + rnd(-8, 8),
-              y: r.y + rnd(-8, 8),
-              vx: rnd(-30, 30),
-              vy: rnd(-30, 30),
+              x: r.x + this.rnd(-8, 8),
+              y: r.y + this.rnd(-8, 8),
+              vx: this.rnd(-30, 30),
+              vy: this.rnd(-30, 30),
               life: 0.2,
               max: 0.2,
               size: 2.5,
@@ -1230,16 +1529,24 @@ export class Game {
     }
 
     // ---- wardens ----
-    for (const d of this.drones) this.updateDrone(d, dt);
+    for (const d of this.drones) {
+      this.selectTarget(d.x, d.y);
+      this.updateDrone(d, dt);
+    }
+
+    this.updateTethers(dt);
 
     // ---- salvage drone ----
-    this.updateSalvageDrone(dt);
+    this.forEachPilot(() => this.updateSalvageDrone(dt));
 
     // ---- boss ----
-    if (this.boss) this.updateBoss(this.boss, dt);
+    if (this.boss) {
+      this.selectTarget(this.boss.x, this.boss.y);
+      this.updateBoss(this.boss, dt);
+    }
 
     // ---- ship collisions ----
-    this.shipCollisions(dt);
+    this.forEachPilot(() => this.shipCollisions(dt));
 
     // ---- bullets ----
     this.updateBullets(dt);
@@ -1247,6 +1554,8 @@ export class Game {
     // ---- pickups ----
     for (let i = this.pickups.length - 1; i >= 0; i--) {
       const u = this.pickups[i];
+      this.selectTarget(u.x, u.y);
+      const p = this.p;
       const d = Math.hypot(p.x - u.x, p.y - u.y);
       if (d < p.magnet) {
         const a = Math.atan2(p.y - u.y, p.x - u.x);
@@ -1269,11 +1578,12 @@ export class Game {
           this.credits += u.value;
           this.score += u.value * 6;
           this.floatText(u.x, u.y, `+${Math.round(u.value)} CR`, AMBER, 13);
-          audio.play("pickup");
+          this.sound.play("pickup");
         } else {
           p.hull = Math.min(p.maxHull, p.hull + u.value);
-          this.floatText(u.x, u.y, `+${Math.round(u.value)} HULL`, ICE, 13);
+          this.floatText(u.x, u.y, `+${Math.round(u.value)} HEALTH`, ICE, 13);
         }
+        this.pickupCollected(u);
         this.pickups.splice(i, 1);
         continue;
       }
@@ -1308,8 +1618,6 @@ export class Game {
       if (this.arcs[i].life <= 0) this.arcs.splice(i, 1);
     }
 
-    this.shake *= Math.pow(0.88, dt * 60);
-    if (this.shake < 0.1) this.shake = 0;
     this.flashAlpha = Math.max(0, this.flashAlpha - dt * 3.2);
 
     if (this.waveHold > 0) this.waveHold -= dt;
@@ -1353,16 +1661,16 @@ export class Game {
         // roughly a 1-in-3 chance per wave, rolled slowly so it lands mid-wave
         // Fewer total waves means fewer opportunities, so the per-second roll
         // is doubled to preserve roughly the same number of showers per run.
-        if (Math.random() < dt * 0.09) this.startShower();
+        if (this.random() < dt * 0.09) this.startShower();
       }
       return;
     }
     s.t -= dt;
     s.spawnT -= dt;
     if (s.spawnT <= 0) {
-      s.spawnT = rnd(0.28, 0.5);
+      s.spawnT = this.rnd(0.28, 0.5);
       this.spawnMeteor(s.side);
-      if (Math.random() < 0.55) this.spawnMeteorite();
+      if (this.random() < 0.55) this.spawnMeteorite();
     }
     if (s.t <= 0) {
       s.active = false;
@@ -1377,23 +1685,24 @@ export class Game {
     s.active = true;
     s.t = duration;
     s.spawnT = 0.2;
-    s.side = Math.random() < 0.5 ? -1 : 1;
+    s.side = this.random() < 0.5 ? -1 : 1;
     s.occurredThisWave = true;
     this.banner = "METEOR SHOWER";
     this.bannerSub = "STREAKS CROSS THE SECTOR · METEORITES PAY 10–20 CR";
     this.bannerT = 2.6;
     this.flashAlpha = 0.35;
     this.shake += 5;
-    audio.play("bossCharge");
+    this.sound.play("bossCharge");
   }
 
   /** a fast streak that enters one side and leaves the other */
   spawnMeteor(side: number) {
     const fromLeft = side < 0;
-    const y = rnd(40, this.h - 40);
+    const y = this.rnd(40, this.h - 40);
     const x = fromLeft ? -50 : this.w + 50;
-    const speed = rnd(520, 700);
-    const drift = rnd(-0.32, 0.32);
+    // Ease pilots into showers; reach the original speed in the final sector.
+    const speed = this.rnd(520, 700) * (0.55 + 0.45 * clamp((this.wave - 6) / 15, 0, 1));
+    const drift = this.rnd(-0.32, 0.32);
     const rock = this.makeRock(
       x,
       y,
@@ -1406,17 +1715,17 @@ export class Game {
     // tanky enough to feel like a real target, soft enough to be worth shooting
     const meteor = GAME_CONFIG.asteroids.traits.meteor;
     rock.hp = rock.maxHp = meteor.hpBase + scaledWave(this.wave) * meteor.hpPerScaledWave;
-    rock.rotSpeed = rnd(4, 8) * (fromLeft ? 1 : -1);
-    this.rocks.push(rock);
+    rock.rotSpeed = this.rnd(4, 8) * (fromLeft ? 1 : -1);
+    this.addRocks(rock);
   }
 
   /** a meteor breaking apart showers the impact point with salvageable debris */
   shatterMeteor(x: number, y: number, vx: number, vy: number) {
     const meteor = GAME_CONFIG.asteroids.traits.meteor;
-    const shards = Math.floor(rnd(meteor.shardCountMin, meteor.shardCountMax));
+    const shards = Math.floor(this.rnd(meteor.shardCountMin, meteor.shardCountMax));
     for (let i = 0; i < shards; i++) {
-      const a = Math.random() * TAU;
-      const sp = rnd(60, 150);
+      const a = this.random() * TAU;
+      const sp = this.rnd(60, 150);
       const rock = this.makeRock(
         x,
         y,
@@ -1429,36 +1738,43 @@ export class Game {
       rock.hp = rock.maxHp =
         GAME_CONFIG.asteroids.traits.meteorite.hpBase +
         scaledWave(this.wave) * GAME_CONFIG.asteroids.traits.meteorite.hpPerScaledWave;
-      this.rocks.push(rock);
+      this.addRocks(rock);
     }
     this.rings.push({ x, y, r: 8, max: 110, life: 0.5, color: AMBER_HOT, w: 3 });
     this.burst(x, y, 34, AMBER_HOT);
     this.burst(x, y, 18, "#ffd27a");
     this.shake += 7;
-    audio.play("explodeBig");
+    this.sound.play("explodeBig");
   }
 
   /** a small slow meteorite that falls in from the top and disperses */
   spawnMeteorite() {
-    const x = rnd(40, this.w - 40);
-    const rock = this.makeRock(x, -30, 1, rnd(-70, 70), rnd(45, 90), "meteorite");
+    const x = this.rnd(40, this.w - 40);
+    const rock = this.makeRock(x, -30, 1, this.rnd(-70, 70), this.rnd(45, 90), "meteorite");
     rock.r *= 0.8;
     rock.hp = rock.maxHp =
       GAME_CONFIG.asteroids.traits.meteorite.hpBase +
       scaledWave(this.wave) * GAME_CONFIG.asteroids.traits.meteorite.hpPerScaledWave; // pops in one or two shots
-    this.rocks.push(rock);
+    this.addRocks(rock);
   }
 
   /** dev helper: drop a handful of meteorites right now */
   devSpawnMeteorites(n = 6) {
     for (let i = 0; i < n; i++) {
-      const x = rnd(40, this.w - 40);
-      const rock = this.makeRock(x, rnd(-60, -20), 1, rnd(-70, 70), rnd(45, 90), "meteorite");
+      const x = this.rnd(40, this.w - 40);
+      const rock = this.makeRock(
+        x,
+        this.rnd(-60, -20),
+        1,
+        this.rnd(-70, 70),
+        this.rnd(45, 90),
+        "meteorite",
+      );
       rock.r *= 0.8;
       rock.hp = rock.maxHp =
         GAME_CONFIG.asteroids.traits.meteorite.hpBase +
         scaledWave(this.wave) * GAME_CONFIG.asteroids.traits.meteorite.hpPerScaledWave;
-      this.rocks.push(rock);
+      this.addRocks(rock);
     }
   }
 
@@ -1485,10 +1801,10 @@ export class Game {
         d.y = this.p.y + 12;
         if (this.frame % 4 === 0) {
           this.particles.push({
-            x: d.x + rnd(-10, 10),
-            y: d.y + rnd(-10, 10),
-            vx: rnd(-20, 20),
-            vy: rnd(-20, 20),
+            x: d.x + this.rnd(-10, 10),
+            y: d.y + this.rnd(-10, 10),
+            vx: this.rnd(-20, 20),
+            vy: this.rnd(-20, 20),
             life: 0.35,
             max: 0.35,
             size: 2,
@@ -1504,7 +1820,7 @@ export class Game {
           this.rings.push({ x: d.x, y: d.y, r: 8, max: 68, life: 0.5, color: ICE, w: 2 });
           this.burst(d.x, d.y, 16, ICE);
           this.floatText(d.x, d.y - 24, "DRONE REBUILT", ICE, 12);
-          audio.play("droneRebuild");
+          this.sound.play("droneRebuild");
         }
       }
       return;
@@ -1519,7 +1835,7 @@ export class Game {
       if (c.hp <= 0) {
         this.burst(c.x, c.y, 24, ICE);
         this.rings.push({ x: c.x, y: c.y, r: 8, max: 64, life: 0.4, color: ICE, w: 2 });
-        audio.play("droneDestroyed");
+        this.sound.play("droneDestroyed");
         this.salvageClones.splice(i, 1);
       }
     }
@@ -1569,56 +1885,93 @@ export class Game {
       }
     }
 
+    if (u.hp <= 0 || (isPrimary && !d.active)) return;
     if (!isPrimary) {
-      this.salvageMagnet(u);
+      this.salvageMagnet(u, dt);
       this.salvageFire(u, dt);
       return;
     }
 
-    this.salvageMagnet(u);
-
-    d.pulseTimer -= dt;
-    if (d.upgrades.repairPulse > 0 && d.pulseTimer <= 0) {
-      const range = 150 + d.upgrades.scan * 35 + (d.upgrades.scan >= 3 ? 80 : 0);
-      if (Math.hypot(d.x - this.p.x, d.y - this.p.y) < range) {
-        const amount = d.upgrades.repairPulse === 3 ? 4.2 : 0.9 * d.upgrades.repairPulse;
-        this.p.hull = Math.min(this.p.maxHull, this.p.hull + amount);
-        this.rings.push({
-          x: this.p.x,
-          y: this.p.y,
-          r: 8,
-          max: 28,
-          life: 0.28,
-          color: ICE,
-          w: 1.5,
-        });
-      }
-      d.pulseTimer = Math.max(3.4, 7.5 - d.upgrades.repairPulse * 0.9);
-    }
+    this.salvageMagnet(u, dt);
+    this.repairSalvage(dt);
     this.salvageFire(u, dt);
   }
 
+  salvageSupportRange() {
+    return (
+      GAME_CONFIG.salvage.repairPulseRange +
+      this.salvageDrone.upgrades.scan * GAME_CONFIG.salvage.repairPulseRangePerScan
+    );
+  }
+
+  repairInterval() {
+    const level = this.salvageDrone.upgrades.repairPulse;
+    return GAME_CONFIG.salvage.repairPulseIntervals[Math.max(0, Math.min(2, level - 1))];
+  }
+
+  repairSalvage(dt: number) {
+    const d = this.salvageDrone;
+    if (
+      !d.purchased ||
+      !d.active ||
+      !d.upgrades.repairPulse ||
+      this.quietTime < GAME_CONFIG.salvage.repairQuietSeconds ||
+      Math.hypot(d.x - this.p.x, d.y - this.p.y) > this.salvageSupportRange()
+    ) {
+      d.pulseTimer = this.repairInterval();
+      return;
+    }
+    // Do not bank time out of range or before the five-second quiet window.
+    d.pulseTimer -= Math.min(
+      dt,
+      Math.max(0, this.quietTime - GAME_CONFIG.salvage.repairQuietSeconds),
+    );
+    if (d.pulseTimer <= 0.000001) {
+      this.p.hull = Math.min(
+        this.p.maxHull,
+        this.p.hull +
+          (d.upgrades.repairPulse >= 3
+            ? GAME_CONFIG.salvage.repairPulseLevel3Heal
+            : GAME_CONFIG.salvage.repairPulseHeal),
+      );
+      d.pulseTimer = this.repairInterval();
+      this.rings.push({ x: this.p.x, y: this.p.y, r: 8, max: 28, life: 0.28, color: ICE, w: 1.5 });
+    }
+  }
+
   /** credit magnet + collection for any squad unit */
-  salvageMagnet(u: SalvageDrone | SalvageClone) {
+  salvageMagnet(u: SalvageDrone | SalvageClone, dt = 1 / 60) {
     const d = this.salvageDrone;
     const magnet =
-      76 + d.upgrades.magnet * 48 + d.upgrades.scan * 42 + (d.upgrades.magnet >= 3 ? 90 : 0);
+      GAME_CONFIG.salvage.magnetRangeBase +
+      d.upgrades.magnet * GAME_CONFIG.salvage.magnetRangePerLevel +
+      d.upgrades.scan * GAME_CONFIG.salvage.magnetRangePerScan +
+      (d.upgrades.magnet >= 3 ? GAME_CONFIG.salvage.magnetLevel3RangeBonus : 0);
     for (let i = this.pickups.length - 1; i >= 0; i--) {
       const pk = this.pickups[i];
-      if (pk.kind !== "credit") continue;
+      if (pk.kind !== "credit" && d.upgrades.magnet === 0) continue;
       const distance = Math.hypot(u.x - pk.x, u.y - pk.y);
       if (distance < magnet) {
         const a = Math.atan2(u.y - pk.y, u.x - pk.x);
         const pull = clamp((1 - distance / magnet) * 920 + 160, 160, 920);
-        pk.vx += Math.cos(a) * pull * 0.025;
-        pk.vy += Math.sin(a) * pull * 0.025;
+        pk.vx += Math.cos(a) * pull * dt * (1.5 + d.upgrades.magnet * 0.5);
+        pk.vy += Math.sin(a) * pull * dt * (1.5 + d.upgrades.magnet * 0.5);
       }
       if (distance < 22) {
-        this.credits += pk.value;
-        this.score += pk.value * 4;
-        this.floatText(pk.x, pk.y, `DRONE +${Math.round(pk.value)} CR`, ICE, 11);
+        if (pk.kind === "credit") {
+          this.credits += pk.value;
+          this.score += pk.value * 4;
+        } else this.p.hull = Math.min(this.p.maxHull, this.p.hull + pk.value);
+        this.floatText(
+          pk.x,
+          pk.y,
+          `DRONE +${Math.round(pk.value)} ${pk.kind === "credit" ? "CR" : "HP"}`,
+          ICE,
+          11,
+        );
         this.burst(pk.x, pk.y, 5, ICE);
-        audio.play("pickup");
+        this.sound.play("pickup");
+        this.pickupCollected(pk);
         this.pickups.splice(i, 1);
       }
     }
@@ -1630,10 +1983,8 @@ export class Game {
    *  - arc:   real chain lightning from the drone, no facing cone
    *  - other: projectiles that inherit the weapon's full identity
    *
-   * Volume rule: only pulse / ricochet / scatter may fire more than one
-   * projectile per volley. Everything else is capped to a single shot no
-   * matter how many Twin Cannons are installed — twin levels instead speed
-   * the cadence for those weapons so the upgrade still means something.
+   * Adaptive Arsenal adds projectiles, chain targets, or beam power according
+   * to the mount. Synchronized Feeders affects every mount's attack cadence.
    */
   salvageFire(u: SalvageDrone | SalvageClone, dt: number) {
     const d = this.salvageDrone;
@@ -1642,14 +1993,23 @@ export class Game {
     const attached = d.weapon;
     const attachedLevel = attached ? this.p.weapons[attached] : 0;
     const range =
-      310 + d.upgrades.scan * 90 + (d.upgrades.scan >= 3 ? 150 : 0) + (attached ? 120 : 0);
+      (this.p.rangeMul ?? 1) *
+      (GAME_CONFIG.salvage.targetRangeBase +
+        d.upgrades.scan * GAME_CONFIG.salvage.targetRangePerScan +
+        (d.upgrades.scan >= 3 ? GAME_CONFIG.salvage.scanLevel3TargetBonus : 0) +
+        (attached ? GAME_CONFIG.salvage.attachedWeaponRangeBonus : 0));
     const finalSurge = over === 3 ? 1.65 : 1;
     const overMul = (1 + over * 0.28) * (1 - Math.max(0, over - 1) * 0.08) * finalSurge;
 
     // ---- continuous beam mount ----
     if (attached === "laser") {
       u.fireTimer = 0;
-      const target = this.nearestTarget(u.x, u.y, range + 200, (r) => r.trait !== "meteor");
+      const target = this.nearestTarget(
+        u.x,
+        u.y,
+        range + 200 * (this.p.rangeMul ?? 1),
+        (r) => r.trait !== "meteor",
+      );
       if (!target) {
         u.beamOn = false;
         return;
@@ -1660,9 +2020,15 @@ export class Game {
         ? u.beamAngle + clamp(wrapAngle(desired - u.beamAngle), -6 * dt, 6 * dt)
         : desired;
       u.beamOn = true;
-      const dps = this.laserStats(attachedLevel).dps * 0.18 * overMul;
-      u.beamLen = this.droneBeamDamage(u.x, u.y, u.beamAngle, range + 200, dps * dt);
-      if (this.frame % 6 === 0) audio.play("arc");
+      const dps = this.laserStats(attachedLevel, true).dps * 0.18 * overMul * (1 + twin * 0.2);
+      u.beamLen = this.droneBeamDamage(
+        u.x,
+        u.y,
+        u.beamAngle,
+        range + 200 * (this.p.rangeMul ?? 1),
+        dps * dt,
+      );
+      if (this.frame % 6 === 0) this.sound.play("arc");
       return;
     }
     u.beamOn = false;
@@ -1672,14 +2038,18 @@ export class Game {
 
     // ---- chain lightning mount ----
     if (attached === "arc") {
-      const as = this.arcStats(attachedLevel);
+      const as = this.arcStats(attachedLevel, true);
       const fired = this.arcFrom(
         u.x,
         u.y,
-        { range: Math.min(as.range, range), chains: Math.max(1, as.chains - 1), dmg: as.dmg },
+        {
+          range: Math.min(as.range + d.upgrades.scan * 150, range),
+          chains: Math.max(1, as.chains - 1) + twin,
+          dmg: as.dmg,
+        },
         { scale: 0.45 * overMul },
       );
-      u.fireTimer = fired ? Math.max(0.28, as.tick * 2.4 - twin * 0.06) : 0.1;
+      u.fireTimer = fired ? as.tick * 2.4 : 0.1;
       return;
     }
 
@@ -1691,11 +2061,7 @@ export class Game {
     const shotColor = weaponStats ? weaponStats.color : ICE;
     const multiShotAllowed =
       attached === "pulse" || attached === "ricochet" || attached === "spread" || attached === null;
-    const shots = multiShotAllowed
-      ? attached
-        ? Math.min(4, Math.max(1, weaponStats?.shots ?? 1)) + Math.max(0, twin - 1)
-        : 1 + twin
-      : 1;
+    const shots = (multiShotAllowed ? Math.min(4, Math.max(1, weaponStats?.shots ?? 1)) : 1) + twin;
     const baseDamage = (weaponStats?.dmg ?? 3.5) * 0.22;
     const damage = (baseDamage + over * 1.8) * (1 - Math.max(0, over - 1) * 0.08) * finalSurge;
     const speed = (weaponStats?.speed ?? 430) * 0.78 + d.upgrades.scan * 22;
@@ -1707,16 +2073,16 @@ export class Game {
     );
     for (let i = 0; i < shots; i++) {
       const a = aim + (i - (shots - 1) / 2) * spreadArc;
-      this.bullets.push({
+      this.addBullet({
         x: u.x + Math.cos(a) * 13,
         y: u.y + Math.sin(a) * 13,
         vx: Math.cos(a) * speed,
         vy: Math.sin(a) * speed,
         r: weaponStats ? weaponStats.r : 3,
-        life: weaponStats ? weaponStats.life : 1.4,
+        life: weaponStats ? weaponStats.life : 1.4 * (this.p.rangeMul ?? 1),
         dmg: damage,
         kind: shotKind,
-        pierce: (weaponStats ? weaponStats.pierce : 0) + d.upgrades.piercing,
+        pierce: weaponStats ? weaponStats.pierce : 0,
         color: shotColor,
         hitIds: new Set(),
         turn: weaponStats?.turn ?? 0,
@@ -1726,10 +2092,8 @@ export class Game {
         extraDmg: (weaponStats?.extraDmg ?? 0) * 0.5,
       });
     }
-    // single-shot weapons convert twin levels into cadence instead of volume
-    const twinCadence = multiShotAllowed ? 0 : twin * 0.14;
-    u.fireTimer = Math.max(0.4, (attached ? 1.45 : 1.65) - over * 0.18 - twinCadence);
-    audio.play(weaponStats ? weaponStats.sfx : "seeker");
+    u.fireTimer = Math.max(0.4, (attached ? 1.45 : 1.65) - over * 0.18) / this.feederRate(true);
+    this.sound.play(weaponStats ? weaponStats.sfx : "seeker");
   }
 
   /** raycast beam from a drone; returns the beam's drawn length */
@@ -1751,7 +2115,7 @@ export class Game {
         hits.push({
           t,
           apply: () => {
-            r.hp -= dmg;
+            this.loseRockHp(r, dmg);
             r.flash = 1;
             if (r.hp <= 0) {
               const idx = this.rocks.indexOf(r);
@@ -1813,10 +2177,12 @@ export class Game {
     return nearest;
   }
 
-  damageSalvageDrone(amount: number) {
+  damageSalvageDrone(amount: number, redirected = false) {
     const d = this.salvageDrone;
-    if (!d.purchased || !d.active || d.hitTimer > 0) return;
-    const armor = d.upgrades.armor >= 3 ? 0.6 : d.upgrades.armor * 0.15;
+    if (!d.purchased || !d.active || (!redirected && d.hitTimer > 0)) return;
+    this.quietTime = 0;
+    d.pulseTimer = this.repairInterval();
+    const armor = redirected ? 0 : d.upgrades.armor >= 3 ? 0.6 : d.upgrades.armor * 0.15;
     d.hp -= amount * (1 - armor);
     d.hitTimer = 0.35;
     this.burst(d.x, d.y, 8, ICE);
@@ -1831,7 +2197,7 @@ export class Game {
       this.rings.push({ x: d.x, y: d.y, r: 4, max: 110, life: 0.7, color: AMBER, w: 2 });
       this.rings.push({ x: d.x, y: d.y, r: 12, max: 150, life: 0.9, color: MAGENTA, w: 1.5 });
       this.floatText(d.x, d.y, "DRONE LOST", ICE, 13);
-      audio.play("droneDestroyed");
+      this.sound.play("droneDestroyed");
       this.shake += 5;
       this.timeScale = Math.min(this.timeScale, 0.55);
     }
@@ -1843,10 +2209,130 @@ export class Game {
     d.rebuilding = 2.5;
     d.x = this.p.x + 28;
     d.y = this.p.y + 12;
-    audio.play("droneRebuild");
+    this.sound.play("droneRebuild");
+  }
+
+  spikerShots(): 4 | 8 {
+    return this.wave >= GAME_CONFIG.enemies.spikers.eightShotWave ? 8 : 4;
+  }
+
+  spikerHp() {
+    const tuning = GAME_CONFIG.enemies.spikers;
+    return tuning.hpBase + this.wave * tuning.hpPerWave;
+  }
+
+  spikerCap() {
+    const tuning = GAME_CONFIG.enemies.spikers;
+    return this.wave >= tuning.latePairFromWave && this.wave <= tuning.latePairToWave ? 2 : 1;
+  }
+
+  /** Natural reinforcements share a live cap; developer batches remain explicit overrides. */
+  spawnSpikers(count = 1) {
+    if (this.wave < GAME_CONFIG.enemies.spikers.unlockWave) return 0;
+    const live = this.drones.filter(
+      (d) => d.kind === "spiker" && d.coop?.kind !== "riftSpiker",
+    ).length;
+    const amount = Math.max(0, Math.min(count, this.spikerCap() - live));
+    for (let i = 0; i < amount; i++) {
+      const point = this.spikerEntryPoint(GAME_CONFIG.enemies.spikers.radius);
+      this.drones.push(this.spawnDrone(point.x, point.y, this.spikerHp(), "spiker"));
+    }
+    return amount;
+  }
+
+  /** Enter from the furthest edge so both radial heavies telegraph their arrival. */
+  spikerEntryPoint(radius: number) {
+    const margin = radius + 20;
+    const candidates = [
+      { x: margin, y: this.rnd(margin, this.h - margin) },
+      { x: this.w - margin, y: this.rnd(margin, this.h - margin) },
+      { x: this.rnd(margin, this.w - margin), y: margin },
+      { x: this.rnd(margin, this.w - margin), y: this.h - margin },
+    ];
+    return candidates.reduce((best, next) =>
+      Math.hypot(next.x - this.p.x, next.y - this.p.y) >
+      Math.hypot(best.x - this.p.x, best.y - this.p.y)
+        ? next
+        : best,
+    );
+  }
+
+  updateSpiker(d: Drone, dt: number) {
+    const tuning = GAME_CONFIG.enemies.spikers;
+    d.flash = Math.max(0, d.flash - dt * 4);
+    d.orbitTimer -= dt;
+    if (d.orbitTimer <= 0) {
+      const heading = Math.atan2(d.vy, d.vx) + this.rnd(-tuning.turnAngle, tuning.turnAngle);
+      const speed = this.rnd(tuning.speedMin, tuning.speedMax);
+      d.vx = Math.cos(heading) * speed;
+      d.vy = Math.sin(heading) * speed;
+      d.orbitTimer = this.rnd(tuning.turnIntervalMin, tuning.turnIntervalMax);
+    }
+    // No pursuit or evasion: momentum carries it around the arena like a rock.
+    const speed = Math.hypot(d.vx, d.vy);
+    if (speed > tuning.speedMax) {
+      d.vx = (d.vx / speed) * tuning.speedMax;
+      d.vy = (d.vy / speed) * tuning.speedMax;
+    }
+    d.x += d.vx * dt;
+    d.y += d.vy * dt;
+    const margin = d.r + 6;
+    if (d.x < margin || d.x > this.w - margin) {
+      d.x = clamp(d.x, margin, this.w - margin);
+      d.vx = d.x === margin ? Math.abs(d.vx) : -Math.abs(d.vx);
+    }
+    if (d.y < margin || d.y > this.h - margin) {
+      d.y = clamp(d.y, margin, this.h - margin);
+      d.vy = d.y === margin ? Math.abs(d.vy) : -Math.abs(d.vy);
+    }
+    // Lock the visible spike directions during the warning and fire them together.
+    if (d.fire > tuning.fireWarning) d.angle += tuning.spinRate * d.orbitDir * dt;
+    if (this.mode !== "playing") return;
+    d.fire -= dt;
+    if (d.fire > 0) return;
+    const rift = d.coop?.kind === "riftSpiker";
+    const shots = this.spikerShots();
+    for (let i = 0; i < shots; i++) {
+      const a = d.angle + (i * TAU) / shots + (rift ? this.frame * 0.018 : 0);
+      this.addBullet({
+        x: d.x + Math.cos(a) * (d.r + 6),
+        y: d.y + Math.sin(a) * (d.r + 6),
+        vx: Math.cos(a) * tuning.boltSpeed,
+        vy: Math.sin(a) * tuning.boltSpeed,
+        r: tuning.boltRadius,
+        life: tuning.boltLifetime,
+        dmg: tuning.boltDamage,
+        kind: "enemy",
+        damageCause: rift ? "Rift Spiker spiral volley" : "Spiker radial volley",
+        pierce: 0,
+        color: rift ? "#b68cff" : "#ff7aa0",
+        hitIds: new Set(),
+        turn: 0,
+        bounces: 0,
+        fuse: 0,
+        extra: 0,
+        extraDmg: 0,
+      });
+    }
+    d.fire = shots === 8 ? tuning.lateFireInterval : tuning.fireInterval;
+    this.rings.push({
+      x: d.x,
+      y: d.y,
+      r: d.r * 0.5,
+      max: d.r * 1.7,
+      life: 0.3,
+      color: MAGENTA,
+      w: 2,
+    });
+    this.sound.play("pulse");
   }
 
   updateDrone(d: Drone, dt: number) {
+    this.updateDroneSpecial(d, dt);
+    if (d.kind === "spiker") {
+      this.updateSpiker(d, dt);
+      return;
+    }
     const p = this.p;
     const warden = d.kind === "warden";
     const ang = Math.atan2(p.y - d.y, p.x - d.x);
@@ -1862,8 +2348,8 @@ export class Game {
     // orbit direction flips on a timer so they never trace a predictable circle
     d.orbitTimer -= dt;
     if (d.orbitTimer <= 0) {
-      if (Math.random() < 0.65) d.orbitDir *= -1;
-      d.orbitTimer = rnd(2.2, 4.5);
+      if (this.random() < 0.65) d.orbitDir *= -1;
+      d.orbitTimer = this.rnd(2.2, 4.5);
     }
 
     const low = d.hp < d.maxHp * 0.35;
@@ -1925,16 +2411,16 @@ export class Game {
     // the player. That turret persists for ~10 seconds and continually spawns
     // seeking homing orbs that harass the player until it's destroyed (2 shots).
     if (warden && this.mode === "playing") {
-      if (d.volleyCd === undefined) d.volleyCd = rnd(3, 6);
+      if (d.volleyCd === undefined) d.volleyCd = this.rnd(3, 6);
       d.volleyCd -= dt;
       if (d.volleyCd <= 0) {
-        d.volleyCd = rnd(6, 11);
+        d.volleyCd = this.rnd(6, 11);
         // Limit to 3 concurrent turret nests at once
         const nestCount = this.bullets.filter((b) => b.kind === "wardenOrb").length;
         if (nestCount < 3) {
           const midX = (d.x + p.x) / 2;
           const midY = (d.y + p.y) / 2;
-          this.bullets.push({
+          this.addBullet({
             x: midX,
             y: midY,
             vx: 0,
@@ -1958,7 +2444,7 @@ export class Game {
           });
           this.rings.push({ x: midX, y: midY, r: 12, max: 70, life: 0.45, color: "#ff7aa0", w: 2 });
           this.burst(midX, midY, 14, "#ff7aa0");
-          audio.play("bossCharge");
+          this.sound.play("bossCharge");
         }
       }
     }
@@ -1990,7 +2476,7 @@ export class Game {
           // Trigger: fire at the LOCKED aim point (not the live player position)
           const bs = 860;
           const la = Math.atan2(d.sniperAimY - d.y, d.sniperAimX - d.x);
-          this.bullets.push({
+          this.addBullet({
             x: d.x + Math.cos(la) * 32,
             y: d.y + Math.sin(la) * 32,
             vx: Math.cos(la) * bs,
@@ -1999,6 +2485,7 @@ export class Game {
             life: 2.2,
             dmg: WARDEN_BOLT_DMG,
             kind: "enemy",
+            damageCause: "Warden sniper shot",
             pierce: 99,
             color: "#ff8800",
             hitIds: new Set(),
@@ -2009,9 +2496,9 @@ export class Game {
             extraDmg: 0,
             blast: undefined,
           });
-          audio.play("rail");
+          this.sound.play("rail");
           d.pulseCharge = undefined;
-          d.fire = rnd(2.4, 3.6);
+          d.fire = this.rnd(2.4, 3.6);
         }
       } else {
         d.fire -= dt;
@@ -2030,14 +2517,14 @@ export class Game {
           if (inBand) fireChance *= 0.55 + 0.45 * (1 - Math.abs(dist - 750) / 600); // sweet spot 520–980
           fireChance *= clamp(1.15 - perp / 320, 0.08, 1.1); // strafing = likely miss
           fireChance *= clamp(1.1 - playerSpeed / 640, 0.12, 1.1); // fleeing = rarely worth it
-          if (Math.random() < fireChance) {
+          if (this.random() < fireChance) {
             d.pulseCharge = 0.6;
             // Lock a SNAPSHOT aim point near the player with a deliberate
             // offset — the round fires at this fixed point and never tracks
             // the player afterwards, so strafing it off the point dodges the
             // shot (it is a telegraphed sniper shot, not a homing missile).
-            d.sniperAimX = p.x + rnd(-24, 24);
-            d.sniperAimY = p.y + rnd(-24, 24);
+            d.sniperAimX = p.x + this.rnd(-24, 24);
+            d.sniperAimY = p.y + this.rnd(-24, 24);
           } else {
             d.fire = 0.4; // hold fire, re-evaluate soon
           }
@@ -2047,13 +2534,19 @@ export class Game {
     // ---- Sentinel fire (quick bolts with lead) -----------------------------
     if (!warden) {
       d.fire -= dt;
-      if (d.fire <= 0 && this.mode === "playing" && dist < 720) {
-        const bs = 250;
-        const tt = dist / bs;
-        const lx = p.x + p.vx * tt * 0.8,
-          ly = p.y + p.vy * tt * 0.8;
+      const tuning = GAME_CONFIG.enemies.sentinels;
+      // Movement/wrapping has already happened: solve from the actual muzzle
+      // position, with a short bounded lead instead of projecting seconds away.
+      const range = Math.hypot(p.x - d.x, p.y - d.y);
+      if (d.fire <= 0 && this.mode === "playing" && range < tuning.boltRange) {
+        const bs = tuning.boltSpeed;
+        const speed = Math.hypot(p.vx, p.vy);
+        const lead = Math.min((range / bs) * 0.8, 0.3, (range * 0.25) / Math.max(1, speed));
+        const lx = clamp(p.x + p.vx * lead, 0, this.w),
+          ly = clamp(p.y + p.vy * lead, 0, this.h);
         const la = Math.atan2(ly - d.y, lx - d.x);
-        this.bullets.push({
+        d.angle = la;
+        this.addBullet({
           x: d.x + Math.cos(la) * 18,
           y: d.y + Math.sin(la) * 18,
           vx: Math.cos(la) * bs,
@@ -2062,6 +2555,7 @@ export class Game {
           life: 4.2,
           dmg: SENTINEL_BOLT_DMG,
           kind: "enemy",
+          damageCause: "Sentinel projectile",
           pierce: 0,
           color: MAGENTA,
           hitIds: new Set(),
@@ -2072,11 +2566,11 @@ export class Game {
           extraDmg: 0,
           blast: undefined,
         });
-        audio.play("ui");
+        this.sound.play("ui");
         d.burst--;
         if (d.burst > 0) d.fire = 0.22;
         else {
-          d.fire = rnd(3.0, 4.4) - Math.min(1.1, scaledWave(this.wave) * 0.03);
+          d.fire = this.rnd(3.0, 4.4) - Math.min(1.1, scaledWave(this.wave) * 0.03);
           d.burst = this.wave >= RUN_PACING.sentinelBurstsFromWave ? 2 : 1;
         }
       }
@@ -2113,7 +2607,9 @@ export class Game {
       // small rocks shove less and hurt less than large ones —
       // except meteors, which hit like the freight trains they are
       const meteor = r.trait === "meteor";
-      const kick = meteor ? 220 : r.size === 3 ? 130 : r.size === 2 ? 75 : 35;
+      const kick =
+        (meteor ? 220 : r.size === 3 ? 130 : r.size === 2 ? 75 : 35) *
+        (r.trait === "fast" ? GAME_CONFIG.asteroids.traits.fast.knockbackMultiplier : 1);
       const bounce = meteor ? 0.8 : r.size === 3 ? 0.62 : r.size === 2 ? 0.45 : 0.3;
       const dmg = meteor
         ? clamp(
@@ -2175,7 +2671,14 @@ export class Game {
         color: AMBER_HOT,
         w: 2,
       });
-      this.damagePlayer(dmg);
+      this.damagePlayer(
+        dmg * (r.trait === "fast" ? GAME_CONFIG.asteroids.traits.fast.damageMultiplier : 1),
+        meteor
+          ? "Meteor collision"
+          : r.trait === "meteorite"
+            ? "Meteorite collision"
+            : `${r.trait === "none" ? "Asteroid" : `${r.trait} asteroid`} collision`,
+      );
       p.invuln = collision.invulnerability;
       if (meteor) this.shake += 6;
       const idx = this.rocks.indexOf(r);
@@ -2204,7 +2707,7 @@ export class Game {
         p.vy += ny * 340;
         b.flash = 1;
         this.burst(p.x - nx * 8, p.y - ny * 8, 16, MAGENTA);
-        this.damagePlayer(GAME_CONFIG.bosses.contactDamage);
+        this.damagePlayer(GAME_CONFIG.bosses.contactDamage, `MK${b.mk} boss collision`);
         p.invuln = collision.invulnerability;
       }
     }
@@ -2220,13 +2723,24 @@ export class Game {
         d.vx -= Math.cos(ang) * 160;
         d.vy -= Math.sin(ang) * 160;
         this.burst(p.x, p.y, 16, MAGENTA);
-        this.damagePlayer(GAME_CONFIG.enemies.sentinels.playerContactDamage);
-        p.invuln = collision.invulnerability;
-        this.damageDrone(
-          this.drones.indexOf(d),
-          GAME_CONFIG.enemies.sentinels.contactDamageToEnemy,
-          false,
+        this.damagePlayer(
+          d.kind === "spiker"
+            ? GAME_CONFIG.enemies.spikers.playerContactDamage
+            : GAME_CONFIG.enemies.sentinels.playerContactDamage,
+          d.kind === "spiker"
+            ? "Spiker collision"
+            : d.kind === "warden"
+              ? "Warden collision"
+              : "Sentinel collision",
         );
+        p.invuln = collision.invulnerability;
+        if (d.kind !== "spiker") {
+          this.damageDrone(
+            this.drones.indexOf(d),
+            GAME_CONFIG.enemies.sentinels.contactDamageToEnemy,
+            false,
+          );
+        }
         break;
       }
     }
@@ -2235,7 +2749,8 @@ export class Game {
   /* ------------------------------------------------------------ bullets */
 
   guide(b: Bullet, dt: number) {
-    const range = b.kind === "missile" ? 900 : b.kind === "rail" ? 1500 : 520;
+    const range =
+      (b.kind === "missile" ? 900 : b.kind === "rail" ? 1500 : 520) * (this.p.rangeMul ?? 1);
     let target: Hostile | undefined;
     if (b.kind === "seeker") target = this.nearestTarget(b.x, b.y, range);
     else {
@@ -2243,6 +2758,15 @@ export class Game {
       if (!target) target = this.nearestTarget(b.x, b.y, range);
     }
     if (!target) return;
+    if (b.kind === "rail") {
+      const origin = (b.guidanceOrigin ??= Math.atan2(b.vy, b.vx));
+      const angle = Math.atan2(target.y - b.y, target.x - b.x);
+      if (
+        Math.abs(wrapAngle(angle - origin)) >
+        GAME_CONFIG.weaponProgression.weapons.rail.aimAssistCone
+      )
+        return;
+    }
     b.target = target.id;
     const spd = Math.hypot(b.vx, b.vy) || 1;
     const dist = Math.hypot(target.x - b.x, target.y - b.y);
@@ -2254,7 +2778,12 @@ export class Game {
       ly = target.y + target.vy * tt;
     const desired = Math.atan2(ly - b.y, lx - b.x);
     const cur = Math.atan2(b.vy, b.vx);
-    const na = cur + clamp(wrapAngle(desired - cur), -b.turn * dt, b.turn * dt);
+    let na = cur + clamp(wrapAngle(desired - cur), -b.turn * dt, b.turn * dt);
+    if (b.kind === "rail") {
+      const origin = b.guidanceOrigin!;
+      const cap = GAME_CONFIG.weaponProgression.weapons.rail.maxAimCorrection;
+      na = origin + clamp(wrapAngle(na - origin), -cap, cap);
+    }
     b.vx = Math.cos(na) * spd;
     b.vy = Math.sin(na) * spd;
   }
@@ -2266,7 +2795,7 @@ export class Game {
       this.explode(b.x, b.y, p.blastR, p.blastDmg);
       return true;
     }
-    const crit = Math.random() < p.crit;
+    const crit = this.random() < p.crit;
     const dmg = b.dmg * (crit ? p.critMult : 1);
     if (kind === "rock") this.hitRock(idx, dmg, b.vx, b.vy, crit);
     else if (kind === "drone") this.damageDrone(idx, dmg, crit);
@@ -2285,7 +2814,6 @@ export class Game {
   }
 
   updateBullets(dt: number) {
-    const p = this.p;
     const { w, h } = this;
 
     // Splitter-turret interception: the player's shots can destroy a turret
@@ -2307,7 +2835,7 @@ export class Game {
         if (Math.hypot(pb.x - orb.x, pb.y - orb.y) < pb.r + orb.r + 2) {
           orb.hpNow = (orb.hpNow ?? 2) - 1;
           this.burst(pb.x, pb.y, 4, "#ffb3d0");
-          audio.play("hit");
+          this.sound.play("hit");
           // consume the player bullet
           this.bullets.splice(i, 1);
           if (orb.hpNow <= 0) {
@@ -2321,7 +2849,7 @@ export class Game {
               color: "#ff7aa0",
               w: 2,
             });
-            audio.play("explodeSmall");
+            this.sound.play("explodeSmall");
             const oj = j > i ? j - 1 : j; // index shifted after removing pb
             this.bullets.splice(oj, 1);
           }
@@ -2332,13 +2860,20 @@ export class Game {
 
     for (let i = this.bullets.length - 1; i >= 0; i--) {
       const b = this.bullets[i];
+      if (!b) continue;
+      this.selectBulletPilot(b);
+      const p = this.p;
+      if (b.life <= 0 && ["enemy", "wardenOrb", "wardenShard"].includes(b.kind)) {
+        this.bullets.splice(i, 1);
+        continue;
+      }
       if (b.kind === "missile" || b.kind === "seeker" || b.kind === "rail") this.guide(b, dt);
       if (b.kind === "missile" && this.frame % 2 === 0) {
         this.particles.push({
           x: b.x,
           y: b.y,
-          vx: rnd(-20, 20),
-          vy: rnd(-20, 20),
+          vx: this.rnd(-20, 20),
+          vy: this.rnd(-20, 20),
           life: 0.5,
           max: 0.5,
           size: 3,
@@ -2358,11 +2893,11 @@ export class Game {
         // Splitter turret: persistent nest that spawns seeking homing orbs
         b.spawnT = (b.spawnT ?? 0.5) - dt;
         if (b.spawnT <= 0 && (b.nested ?? 0) < 6) {
-          b.spawnT = rnd(1.2, 2.2);
+          b.spawnT = this.rnd(1.2, 2.2);
           b.nested = (b.nested ?? 0) + 1;
           // spawn seeking homing orb
-          const a = Math.atan2(p.y - b.y, p.x - b.x) + rnd(-0.25, 0.25);
-          this.bullets.push({
+          const a = Math.atan2(p.y - b.y, p.x - b.x) + this.rnd(-0.25, 0.25);
+          this.addBullet({
             x: b.x,
             y: b.y,
             vx: Math.cos(a) * 240,
@@ -2381,7 +2916,7 @@ export class Game {
             extraDmg: 0,
           });
           this.rings.push({ x: b.x, y: b.y, r: 4, max: 42, life: 0.3, color: "#ff7aa0", w: 2 });
-          audio.play("explodeSmall");
+          this.sound.play("explodeSmall");
         }
       }
       if (b.kind === "wardenShard") {
@@ -2423,9 +2958,13 @@ export class Game {
             continue;
           }
           b.bounces--;
+          const previousBounces = b.wallBounces ?? 0;
+          b.wallBounces = previousBounces + 1;
+          const multiplier = (count: number) => [1, 2, 3.5, 5][Math.min(3, count)];
+          b.dmg *= multiplier(b.wallBounces) / multiplier(previousBounces);
           b.hitIds.clear();
           this.burst(b.x, b.y, 5, ICE);
-          audio.play("ricochet");
+          this.sound.play("ricochet");
         }
       } else {
         const m = 60;
@@ -2439,7 +2978,7 @@ export class Game {
         if (b.kind === "missile") this.explode(b.x, b.y, p.blastR, p.blastDmg);
         if (b.kind === "flak") this.detonateFlak(b);
         // a warden shell that found nothing still goes off where it died
-        if (b.blast) this.enemyBlast(b.x, b.y, b.blast, b.dmg * 0.6);
+        if (b.blast) this.enemyBlast(b.x, b.y, b.blast, b.dmg * 0.6, b.damageCause);
         this.bullets.splice(i, 1);
         continue;
       }
@@ -2472,7 +3011,11 @@ export class Game {
           continue;
         }
         if (Math.hypot(b.x - p.x, b.y - p.y) < b.r + 15) {
-          this.damagePlayer(b.dmg);
+          this.damagePlayer(
+            b.dmg,
+            b.damageCause ??
+              (b.kind === "wardenShard" ? "Warden homing shard" : "Hostile projectile"),
+          );
           this.bullets.splice(i, 1);
         }
         continue;
@@ -2500,7 +3043,7 @@ export class Game {
         if (this.boss.hole && !b.hitIds.has(this.boss.hole.id)) {
           const h = this.boss.hole;
           if (Math.hypot(b.x - h.x, b.y - h.y) < b.r + h.r) {
-            const crit = Math.random() < p.crit;
+            const crit = this.random() < p.crit;
             const dmg = b.dmg * (crit ? p.critMult : 1);
             this.damageHole(dmg, crit);
             if (b.kind === "missile") {
@@ -2547,12 +3090,12 @@ export class Game {
   detonateFlak(b: Bullet) {
     this.rings.push({ x: b.x, y: b.y, r: 4, max: 46, life: 0.3, color: AMBER, w: 2 });
     this.burst(b.x, b.y, 8, AMBER);
-    audio.play("explodeSmall");
+    this.sound.play("explodeSmall");
     const n = Math.max(4, Math.round(b.extra));
-    const base = Math.random() * TAU;
+    const base = this.random() * TAU;
     for (let i = 0; i < n; i++) {
       const a = base + (i / n) * TAU;
-      this.bullets.push({
+      this.addBullet({
         x: b.x,
         y: b.y,
         vx: Math.cos(a) * 360,
@@ -2659,10 +3202,10 @@ export class Game {
     return best;
   }
 
-  assistAngle(base: number): number {
-    const CONE = 0.2,
-      MAX_NUDGE = 0.085,
-      RANGE = 920;
+  assistAngle(base: number, strength = 1): number {
+    const CONE = 0.2 * strength,
+      MAX_NUDGE = 0.085 * strength,
+      RANGE = 920 * (this.p.rangeMul ?? 1);
     let bestDiff = CONE,
       bestAngle = base;
     const consider = (tx: number, ty: number, tvx: number, tvy: number, radius: number) => {
@@ -2694,14 +3237,14 @@ export class Game {
     const W = p.primary;
     const s = this.weaponStats(W, p.weapons[W] || 1);
     p.fireTimer = 1 / s.rate;
-    const aim = this.assistAngle(p.angle);
-    audio.play(s.sfx);
+    const aim = this.assistAngle(p.angle, W === "rail" ? 0.3 : 1);
+    this.sound.play(s.sfx);
     const mx = p.x + Math.cos(p.angle) * 22,
       my = p.y + Math.sin(p.angle) * 22;
     for (let i = 0; i < s.shots; i++) {
-      const off = (i - (s.shots - 1) / 2) * s.arc + (Math.random() - 0.5) * p.inaccuracy;
+      const off = (i - (s.shots - 1) / 2) * s.arc + (this.random() - 0.5) * p.inaccuracy;
       const a = aim + off;
-      this.bullets.push({
+      this.addBullet({
         x: mx,
         y: my,
         vx: Math.cos(a) * s.speed + p.vx * 0.35,
@@ -2722,8 +3265,8 @@ export class Game {
     }
     const isRail = W === "rail";
     for (let i = 0; i < (isRail ? 10 : 4); i++) {
-      const a = p.angle + rnd(-0.35, 0.35),
-        sp = rnd(60, 220);
+      const a = p.angle + this.rnd(-0.35, 0.35),
+        sp = this.rnd(60, 220);
       this.particles.push({
         x: mx,
         y: my,
@@ -2745,20 +3288,29 @@ export class Game {
 
   beamDamage(dt: number, dps: number) {
     const p = this.p;
-    const a = this.assistAngle(p.angle);
-    this.beamAngle = a;
+    this.beamAngle = p.angle;
+    this.beamDamageDirection(dt, dps, p.angle);
+    if (p.extraShots > 0) this.beamDamageDirection(dt, dps, p.angle + Math.PI);
+  }
+
+  beamDamageDirection(dt: number, dps: number, a: number) {
+    const p = this.p;
     const dx = Math.cos(a),
       dy = Math.sin(a);
-    const range = 1100,
-      TOL = 7;
-    for (let i = this.rocks.length - 1; i >= 0; i--) {
-      const r = this.rocks[i];
+    const beam = this.laserStats(p.weapons.laser || 1);
+    const range = beam.range,
+      TOL = beam.width / 2;
+    // A boom chain reaction may remove several rocks at once. Work from the
+    // original targets, skipping removed ones and leaving new shards for the next tick.
+    for (const r of [...this.rocks].reverse()) {
+      const i = this.rocks.indexOf(r);
+      if (i < 0) continue;
       const rx = r.x - p.x,
         ry = r.y - p.y;
       const t = rx * dx + ry * dy;
       if (t < 0 || t > range) continue;
       if (Math.abs(rx * dy - ry * dx) < r.r + TOL) {
-        r.hp -= dps * dt;
+        this.loseRockHp(r, dps * dt);
         r.flash = 1;
         if (this.frame % 3 === 0) this.burst(r.x, r.y, 1, ICE);
         if (r.hp <= 0) this.breakRock(i, dx * 120, dy * 120);
@@ -2825,7 +3377,7 @@ export class Game {
       first = hz;
     }
     if (!first) return false;
-    audio.play("arc");
+    this.sound.play("arc");
     const hit = new Set<number>();
     let cx = ox,
       cy = oy;
@@ -2868,7 +3420,7 @@ export class Game {
   }
 
   arcDamage(id: number, dmg: number) {
-    const crit = Math.random() < this.p.crit;
+    const crit = this.random() < this.p.crit;
     const real = dmg * (crit ? this.p.critMult : 1);
     if (this.boss) {
       if (this.boss.id === id) {
@@ -2894,17 +3446,17 @@ export class Game {
     const p = this.p;
     p.missiles--;
     p.missileTimer = 0.35;
-    const lock = this.nearestTarget(p.x, p.y, 900);
+    const lock = this.nearestTarget(p.x, p.y, 900 * (p.rangeMul ?? 1));
     const a = lock ? Math.atan2(lock.y - p.y, lock.x - p.x) : this.assistAngle(p.angle);
     // launch along the ship's nose but bend hard toward the lock straight away
     const la = p.angle + clamp(wrapAngle(a - p.angle), -0.6, 0.6);
-    this.bullets.push({
+    this.addBullet({
       x: p.x,
       y: p.y,
       vx: Math.cos(la) * 380,
       vy: Math.sin(la) * 380,
       r: 7,
-      life: 4.5,
+      life: 4.5 * (p.rangeMul ?? 1),
       dmg: 0,
       kind: "missile",
       pierce: 0,
@@ -2918,18 +3470,18 @@ export class Game {
       extraDmg: 0,
     });
     this.shake += 4;
-    audio.play("missile");
+    this.sound.play("missile");
   }
 
   hitRock(index: number, dmg: number, vx: number, vy: number, crit: boolean) {
     const r = this.rocks[index];
     if (!r) return;
-    r.hp -= dmg;
+    this.loseRockHp(r, dmg);
     r.flash = 1;
     r.vx += vx * 0.012;
     r.vy += vy * 0.012;
     this.burst(r.x, r.y, crit ? 9 : 5, crit ? AMBER_HOT : AMBER);
-    audio.play(crit ? "crit" : "hit");
+    this.sound.play(crit ? "crit" : "hit");
     if (crit) this.floatText(r.x, r.y - r.r, "CRIT", AMBER_HOT, 12);
     if (r.hp <= 0) this.breakRock(index, vx, vy);
     else this.score += 4;
@@ -2938,11 +3490,11 @@ export class Game {
   damageDrone(index: number, dmg: number, crit: boolean, quiet = false) {
     const d = this.drones[index];
     if (!d) return;
-    d.hp -= dmg;
+    d.hp -= this.absorbSupportShield(d, dmg);
     d.flash = 1;
     if (!quiet) {
       this.burst(d.x, d.y, crit ? 10 : 6, crit ? AMBER_HOT : ICE);
-      audio.play(crit ? "crit" : "hit");
+      this.sound.play(crit ? "crit" : "hit");
       if (crit) this.floatText(d.x, d.y - d.r, "CRIT", AMBER_HOT, 12);
     }
     if (d.hp <= 0) this.killDrone(index);
@@ -2962,7 +3514,7 @@ export class Game {
     const m = bo.movement;
     if (this.frame - (m.mk6LockFrame ?? -999) > 50 && bo.x > 0 && bo.x < this.w) {
       m.mk6LockFrame = this.frame;
-      this.floatText(bo.x, bo.y - bo.r - 16, "HULL LOCKED", ICE, 14);
+      this.floatText(bo.x, bo.y - bo.r - 16, "HEALTH LOCKED", ICE, 14);
       this.rings.push({
         x: bo.x,
         y: bo.y,
@@ -2983,9 +3535,9 @@ export class Game {
       const absorbed = Math.min(bo.shieldHp, dmg);
       bo.shieldHp -= absorbed;
       dmg -= absorbed;
-      this.burst(bo.x + rnd(-bo.r, bo.r) * 0.5, bo.y + rnd(-bo.r, bo.r) * 0.5, 6, ICE);
+      this.burst(bo.x + this.rnd(-bo.r, bo.r) * 0.5, bo.y + this.rnd(-bo.r, bo.r) * 0.5, 6, ICE);
       if (dmg <= 0) {
-        audio.play("hit");
+        this.sound.play("hit");
         return;
       }
       if (bo.shieldHp <= 0) {
@@ -3004,12 +3556,12 @@ export class Game {
     this.loseBossHp(bo, dmg);
     bo.flash = 1;
     this.burst(
-      bo.x + rnd(-bo.r, bo.r) * 0.6,
-      bo.y + rnd(-bo.r, bo.r) * 0.6,
+      bo.x + this.rnd(-bo.r, bo.r) * 0.6,
+      bo.y + this.rnd(-bo.r, bo.r) * 0.6,
       crit ? 8 : 4,
       crit ? AMBER_HOT : MAGENTA,
     );
-    audio.play(crit ? "crit" : "hit");
+    this.sound.play(crit ? "crit" : "hit");
     if (bo.hp <= 0) this.killBoss();
   }
 
@@ -3022,15 +3574,15 @@ export class Game {
 
     // meteorites: cheap to kill, rich to salvage, never split
     if (r.trait === "meteorite") {
-      const payout = Math.round(rnd(10, 20));
+      const payout = Math.round(this.rnd(10, 20));
       this.credits += payout;
       this.score += 60 * (1 + Math.floor(this.combo / 4) * 0.5);
       this.floatText(r.x, r.y, `+${payout} CR`, AMBER_HOT, 15);
       this.burst(r.x, r.y, 18, AMBER_HOT);
       this.burst(r.x, r.y, 8, "#ffd27a");
       this.rings.push({ x: r.x, y: r.y, r: 4, max: 44, life: 0.36, color: AMBER, w: 2 });
-      audio.play("creditDrop");
-      audio.play("explodeSmall");
+      this.sound.play("creditDrop");
+      this.sound.play("explodeSmall");
       this.gainXp(8 * this.xpScale());
       return;
     }
@@ -3048,7 +3600,7 @@ export class Game {
         this.burst(r.x, r.y, 30, AMBER_HOT);
         this.burst(r.x, r.y, 18, "#ffd27a");
         this.shake += 5;
-        audio.play("explodeBig");
+        this.sound.play("explodeBig");
       }
       this.gainXp(22);
       return;
@@ -3067,22 +3619,22 @@ export class Game {
       color: AMBER,
       w: 2,
     });
-    audio.play(r.size === 3 ? "explodeBig" : "explodeSmall");
-    this.shake += r.size * 3.2;
+    this.sound.play(r.size === 3 ? "explodeBig" : "explodeSmall");
+    if (r.trait !== "boom") this.shake += r.size * 3.2;
     if (r.size === 3) this.timeScale = 0.72;
 
-    if (Math.random() < this.p.creditChance + r.size * 0.07) {
+    if (this.random() < this.p.creditChance + r.size * 0.07) {
       const n = r.size === 3 ? 3 : r.size === 2 ? 2 : 1;
       for (let i = 0; i < n; i++) {
         this.pickups.push({
           x: r.x,
           y: r.y,
-          vx: rnd(-60, 60),
-          vy: rnd(-60, 60),
-          kind: Math.random() < 0.12 ? "repair" : "credit",
+          vx: this.rnd(-60, 60),
+          vy: this.rnd(-60, 60),
+          kind: this.random() < 0.12 ? "repair" : "credit",
           value: Math.round((r.size === 3 ? 12 : r.size === 2 ? 7 : 4) * this.p.creditValue),
           life: 20,
-          pulse: Math.random() * TAU,
+          pulse: this.random() * TAU,
         });
       }
       this.rings.push({
@@ -3095,15 +3647,15 @@ export class Game {
         w: 2,
       });
       this.burst(r.x, r.y, 8 + r.size * 3, AMBER_HOT);
-      audio.play("creditDrop");
+      this.sound.play("creditDrop");
     }
 
-    // boom detonates before the children exist so it can't kill its own shards
+    // Large explosive asteroids detonate without producing descendants.
     if (r.trait === "boom") this.rockBoom(r);
 
-    if (r.size > 1) {
+    if (r.size > 1 && !(r.trait === "boom" && r.size === 3)) {
       for (let i = 0; i < 2; i++) {
-        const a = Math.random() * TAU;
+        const a = this.random() * TAU;
         const child = this.makeRock(
           r.x,
           r.y,
@@ -3116,7 +3668,7 @@ export class Game {
           child.life = r.life;
           child.keep = true;
         }
-        this.rocks.push(child);
+        this.addRocks(child);
       }
     }
     this.gainXp(
@@ -3132,15 +3684,19 @@ export class Game {
   }
 
   rockBoom(r: Rock) {
+    if (r.coopMine) return this.mineBoom(r);
     const radius = this.boomRadius(r.size);
     const pdmg = r.size === 3 ? 32 : r.size === 2 ? 16 : 8;
     const rdmg = r.size === 3 ? 42 : r.size === 2 ? 22 : 11;
     this.rings.push({ x: r.x, y: r.y, r: 6, max: radius * 1.5, life: 0.5, color: ORANGE, w: 3 });
     this.burst(r.x, r.y, 12 + r.size * 8, ORANGE);
-    this.shake += 5 + r.size * 3;
-    audio.play(r.size === 3 ? "explodeBig" : "flak");
-    const p = this.p;
-    if (Math.hypot(p.x - r.x, p.y - r.y) < radius + 14) this.damagePlayer(pdmg);
+    this.shake += r.size * GAME_CONFIG.asteroids.traits.boom.shakePerSize;
+    this.sound.play(r.size === 3 ? "explodeBig" : "flak");
+    this.forEachPilot(() => {
+      const p = this.p;
+      if (Math.hypot(p.x - r.x, p.y - r.y) < radius + 14)
+        this.damagePlayer(pdmg, "Explosive asteroid blast", 0.3);
+    });
     const rockIds = this.rocks
       .filter((o) => o.id !== r.id && Math.hypot(o.x - r.x, o.y - r.y) < radius + o.r)
       .map((o) => o.id);
@@ -3155,12 +3711,14 @@ export class Game {
       const i = this.drones.findIndex((o) => o.id === id);
       if (i >= 0) this.damageDrone(i, rdmg, false);
     }
-    if (
-      this.salvageDrone.active &&
-      Math.hypot(this.salvageDrone.x - r.x, this.salvageDrone.y - r.y) < radius + 14
-    ) {
-      this.damageSalvageDrone(pdmg);
-    }
+    this.forEachPilot(() => {
+      if (
+        this.salvageDrone.active &&
+        Math.hypot(this.salvageDrone.x - r.x, this.salvageDrone.y - r.y) < radius + 14
+      ) {
+        this.damageSalvageDrone(pdmg);
+      }
+    });
   }
 
   killDrone(index: number) {
@@ -3168,6 +3726,7 @@ export class Game {
     if (!d) return;
     this.drones.splice(index, 1);
     const warden = d.kind === "warden";
+    const heavy = warden || d.kind === "spiker";
     if (warden) {
       // Despawn every splitter nest + seeking orbs owned by this warden
       for (let i = this.bullets.length - 1; i >= 0; i--) {
@@ -3175,36 +3734,36 @@ export class Game {
         if (bb.kind === "wardenOrb" || bb.kind === "wardenShard") this.bullets.splice(i, 1);
       }
     }
-    this.burst(d.x, d.y, warden ? 40 : 26, MAGENTA);
+    this.burst(d.x, d.y, heavy ? 40 : 26, MAGENTA);
     this.rings.push({
       x: d.x,
       y: d.y,
       r: 8,
-      max: warden ? 130 : 90,
+      max: heavy ? 130 : 90,
       life: 0.5,
       color: MAGENTA,
-      w: warden ? 4 : 3,
+      w: heavy ? 4 : 3,
     });
-    audio.play(warden ? "bossDeath" : "explodeBig");
-    this.shake += warden ? 13 : 9;
-    this.flashAlpha = warden ? 0.45 : 0.35;
-    const base = warden ? 700 : 360;
+    this.sound.play(heavy ? "bossDeath" : "explodeBig");
+    this.shake += heavy ? 13 : 9;
+    this.flashAlpha = heavy ? 0.45 : 0.35;
+    const base = heavy ? 700 : 360;
     this.score += base * (1 + Math.floor(this.combo / 4) * 0.5);
-    this.floatText(d.x, d.y, `+${base}`, MAGENTA, warden ? 18 : 16);
-    const shards = warden ? 4 : 3;
+    this.floatText(d.x, d.y, `+${base}`, MAGENTA, heavy ? 18 : 16);
+    const shards = heavy ? 4 : 3;
     for (let i = 0; i < shards; i++) {
       this.pickups.push({
         x: d.x,
         y: d.y,
-        vx: rnd(-70, 70),
-        vy: rnd(-70, 70),
+        vx: this.rnd(-70, 70),
+        vy: this.rnd(-70, 70),
         kind: "credit",
-        value: Math.round((warden ? 20 : 14) * this.p.creditValue),
+        value: Math.round((heavy ? 20 : 14) * this.p.creditValue),
         life: GAME_CONFIG.pickups.lifetime,
-        pulse: Math.random() * TAU,
+        pulse: this.random() * TAU,
       });
     }
-    this.gainXp((warden ? 120 : 60) * this.xpScale());
+    this.gainXp((heavy ? 120 : 60) * this.xpScale());
     this.combo++;
     this.comboTimer = 4;
   }
@@ -3247,7 +3806,7 @@ export class Game {
           this.p.maxHull - this.p.hull,
         );
         this.p.hull += healed;
-        this.floatText(this.p.x, this.p.y - 52, `+${Math.round(healed)} HULL`, ICE, 14);
+        this.floatText(this.p.x, this.p.y - 52, `+${Math.round(healed)} HEALTH`, ICE, 14);
       }
       this.floatText(this.p.x, this.p.y - 74, "ALL UPGRADES MAXED", AMBER_HOT, 13);
       return;
@@ -3259,11 +3818,11 @@ export class Game {
         this.p.maxHull - this.p.hull,
       );
       this.p.hull += healed;
-      this.floatText(this.p.x, this.p.y - 52, `+${Math.round(healed)} HULL`, ICE, 14);
+      this.floatText(this.p.x, this.p.y - 52, `+${Math.round(healed)} HEALTH`, ICE, 14);
       this.rings.push({ x: this.p.x, y: this.p.y, r: 12, max: 74, life: 0.5, color: ICE, w: 2 });
     }
-    audio.silence();
-    audio.play("levelup");
+    this.sound.silence();
+    this.sound.play("levelup");
     this.setMode("levelup");
     this.flashAlpha = 0.55;
     this.rings.push({ x: this.p.x, y: this.p.y, r: 10, max: 320, life: 0.7, color: AMBER, w: 3 });
@@ -3292,7 +3851,7 @@ export class Game {
     const pick = (pool: Entry[]): UpgradeCard | null => {
       if (!pool.length) return null;
       const total = pool.reduce((s, e) => s + e.weight, 0);
-      let roll = Math.random() * total;
+      let roll = this.random() * total;
       let idx = 0;
       for (let i = 0; i < pool.length; i++) {
         roll -= pool[i].weight;
@@ -3312,7 +3871,7 @@ export class Game {
     }
     // shuffle so the guaranteed weapon doesn't always sit in the same slot
     for (let i = picked.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
+      const j = Math.floor(this.random() * (i + 1));
       [picked[i], picked[j]] = [picked[j], picked[i]];
     }
     return picked;
@@ -3325,7 +3884,7 @@ export class Game {
     this.credits -= this.rerollCost;
     this.rerollCost = Math.round(this.rerollCost * 1.8);
     this.choices = this.rollChoices();
-    audio.play("buy");
+    this.sound.play("buy");
     return paid;
   }
 
@@ -3337,17 +3896,32 @@ export class Game {
       this.stacks[id] = (this.stacks[id] ?? 0) + 1;
       this.floatText(this.p.x, this.p.y - 30, def.name.toUpperCase(), AMBER_HOT, 16);
     }
-    audio.play("buy");
+    this.sound.play("buy");
     this.flashAlpha = 0.4;
     this.setMode("playing");
   }
 
-  damagePlayer(dmg: number) {
+  damagePlayer(dmg: number, cause = "Unknown damage", feedback = 1) {
     const p = this.p;
     if (this.god || p.invuln > 0) return;
-    p.hull -= dmg * (1 - p.armor);
-    if (p.hull <= 0) this.runSave.end();
-    else this.saveRun();
+    this.quietTime = 0;
+    this.salvageDrone.pulseTimer = this.repairInterval();
+    const incoming = dmg * (1 - p.armor);
+    const d = this.salvageDrone;
+    const shield =
+      d.purchased &&
+      d.active &&
+      d.upgrades.shield > 0 &&
+      Math.hypot(d.x - p.x, d.y - p.y) <= this.salvageSupportRange()
+        ? Math.min(d.hp, incoming * (GAME_CONFIG.salvage.shieldShares[d.upgrades.shield - 1] ?? 0))
+        : 0;
+    if (shield > 0) this.damageSalvageDrone(shield, true);
+    p.hull -= incoming - shield;
+    if (p.hull <= 0 && this.mode === "playing" && this.leaderboardRun)
+      this.leaderboardRun.deathCause = cause;
+    if (p.hull <= 0) {
+      if (!this.headless) this.runSave.end();
+    } else this.saveRun();
     this.burst(p.x, p.y, 10, p.armor > 0 ? ICE : AMBER);
     this.rings.push({
       x: p.x,
@@ -3358,19 +3932,19 @@ export class Game {
       color: p.armor > 0 ? ICE : AMBER_HOT,
       w: 2,
     });
-    audio.play("hurt");
-    this.shake += 11;
-    this.flashAlpha = 0.55;
+    this.sound.play("hurt");
+    this.shake += 11 * feedback;
+    this.flashAlpha = Math.max(this.flashAlpha, 0.55 * feedback);
     this.combo = 0;
     this.comboTimer = 0;
     if (p.hull <= 0 && this.mode === "playing") this.gameOver();
   }
 
   gameOver() {
-    this.runSave.end();
+    if (!this.headless) this.runSave.end();
     this.p.hull = 0;
-    audio.silence();
-    audio.play("death");
+    this.sound.silence();
+    this.sound.play("death");
     this.burst(this.p.x, this.p.y, 90, AMBER);
     this.rings.push({ x: this.p.x, y: this.p.y, r: 10, max: 300, life: 1, color: AMBER_HOT, w: 4 });
     this.shake = 32;
@@ -3379,10 +3953,17 @@ export class Game {
     this.setMode("gameover");
   }
 
-  explode(x: number, y: number, radius: number, dmg: number) {
+  explode(
+    x: number,
+    y: number,
+    radius: number,
+    dmg: number,
+    cause = "Missile blast",
+    playerDamage: number = GAME_CONFIG.asteroids.genericExplosionPlayerDamage,
+  ) {
     this.rings.push({ x, y, r: 8, max: radius * 1.6, life: 0.55, color: MAGENTA, w: 3 });
     this.burst(x, y, 26, MAGENTA);
-    audio.play("explodeBig");
+    this.sound.play("explodeBig");
     this.shake += 10;
     const rockIds = this.rocks
       .filter((r) => Math.hypot(r.x - x, r.y - y) < radius + r.r)
@@ -3419,44 +4000,86 @@ export class Game {
         }
       }
     }
-    if (Math.hypot(this.p.x - x, this.p.y - y) < radius * 0.6)
-      this.damagePlayer(GAME_CONFIG.asteroids.genericExplosionPlayerDamage);
-    this.timeScale = GAME_CONFIG.simulation.explosionTimeScale;
+    this.forEachPilot(() => {
+      if (playerDamage > 0 && Math.hypot(this.p.x - x, this.p.y - y) < radius * 0.6)
+        this.damagePlayer(playerDamage, cause);
+      this.timeScale = GAME_CONFIG.simulation.explosionTimeScale;
+    });
   }
 
   /* ------------------------------------------------------------ waves */
 
-  rollTrait(): RockTrait {
+  rollTrait(forceMutation = false): RockTrait {
     const w = this.wave;
-    const roll = Math.random();
+    const roll = this.random();
     const gates = RUN_PACING.traitWaves;
-    // Nothing homing until the MK1 boss fight is behind the player.
+    // Homing mutations unlock after the MK1 encounter, on wave 6.
     if (w < gates.homing) return "none";
     const pool: RockTrait[] = ["homing"];
     if (w >= gates.bounce) pool.push("bounce");
-    if (w >= gates.boom) pool.push("boom");
+    if (w >= gates.boom && this.boomRoom() > 0) pool.push("boom");
     if (w >= gates.fast) pool.push("fast");
-    // Same chance curve as the old run, compressed onto half as many waves.
-    const chance = 0.12 + (scaledWave(w) - 11) * 0.008;
-    if (roll > chance) return "none";
+    // Mutations ramp up in each unlocked band; late waves use an exact normal quota.
+    const chance = Math.min(0.95, 0.15 + (w - 1) * 0.04);
+    if (!forceMutation && roll > chance) return "none";
     // the newest trait for this band shows up a little more often
-    if (Math.random() < 0.4) return pool[pool.length - 1];
-    return pool[Math.floor(Math.random() * pool.length)];
+    if (this.random() < 0.4) return pool[pool.length - 1];
+    return pool[Math.floor(this.random() * pool.length)];
+  }
+
+  boomRoom() {
+    return Math.max(
+      0,
+      GAME_CONFIG.asteroids.traits.boom.maxAlive -
+        this.rocks.filter((rock) => rock.trait === "boom" && !rock.coopMine).length,
+    );
+  }
+
+  addRocks(...rocks: Rock[]) {
+    for (const rock of rocks) {
+      if (rock.trait === "boom" && !rock.coopMine && this.boomRoom() === 0) continue;
+      this.rocks.push(rock);
+    }
+  }
+
+  rollRockSize(): 1 | 2 | 3 {
+    return (1 + Math.floor(this.random() * 3)) as 1 | 2 | 3;
+  }
+
+  spawnBossAbilityRock(b: Boss) {
+    if (
+      this.random() >= GAME_CONFIG.bosses.abilityRockChance ||
+      this.rocks.filter((rock) => !isEventRock(rock.trait)).length >= BOSS_ROCK_CAP ||
+      (b.spawnTrait === "boom" && this.boomRoom() === 0)
+    )
+      return;
+    const a = this.random() * TAU;
+    const rock = this.makeRock(
+      b.x + Math.cos(a) * (b.r + 70),
+      b.y + Math.sin(a) * (b.r + 70),
+      this.rollRockSize(),
+      Math.cos(a) * 120,
+      Math.sin(a) * 120,
+      b.mk === 6 ? this.rollTrait(true) : b.spawnTrait,
+    );
+    rock.life = BOSS_ROCK_LIFESPAN;
+    rock.keep = true;
+    this.addRocks(rock);
   }
 
   makeCracks(r: number, count: number, inner = 0.55): Crack[] {
     const cracks: Crack[] = [];
     for (let c = 0; c < count; c++) {
-      const a0 = Math.random() * TAU;
-      const startR = r * rnd(inner, 0.95);
+      const a0 = this.random() * TAU;
+      const startR = r * this.rnd(inner, 0.95);
       let px = Math.cos(a0) * startR,
         py = Math.sin(a0) * startR;
-      let dir = a0 + Math.PI + rnd(-0.7, 0.7);
-      const segs = Math.floor(rnd(3, 6));
-      const step = (startR * rnd(0.9, 1.6)) / segs;
+      let dir = a0 + Math.PI + this.rnd(-0.7, 0.7);
+      const segs = Math.floor(this.rnd(3, 6));
+      const step = (startR * this.rnd(0.9, 1.6)) / segs;
       const line = [{ x: px, y: py }];
       for (let s = 0; s < segs; s++) {
-        dir += rnd(-0.75, 0.75);
+        dir += this.rnd(-0.75, 0.75);
         px += Math.cos(dir) * step;
         py += Math.sin(dir) * step;
         const d = Math.hypot(px, py);
@@ -3469,6 +4092,15 @@ export class Game {
       cracks.push({ pts: line, at: (c + 1) / (count + 0.6) });
     }
     return cracks;
+  }
+
+  updateFastRockSpeed(r: Rock) {
+    const speeds = GAME_CONFIG.asteroids.traits.fast.speeds;
+    const base = r.size === 3 ? speeds.large : r.size === 2 ? speeds.medium : speeds.small;
+    const speed = base * (1 + 0.5 * (1 - clamp(r.hp / r.maxHp, 0, 1)));
+    const angle = Math.atan2(r.vy, r.vx);
+    r.vx = Math.cos(angle) * speed;
+    r.vy = Math.sin(angle) * speed;
   }
 
   makeRock(
@@ -3487,16 +4119,17 @@ export class Game {
           : GAME_CONFIG.asteroids.sizes.small;
     const r =
       sizeConfig.radius *
-      rnd(GAME_CONFIG.asteroids.radiusRandomMin, GAME_CONFIG.asteroids.radiusRandomMax);
-    const n = Math.floor(rnd(8, 12));
+      this.rnd(GAME_CONFIG.asteroids.radiusRandomMin, GAME_CONFIG.asteroids.radiusRandomMax);
+    const n = Math.floor(this.rnd(8, 12));
     const pts: number[] = [];
-    for (let i = 0; i < n; i++) pts.push(rnd(0.72, 1.18));
-    let vX = vx ?? rnd(-70, 70),
-      vY = vy ?? rnd(-70, 70);
+    for (let i = 0; i < n; i++) pts.push(this.rnd(0.72, 1.18));
+    let vX = vx ?? this.rnd(-70, 70),
+      vY = vy ?? this.rnd(-70, 70);
     if (trait === "fast") {
       // fixed pace per size so speed never compounds through generations
-      const target = size === 3 ? 290 : size === 2 ? 265 : 235;
-      const a = Math.atan2(vY, vX) + rnd(-0.2, 0.2);
+      const speeds = GAME_CONFIG.asteroids.traits.fast.speeds;
+      const target = size === 3 ? speeds.large : size === 2 ? speeds.medium : speeds.small;
+      const a = Math.atan2(vY, vX) + this.rnd(-0.2, 0.2);
       vX = Math.cos(a) * target;
       vY = Math.sin(a) * target;
     } else if (trait === "boom") {
@@ -3515,7 +4148,11 @@ export class Game {
     const hp =
       sizeConfig.hp *
       (1 + scaledWave(this.wave) * GAME_CONFIG.asteroids.hpPerScaledWave) *
-      (trait === "none" || isEventRock(trait) ? 1 : GAME_CONFIG.asteroids.specialHpMultiplier);
+      (trait === "fast"
+        ? GAME_CONFIG.asteroids.traits.fast.hpMultiplier
+        : trait === "none" || isEventRock(trait)
+          ? 1
+          : GAME_CONFIG.asteroids.specialHpMultiplier);
     return {
       id: this.nextId++,
       x,
@@ -3526,8 +4163,8 @@ export class Game {
       size,
       hp,
       maxHp: hp,
-      rot: Math.random() * TAU,
-      rotSpeed: rnd(-1.1, 1.1),
+      rot: this.random() * TAU,
+      rotSpeed: this.rnd(-1.1, 1.1),
       pts,
       flash: 0,
       cracks: this.makeCracks(r, size === 3 ? 4 : size === 2 ? 3 : 2),
@@ -3535,8 +4172,8 @@ export class Game {
     };
   }
 
-  spawnDrone(x: number, y: number, hp: number, kind: "sentinel" | "warden" = "sentinel"): Drone {
-    return {
+  spawnDrone(x: number, y: number, hp: number, kind: Drone["kind"] = "sentinel"): Drone {
+    const drone: Drone = {
       id: this.nextId++,
       kind,
       x,
@@ -3547,15 +4184,26 @@ export class Game {
       hp,
       maxHp: hp,
       angle: 0,
-      fire: kind === "warden" ? rnd(4.5, 6.5) : rnd(2, 3.5),
+      fire: kind === "warden" ? this.rnd(4.5, 6.5) : this.rnd(2, 3.5),
       flash: 0,
-      orbitDir: Math.random() < 0.5 ? 1 : -1,
-      orbitTimer: rnd(1, 3),
+      orbitDir: this.random() < 0.5 ? 1 : -1,
+      orbitTimer: this.rnd(1, 3),
       evadeCd: 0,
       burst: 1,
       sniperAimX: x,
       sniperAimY: y,
     };
+    if (kind === "spiker") {
+      const tuning = GAME_CONFIG.enemies.spikers;
+      const heading = this.random() * TAU;
+      const speed = this.rnd(tuning.speedMin, tuning.speedMax);
+      drone.r = tuning.radius;
+      drone.vx = Math.cos(heading) * speed;
+      drone.vy = Math.sin(heading) * speed;
+      drone.angle = this.random() * TAU;
+      drone.fire = tuning.fireInterval;
+    }
+    return drone;
   }
 
   nextWave() {
@@ -3564,7 +4212,7 @@ export class Game {
       this.credits += GAME_CONFIG.waves.showerCompletionBonus;
       this.floatText(this.p.x, this.p.y - 44, "SHOWER SALVAGE +100 CR", AMBER_HOT, 15);
       this.rings.push({ x: this.p.x, y: this.p.y, r: 10, max: 90, life: 0.5, color: AMBER, w: 2 });
-      audio.play("buy");
+      this.sound.play("buy");
       this.shower.cooldownWaves = GAME_CONFIG.waves.showerCooldownWaves;
     } else if (this.shower.cooldownWaves > 0) {
       this.shower.cooldownWaves--;
@@ -3585,7 +4233,7 @@ export class Game {
       this.banner = `SECTOR ${this.theme.numeral}`;
       this.bannerSub = this.theme.name;
       this.bannerT = 2.6;
-      audio.play("levelup");
+      this.sound.play("levelup");
     }
 
     const bossWave = isBossWave(this.wave);
@@ -3599,10 +4247,10 @@ export class Game {
       const mkForField = bossMkForWave(this.wave);
       const fieldTrait = BOSS_SPECS[mkForField].trait;
       // one trait rock marks the field — boss battles stay lean, the dreadnought fills in
-      this.rocks.push(
+      this.addRocks(
         this.makeRock(
-          this.w * 0.6 + Math.random() * this.w * 0.4,
-          Math.random() * this.h,
+          this.w * 0.6 + this.random() * this.w * 0.4,
+          this.random() * this.h,
           2,
           undefined,
           undefined,
@@ -3635,12 +4283,12 @@ export class Game {
           : BOSS_SPECS[mkForField].suffix + " · HEAVY SIGNATURE") +
         (wardenCount ? ` · +${wardenCount} WARDEN` : "");
       this.bannerT = 2.8;
-      audio.play("bossCharge");
+      this.sound.play("bossCharge");
     } else {
       // Sector 5 combat waves (21-24): occasional warden spawns.
       const isLateWave =
         this.wave >= RUN_PACING.lateWardenFromWave && this.wave <= RUN_PACING.lateWardenToWave;
-      const spawnWardenInLate = isLateWave && Math.random() < (this.wave % 2 === 0 ? 0.5 : 0.3);
+      const spawnWardenInLate = isLateWave && this.random() < (this.wave % 2 === 0 ? 0.5 : 0.3);
 
       // If a warden spawns, reduce the asteroid count so the fight is readable
       const baseRockCount = Math.min(
@@ -3655,20 +4303,28 @@ export class Game {
           )
         : baseRockCount;
 
+      const normalQuota = isLateWave ? 1 + Math.floor(this.random() * 2) : 0;
       for (let i = 0; i < count; i++) {
         let x = 0,
           y = 0,
           tries = 0;
         do {
-          x = Math.random() * this.w;
-          y = Math.random() * this.h;
+          x = this.random() * this.w;
+          y = this.random() * this.h;
           tries++;
         } while (
-          Math.hypot(x - this.p.x, y - this.p.y) < GAME_CONFIG.waves.shipSpawnRockClearance &&
+          this.spawnClearance(x, y) < GAME_CONFIG.waves.shipSpawnRockClearance &&
           tries < 20
         );
-        this.rocks.push(
-          this.makeRock(x, y, Math.random() < 0.45 ? 3 : 2, undefined, undefined, this.rollTrait()),
+        this.addRocks(
+          this.makeRock(
+            x,
+            y,
+            this.random() < 0.45 ? 3 : 2,
+            undefined,
+            undefined,
+            isLateWave && i < normalQuota ? "none" : this.rollTrait(isLateWave),
+          ),
         );
       }
       // Sentinels are capped concurrently and trickle in: the opening sector
@@ -3677,16 +4333,16 @@ export class Game {
         maxSentinels(this.wave) - this.drones.filter((dd) => dd.kind === "sentinel").length;
       const dn = Math.max(0, Math.min(sentinelWaveCount(this.wave), sentinelRoom));
       for (let i = 0; i < dn; i++) {
-        const edge = Math.random() * 4;
-        const x = edge < 2 ? (edge < 1 ? 40 : this.w - 40) : Math.random() * this.w;
-        const y = edge >= 2 ? (edge < 3 ? 40 : this.h - 40) : Math.random() * this.h;
+        const edge = this.random() * 4;
+        const x = edge < 2 ? (edge < 1 ? 40 : this.w - 40) : this.random() * this.w;
+        const y = edge >= 2 ? (edge < 3 ? 40 : this.h - 40) : this.random() * this.h;
         this.drones.push(this.spawnDrone(x, y, droneHp));
       }
       if (spawnWardenInLate) {
         // Spawn 1 warden in the late wave
-        const wardenEdge = Math.random() * 4;
-        const wx = wardenEdge < 2 ? (wardenEdge < 1 ? 50 : this.w - 50) : Math.random() * this.w;
-        const wy = wardenEdge >= 2 ? (wardenEdge < 3 ? 50 : this.h - 50) : Math.random() * this.h;
+        const wardenEdge = this.random() * 4;
+        const wx = wardenEdge < 2 ? (wardenEdge < 1 ? 50 : this.w - 50) : this.random() * this.w;
+        const wy = wardenEdge >= 2 ? (wardenEdge < 3 ? 50 : this.h - 50) : this.random() * this.h;
         this.drones.push(
           this.spawnDrone(
             wx,
@@ -3707,8 +4363,16 @@ export class Game {
       this.bannerT = 2.2;
     }
 
+    if (this.wave >= GAME_CONFIG.enemies.spikers.unlockWave) {
+      const tuning = GAME_CONFIG.enemies.spikers;
+      const second = this.spikerCap() === 2 && this.random() < tuning.secondSpawnChance;
+      const target = second ? 2 : 1;
+      const live = this.drones.filter((d) => d.kind === "spiker").length;
+      const spawned = this.spawnSpikers(Math.max(0, target - live));
+      if (spawned) this.bannerSub += ` · +${spawned} SPIKER${spawned > 1 ? "S" : ""}`;
+    }
     this.p.missiles = Math.min(this.p.maxMissiles, this.p.missiles + 1);
-    audio.play("wave");
+    this.sound.play("wave");
     // Between-wave salvage is generous enough that a player can afford the
     // armory early: by the MK1 boss (wave 5) this alone totals ~760 CR.
     this.credits += RUN_PACING.creditsPerWaveBase + this.wave * RUN_PACING.creditsPerWaveStep;
@@ -3727,14 +4391,17 @@ export class Game {
         ? GAME_CONFIG.bosses.finalRadius
         : GAME_CONFIG.bosses.baseRadius;
     const pts: number[] = [];
-    for (let i = 0; i < 16; i++) pts.push(rnd(0.88, 1.06));
+    for (let i = 0; i < 16; i++) pts.push(this.rnd(0.88, 1.06));
     let hp = bonus
       ? GAME_CONFIG.bosses.bonusHp
       : (final
           ? GAME_CONFIG.bosses.finalHp
           : GAME_CONFIG.bosses.waveBaseHp +
             scaledWave(this.wave) * GAME_CONFIG.bosses.hpPerScaledWave) * spec.hpMul;
-    if (mk <= 3) hp = Math.min(hp, EARLY_BOSS_HP_CEILING);
+    if (mk <= 2) hp = Math.min(hp, EARLY_BOSS_HP_CEILING);
+    if (mk === 3) hp = GAME_CONFIG.bosses.mk3Hp;
+    if (mk === 4) hp = GAME_CONFIG.bosses.mk4Hp;
+    if (mk === 5) hp = GAME_CONFIG.bosses.finalHp;
 
     // MK3 starts with a brisk, non-zero diagonal velocity so it immediately glides and bounces
     const baseSpeed = isMk3
@@ -3742,11 +4409,11 @@ export class Game {
       : bonus
         ? GAME_CONFIG.waves.bossMk6Speed
         : GAME_CONFIG.waves.bossBaseSpeed;
-    let initVx = rnd(-28, 28) + spec.driftX;
-    let initVy = rnd(-14, 14);
+    let initVx = this.rnd(-28, 28) + spec.driftX;
+    let initVy = this.rnd(-14, 14);
     if (isMk3) {
-      const dirX = Math.random() < 0.5 ? 1 : -1;
-      const dirY = Math.random() < 0.5 ? 1 : -1;
+      const dirX = this.random() < 0.5 ? 1 : -1;
+      const dirY = this.random() < 0.5 ? 1 : -1;
       initVx = dirX * 78;
       initVy = dirY * 78;
     }
@@ -3772,7 +4439,7 @@ export class Game {
       hp,
       maxHp: hp,
       rot: 0,
-      rotSpeed: rnd(0.25, 0.4) * (Math.random() < 0.5 ? -1 : 1),
+      rotSpeed: this.rnd(0.25, 0.4) * (this.random() < 0.5 ? -1 : 1),
       pts,
       cracks: this.makeCracks(r, 7, 0.4),
       flash: 0,
@@ -3803,7 +4470,7 @@ export class Game {
       shieldT: 0,
       movement: {
         mode: "drift",
-        timer: rnd(3.2, 5.6),
+        timer: this.rnd(3.2, 5.6),
         targetX: this.w / 2,
         targetY: this.h * 0.28,
         baseSpeed,
@@ -3838,22 +4505,24 @@ export class Game {
 
   /** a hostile shell detonating on its own — hurts the player and the drone,
    *  but never the fleet that fired it */
-  enemyBlast(x: number, y: number, radius: number, dmg: number) {
+  enemyBlast(x: number, y: number, radius: number, dmg: number, cause = "Hostile shell explosion") {
     this.rings.push({ x, y, r: 6, max: radius * 1.4, life: 0.34, color: "#ff7aa0", w: 2 });
     this.burst(x, y, 14, "#ff7aa0");
-    audio.play("explodeSmall");
+    this.sound.play("explodeSmall");
     this.shake += 2.5;
-    if (Math.hypot(this.p.x - x, this.p.y - y) < radius) this.damagePlayer(dmg);
-    if (
-      this.salvageDrone.active &&
-      Math.hypot(this.salvageDrone.x - x, this.salvageDrone.y - y) < radius
-    ) {
-      this.damageSalvageDrone(dmg);
-    }
+    this.forEachPilot(() => {
+      if (Math.hypot(this.p.x - x, this.p.y - y) < radius) this.damagePlayer(dmg, cause);
+      if (
+        this.salvageDrone.active &&
+        Math.hypot(this.salvageDrone.x - x, this.salvageDrone.y - y) < radius
+      ) {
+        this.damageSalvageDrone(dmg);
+      }
+    });
   }
 
   enemyBullet(x: number, y: number, a: number, sp: number, dmg: number, r = 5) {
-    this.bullets.push({
+    this.addBullet({
       x,
       y,
       vx: Math.cos(a) * sp,
@@ -3862,6 +4531,7 @@ export class Game {
       life: 5,
       dmg,
       kind: "enemy",
+      damageCause: this.boss ? `MK${this.boss.mk} boss projectile` : "Hostile projectile",
       pierce: 0,
       color: MAGENTA,
       hitIds: new Set(),
@@ -3914,8 +4584,8 @@ export class Game {
       r = 36;
     }
 
-    const x = rnd(0.25, 0.75) * this.w;
-    const y = rnd(0.25, 0.75) * this.h;
+    const x = this.rnd(0.25, 0.75) * this.w;
+    const y = this.rnd(0.25, 0.75) * this.h;
     b.hole = {
       id: this.nextId++,
       x,
@@ -3942,7 +4612,7 @@ export class Game {
         : "GRAVITATIONAL ANOMALY · SHOOT TO COLLAPSE";
     this.bannerT = 1.6;
     this.shake += 6;
-    audio.play("bossCharge");
+    this.sound.play("bossCharge");
   }
 
   damageHole(dmg: number, crit: boolean) {
@@ -3952,12 +4622,12 @@ export class Game {
     h.hp -= dmg;
     h.flash = 1;
     this.burst(
-      h.x + rnd(-h.r, h.r) * 0.4,
-      h.y + rnd(-h.r, h.r) * 0.4,
+      h.x + this.rnd(-h.r, h.r) * 0.4,
+      h.y + this.rnd(-h.r, h.r) * 0.4,
       crit ? 8 : 4,
       crit ? AMBER_HOT : h.color,
     );
-    audio.play(crit ? "crit" : "hit");
+    this.sound.play(crit ? "crit" : "hit");
     if (crit) this.floatText(h.x, h.y - h.r - 12, "CRIT", AMBER_HOT, 12);
     if (this.p.leech > 0) this.p.hull = Math.min(this.p.maxHull, this.p.hull + dmg * this.p.leech);
     if (h.hp <= 0) {
@@ -3975,7 +4645,7 @@ export class Game {
     this.shake += 10;
     this.flashAlpha = 0.4;
     this.floatText(h.x, h.y - h.r - 16, "SINGULARITY COLLAPSED", AMBER_HOT, 15);
-    audio.play("explodeBig");
+    this.sound.play("explodeBig");
     this.score += (200 + h.mk * 100) * (1 + Math.floor(this.combo / 4) * 0.5);
     this.gainXp(30 * this.xpScale());
     b.hole = null;
@@ -3986,34 +4656,46 @@ export class Game {
     if (!h) return;
     h.t -= dt;
     h.flash = Math.max(0, h.flash - dt * 4);
-    const hx = h.x - this.p.x,
-      hy = h.y - this.p.y;
-    const hd = Math.hypot(hx, hy) || 1;
-    // Pulls from anywhere across the sector, accelerating as you get sucked closer
-    const pullFalloff = clamp(1 - hd / (Math.max(this.w, this.h) * 1.5), 0.5, 1);
-    const strength = h.pull * 1.6 * pullFalloff;
-    this.p.vx += (hx / hd) * strength * dt;
-    this.p.vy += (hy / hd) * strength * dt;
+    this.forEachPilot(() => {
+      const hx = h.x - this.p.x,
+        hy = h.y - this.p.y;
+      const hd = Math.hypot(hx, hy) || 1;
+      // Pulls from anywhere across the sector, accelerating as you get sucked closer
+      const pullFalloff = clamp(1 - hd / (Math.max(this.w, this.h) * 1.5), 0.5, 1);
+      const strength = h.pull * 1.6 * pullFalloff;
+      this.p.vx += (hx / hd) * strength * dt;
+      this.p.vy += (hy / hd) * strength * dt;
 
+      const anomaly = GAME_CONFIG.bosses.anomaly;
+      if (hd < h.r * anomaly.damageRadiusFraction && h.t > 0) {
+        h.damageTimer = (h.damageTimer ?? 0) + dt;
+        if (h.damageTimer >= anomaly.damageInterval) {
+          h.damageTimer -= anomaly.damageInterval;
+          this.damagePlayer(anomaly.damage, "Anomaly core", 0.1);
+        }
+      } else {
+        h.damageTimer = 0;
+      }
+    });
     // Singularities at higher strengths look cooler: e.g. at MK6 dense golden particles fly rapidly into it
     const pFreq = h.mk === 6 ? 1 : h.mk === 5 ? 1 : 2;
     if (this.frame % pFreq === 0 && this.particles.length < 650) {
       const pCount = h.mk === 6 ? 3 : h.mk === 5 ? 2 : 1;
       for (let i = 0; i < pCount; i++) {
-        const a = Math.random() * TAU;
-        const rr = (h.mk === 6 ? 120 : 70) + rnd(20, 120 + h.mk * 25);
+        const a = this.random() * TAU;
+        const rr = (h.mk === 6 ? 120 : 70) + this.rnd(20, 120 + h.mk * 25);
         const px = h.x + Math.cos(a) * rr,
           py = h.y + Math.sin(a) * rr;
         const inward = Math.atan2(h.y - py, h.x - px);
-        const inSpeed = (h.mk === 6 ? 340 : 180 + h.mk * 30) + rnd(-30, 30);
+        const inSpeed = (h.mk === 6 ? 340 : 180 + h.mk * 30) + this.rnd(-30, 30);
         const pColor =
           h.mk === 6
-            ? Math.random() < 0.6
+            ? this.random() < 0.6
               ? "#ffd27a"
-              : Math.random() < 0.5
+              : this.random() < 0.5
                 ? "#ffaa33"
                 : "#ffe0a3"
-            : Math.random() < 0.5
+            : this.random() < 0.5
               ? h.color
               : h.coreColor;
         this.particles.push({
@@ -4023,7 +4705,7 @@ export class Game {
           vy: Math.sin(inward) * inSpeed,
           life: 0.38,
           max: 0.38,
-          size: rnd(1.8, 3.2),
+          size: this.rnd(1.8, 3.2),
           color: pColor,
           drag: 0.98,
         });
@@ -4041,7 +4723,7 @@ export class Game {
     );
     sentinels = Math.min(sentinels, room);
     for (let i = 0; i < wardens; i++) {
-      const a = (i / Math.max(1, wardens)) * TAU + rnd(-0.3, 0.3);
+      const a = (i / Math.max(1, wardens)) * TAU + this.rnd(-0.3, 0.3);
       this.drones.push(
         this.spawnDrone(
           clamp(b.x + Math.cos(a) * 240, 40, this.w - 40),
@@ -4052,7 +4734,7 @@ export class Game {
       );
     }
     for (let i = 0; i < sentinels; i++) {
-      const a = (i / Math.max(1, sentinels)) * TAU + rnd(-0.4, 0.4);
+      const a = (i / Math.max(1, sentinels)) * TAU + this.rnd(-0.4, 0.4);
       this.drones.push(
         this.spawnDrone(
           clamp(b.x + Math.cos(a) * 320, 40, this.w - 40),
@@ -4061,12 +4743,15 @@ export class Game {
         ),
       );
     }
-    this.banner = label;
+    // MK6 keeps at most one radial heavy alive across reinforcement calls.
+    const hasSpiker = this.drones.some((d) => d.kind === "spiker");
+    const spikers = hasSpiker ? 0 : this.spawnSpikers(1);
+    this.banner = label + (spikers ? " + SPIKER" : "");
     this.bannerSub = "THE METEOR CALLS ITS ESCORT";
     this.bannerT = 2.2;
     this.flashAlpha = 0.45;
     this.shake += 10;
-    audio.play("bossCharge");
+    this.sound.play("bossCharge");
   }
 
   /**
@@ -4099,7 +4784,7 @@ export class Game {
     }
     this.shake += 12;
     this.flashAlpha = 0.45;
-    audio.play("bossCharge");
+    this.sound.play("bossCharge");
     const names: Record<number, string> = {
       1: "BARRAGE SWEEP",
       2: "CONVERGENCE",
@@ -4111,6 +4796,7 @@ export class Game {
     this.bannerSub = `${b.name} ${b.suffix.split(" ")[0]} · NEW ATTACK SET`;
     this.bannerT = 1.9;
 
+    this.spawnBossAbilityRock(b);
     switch (b.mk) {
       case 1:
         b.rainN = 9 + phase * 3;
@@ -4121,11 +4807,11 @@ export class Game {
         const n = 6 + phase * 2;
         for (let i = 0; i < n; i++) {
           const a = (i / n) * TAU;
-          this.rocks.push(
+          this.addRocks(
             this.makeRock(
               clamp(b.x + Math.cos(a) * 250, 40, this.w - 40),
               clamp(b.y + Math.sin(a) * 250, 40, this.h - 40),
-              2,
+              this.rollRockSize(),
               Math.cos(a) * 40,
               Math.sin(a) * 40,
               "homing",
@@ -4146,15 +4832,23 @@ export class Game {
       }
       case 4: {
         // one strike locks near the player, the rest are random field points
-        const n = phase >= 2 ? 6 : 5;
+        const n = phase >= 2 ? 4 : 3;
         b.strikes = [];
-        // MK4: sudden ignition strikes — first hits in under a second, leaving very little time to react
+        // More frequent strikes leave enough warning to escape their smaller blast.
         for (let i = 0; i < n; i++) {
           const near = i === 0;
-          const countdown = 0.95 + i * 0.22;
+          const countdown = GAME_CONFIG.bosses.mk4.strikeWarning + i * 0.3;
           b.strikes.push({
-            x: clamp(near ? this.p.x + rnd(-1, 1) * 140 : rnd(80, this.w - 80), 60, this.w - 60),
-            y: clamp(near ? this.p.y + rnd(-1, 1) * 140 : rnd(80, this.h - 80), 60, this.h - 60),
+            x: clamp(
+              near ? this.p.x + this.rnd(-1, 1) * 140 : this.rnd(80, this.w - 80),
+              60,
+              this.w - 60,
+            ),
+            y: clamp(
+              near ? this.p.y + this.rnd(-1, 1) * 140 : this.rnd(80, this.h - 80),
+              60,
+              this.h - 60,
+            ),
             t: countdown,
             t0: countdown,
           });
@@ -4215,6 +4909,7 @@ export class Game {
     this.shake += 8;
     this.flashAlpha = 0.35;
 
+    this.spawnBossAbilityRock(b);
     switch (attack) {
       case "shower":
         slot.t = 6.2;
@@ -4224,8 +4919,8 @@ export class Game {
         break;
       case "beam":
         slot.t = 8.5;
-        slot.beamA = Math.random() * TAU;
-        audio.play("bossCharge");
+        slot.beamA = this.random() * TAU;
+        this.sound.play("bossCharge");
         break;
       case "strikes": {
         slot.t = 5.4;
@@ -4234,14 +4929,22 @@ export class Game {
           const near = i % 2 === 0;
           const countdown = 2.4 + i * 0.5;
           slot.strikes.push({
-            x: clamp(near ? this.p.x + rnd(-1, 1) * 190 : rnd(90, this.w - 90), 70, this.w - 70),
-            y: clamp(near ? this.p.y + rnd(-1, 1) * 190 : rnd(90, this.h - 90), 70, this.h - 70),
+            x: clamp(
+              near ? this.p.x + this.rnd(-1, 1) * 190 : this.rnd(90, this.w - 90),
+              70,
+              this.w - 70,
+            ),
+            y: clamp(
+              near ? this.p.y + this.rnd(-1, 1) * 190 : this.rnd(90, this.h - 90),
+              70,
+              this.h - 70,
+            ),
             t: countdown,
             t0: countdown,
-            r: rnd(150, 215),
+            r: this.rnd(150, 215),
           });
         }
-        audio.play("bossCharge");
+        this.sound.play("bossCharge");
         break;
       }
       case "field": {
@@ -4252,24 +4955,26 @@ export class Game {
             y = 0,
             tries = 0;
           do {
-            x = rnd(50, this.w - 50);
-            y = rnd(50, this.h - 50);
+            x = this.rnd(50, this.w - 50);
+            y = this.rnd(50, this.h - 50);
             tries++;
           } while (Math.hypot(x - this.p.x, y - this.p.y) < 220 && tries < 12);
-          const size = (1 + Math.floor(Math.random() * 3)) as 1 | 2 | 3;
+          const size = this.rollRockSize();
+          const availableTraits =
+            this.boomRoom() === 0 ? traits.filter((trait) => trait !== "boom") : traits;
           const rock = this.makeRock(
             x,
             y,
             size,
-            rnd(-120, 120),
-            rnd(-120, 120),
-            traits[Math.floor(Math.random() * traits.length)],
+            this.rnd(-120, 120),
+            this.rnd(-120, 120),
+            availableTraits[Math.floor(this.random() * availableTraits.length)],
           );
           rock.hp = rock.maxHp = rock.maxHp * 0.6; // transient, meant to be cleared
           m.fieldIds.push(rock.id);
-          this.rocks.push(rock);
+          this.addRocks(rock);
         }
-        audio.play("explodeSmall");
+        this.sound.play("explodeSmall");
         break;
       }
       case "hole":
@@ -4285,7 +4990,7 @@ export class Game {
           { t: 2.1, fired: false },
           { t: 4.4, fired: false, silent: true },
         ];
-        audio.play("bossCharge");
+        this.sound.play("bossCharge");
         break;
     }
   }
@@ -4306,12 +5011,19 @@ export class Game {
         if (slot.spawnT <= 0) {
           slot.spawnT = 0.34;
           // straight down the sector, top to bottom
-          const x = rnd(50, this.w - 50);
-          const rock = this.makeRock(x, -50, 1, rnd(-40, 40), rnd(520, 660), "meteor");
+          const x = this.rnd(50, this.w - 50);
+          const rock = this.makeRock(
+            x,
+            -50,
+            this.rollRockSize(),
+            this.rnd(-40, 40),
+            this.rnd(520, 660),
+            "meteor",
+          );
           rock.r *= 1.35;
           rock.hp = rock.maxHp = 120 + scaledWave(this.wave) * 4;
-          rock.rotSpeed = rnd(4, 8);
-          this.rocks.push(rock);
+          rock.rotSpeed = this.rnd(4, 8);
+          this.addRocks(rock);
         }
         break;
       case "beam": {
@@ -4325,20 +5037,22 @@ export class Game {
           const a = slot.beamA + i * (TAU / arms);
           const dx = Math.cos(a),
             dy = Math.sin(a);
-          const rx = this.p.x - b.x,
-            ry = this.p.y - b.y;
-          const t = rx * dx + ry * dy;
-          if (t > 0 && t < len && Math.abs(rx * dy - ry * dx) < 16 && m.beamCd <= 0) {
-            this.damagePlayer(9);
-            m.beamCd = 0.6;
-          }
+          this.forEachPilot(() => {
+            const rx = this.p.x - b.x,
+              ry = this.p.y - b.y;
+            const t = rx * dx + ry * dy;
+            if (t > 0 && t < len && Math.abs(rx * dy - ry * dx) < 16 && m.beamCd <= 0) {
+              this.damagePlayer(9, "MK6 solar beam");
+              m.beamCd = 0.6;
+            }
+          });
           if (this.frame % 3 === 0) {
-            const d = rnd(b.r, len * 0.5);
+            const d = this.rnd(b.r, len * 0.5);
             this.particles.push({
               x: b.x + dx * d,
               y: b.y + dy * d,
-              vx: rnd(-20, 20),
-              vy: rnd(-20, 20),
+              vx: this.rnd(-20, 20),
+              vy: this.rnd(-20, 20),
               life: 0.3,
               max: 0.3,
               size: 2,
@@ -4355,9 +5069,12 @@ export class Game {
           s.t -= dt;
           if (s.t <= 0) {
             slot.strikes.splice(i, 1);
-            this.explode(s.x, s.y, s.r, 74);
+            this.explode(s.x, s.y, s.r, 74, "MK6 meteor strike");
             this.shatterMeteor(s.x, s.y, 0, 0);
-            if (Math.hypot(this.p.x - s.x, this.p.y - s.y) < s.r) this.damagePlayer(30);
+            this.forEachPilot(() => {
+              if (Math.hypot(this.p.x - s.x, this.p.y - s.y) < s.r)
+                this.damagePlayer(30, "MK6 meteor strike");
+            });
           }
         }
         break;
@@ -4395,8 +5112,11 @@ export class Game {
             this.burst(b.x, b.y, 55, "#ff2244");
             this.burst(b.x, b.y, 35, "#ff8800");
             this.shake += 14;
-            audio.play("explodeBig");
-            if (Math.hypot(this.p.x - b.x, this.p.y - b.y) < radius) this.damagePlayer(28);
+            this.sound.play("explodeBig");
+            this.forEachPilot(() => {
+              if (Math.hypot(this.p.x - b.x, this.p.y - b.y) < radius)
+                this.damagePlayer(28, "MK6 regenesis blast");
+            });
           }
         }
         break;
@@ -4447,7 +5167,7 @@ export class Game {
       this.bannerT = 2.4;
       this.flashAlpha = 0.6;
       this.shake += 16;
-      audio.play("bossCharge");
+      this.sound.play("bossCharge");
     }
 
     // the singularity and the beam immunity window advance with the boss
@@ -4456,7 +5176,7 @@ export class Game {
       b.shieldT -= dt;
       if (b.shieldT <= 0) b.shieldHp = 0;
     }
-    m.beamCd -= dt;
+    this.updateBossContactCooldown(b, dt);
 
     const active = () => m.slots.filter((s) => s.attack !== "idle").map((s) => s.attack);
     for (let i = 0; i < m.slots.length; i++) {
@@ -4492,7 +5212,7 @@ export class Game {
       const choices = pool.filter((a) => a !== m.lastAttack && !running.includes(a));
       const fallback = pool.filter((a) => a !== m.lastAttack);
       const source = choices.length ? choices : fallback.length ? fallback : pool;
-      const next = source[Math.floor(Math.random() * source.length)];
+      const next = source[Math.floor(this.random() * source.length)];
       this.mk6Begin(b, next, i);
     }
   }
@@ -4525,21 +5245,15 @@ export class Game {
     // side < 0 is LEFT edge of screen -> launches into arena towards +X (inward = 1).
     // side > 0 is RIGHT edge of screen -> launches into arena towards -X (inward = -1).
     const inward = side < 0 ? 1 : -1;
-    // Launch a dense fan salvo of 3 meteors across the arena
+    // A broad shower: medium meteors traverse separate screen-height lanes.
     const count = 3;
-    const baseSpread = 0.26;
     for (let i = 0; i < count; i++) {
-      const spread = (i - (count - 1) / 2) * baseSpread + rnd(-0.06, 0.06);
-      const speed = rnd(640, 840);
-      const startX = b.x + inward * b.r * 0.6;
-      const startY = b.y + (i - 1) * 28 + rnd(-10, 10);
-      const vx = Math.cos(spread) * speed * inward;
-      const vy = Math.sin(spread) * speed;
-      const rock = this.makeRock(startX, startY, 1, vx, vy, "meteor");
-      rock.r *= 1.25;
+      const startX = side < 0 ? -60 : this.w + 60;
+      const startY = ((i + this.rnd(0.1, 0.9)) / count) * this.h;
+      const rock = this.makeRock(startX, startY, 2, 300 * inward, 0, "meteor");
       rock.hp = rock.maxHp = 120 + scaledWave(this.wave) * 4;
-      rock.rotSpeed = rnd(5, 9) * inward;
-      this.rocks.push(rock);
+      rock.rotSpeed = this.rnd(5, 9) * inward;
+      this.addRocks(rock);
     }
     this.rings.push({
       x: b.x + inward * b.r * 0.5,
@@ -4550,15 +5264,16 @@ export class Game {
       color: "#ffd27a",
       w: 2.5,
     });
-    audio.play("bossCharge");
+    this.sound.play("bossCharge");
   }
 
   triggerMk4ProximityStrikes(b: Boss) {
-    const n = b.hp / b.maxHp < 0.5 ? 4 : 3;
+    this.spawnBossAbilityRock(b);
+    const n = b.hp / b.maxHp < 0.5 ? 3 : 2;
     for (let i = 0; i < n; i++) {
-      const a = Math.random() * TAU;
-      const radius = rnd(b.r * 1.5, b.r * 2.7);
-      const countdown = 1.0 + i * 0.22;
+      const a = this.random() * TAU;
+      const radius = this.rnd(b.r * 1.5, b.r * 2.7);
+      const countdown = GAME_CONFIG.bosses.mk4.strikeWarning + i * 0.3;
       b.strikes.push({
         x: clamp(b.x + Math.cos(a) * radius, 60, this.w - 60),
         y: clamp(b.y + Math.sin(a) * radius, 60, this.h - 60),
@@ -4567,7 +5282,7 @@ export class Game {
       });
     }
     this.rings.push({ x: b.x, y: b.y, r: 8, max: b.r * 2.9, life: 0.42, color: ORANGE, w: 2 });
-    audio.play("bossCharge");
+    this.sound.play("bossCharge");
   }
 
   /** Returns true only while MK6 is in an exclusive side-raid movement sequence. */
@@ -4595,7 +5310,7 @@ export class Game {
         this.bannerSub = "THE METEOR LEAVES THE SECTOR";
         this.bannerT = 2;
         this.flashAlpha = 0.45;
-        audio.play("bossCharge");
+        this.sound.play("bossCharge");
       }
 
       if (m.mode === "mk6Vanish") {
@@ -4607,7 +5322,7 @@ export class Game {
           m.timer = 2.2;
           m.raidMeteorT = 0;
           b.x = bounds.minX;
-          b.y = clamp(this.h * rnd(0.35, 0.65), bounds.minY, bounds.maxY);
+          b.y = clamp(this.h * this.rnd(0.35, 0.65), bounds.minY, bounds.maxY);
           b.rot = 0; // Face inwards towards right into the arena
           b.rotSpeed = 0;
           this.banner = "METEOR AMBUSH · LEFT";
@@ -4635,7 +5350,7 @@ export class Game {
             m.timer = 2.2;
             m.raidMeteorT = 0;
             b.x = bounds.maxX;
-            b.y = clamp(this.h * rnd(0.35, 0.65), bounds.minY, bounds.maxY);
+            b.y = clamp(this.h * this.rnd(0.35, 0.65), bounds.minY, bounds.maxY);
             b.rot = Math.PI; // Face inwards towards left into the arena
             b.rotSpeed = 0;
             this.banner = "METEOR AMBUSH · RIGHT";
@@ -4674,7 +5389,7 @@ export class Game {
           b.y = this.h / 2;
           b.vx = 0;
           b.vy = 0;
-          b.rotSpeed = rnd(0.25, 0.4) * (Math.random() < 0.5 ? -1 : 1);
+          b.rotSpeed = this.rnd(0.25, 0.4) * (this.random() < 0.5 ? -1 : 1);
           m.mode = "drift";
           m.mk6RaidDone = true;
           m.mk6RaidPending = false;
@@ -4763,7 +5478,7 @@ export class Game {
         this.rings.push({ x: b.x, y: b.y, r: 16, max: 74, life: 0.35, color: ICE, w: 3 });
         this.burst(b.x, b.y, 14, ICE);
         this.shake += 3;
-        audio.play("ricochet");
+        this.sound.play("ricochet");
       }
       return false;
     }
@@ -4799,8 +5514,8 @@ export class Game {
         if (m.timer <= 0) {
           let attempts = 0;
           do {
-            m.targetX = rnd(bounds.minX, bounds.maxX);
-            m.targetY = rnd(bounds.minY, bounds.maxY);
+            m.targetX = this.rnd(bounds.minX, bounds.maxX);
+            m.targetY = this.rnd(bounds.minY, bounds.maxY);
             attempts++;
           } while (Math.hypot(m.targetX - b.x, m.targetY - b.y) < 280 && attempts < 12);
           m.startX = b.x;
@@ -4811,7 +5526,7 @@ export class Game {
           this.banner = "CORE VECTOR LOCK";
           this.bannerSub = "DASH TRAJECTORY MARKED";
           this.bannerT = 2.4;
-          audio.play("bossCharge");
+          this.sound.play("bossCharge");
         }
       } else if (m.mode === "mk5Telegraph") {
         m.timer -= dt;
@@ -4829,7 +5544,7 @@ export class Game {
           b.vx = 0;
           b.vy = 0;
           m.mode = "drift";
-          m.timer = rnd(2.6, 4.6);
+          m.timer = this.rnd(2.6, 4.6);
           this.rings.push({ x: b.x, y: b.y, r: 8, max: 96, life: 0.35, color: b.edgeColor, w: 3 });
           this.shake += 6;
         }
@@ -4882,8 +5597,11 @@ export class Game {
         }
         this.burst(b.x, b.y, 40, ORANGE);
         this.shake += 12;
-        audio.play("explodeBig");
-        if (Math.hypot(this.p.x - b.x, this.p.y - b.y) < radius + 18) this.damagePlayer(22);
+        this.sound.play("explodeBig");
+        this.forEachPilot(() => {
+          if (Math.hypot(this.p.x - b.x, this.p.y - b.y) < radius + 18)
+            this.damagePlayer(22, `MK${b.mk} boss shockwave`);
+        });
         if (
           this.salvageDrone.active &&
           Math.hypot(this.salvageDrone.x - b.x, this.salvageDrone.y - b.y) < radius + 18
@@ -4902,15 +5620,15 @@ export class Game {
       b.rainT -= dt;
       if (b.rainT <= 0) {
         if (this.rocks.filter((r) => !isEventRock(r.trait)).length < BOSS_ROCK_CAP) {
-          const x = rnd(50, this.w - 50);
-          this.rocks.push(
+          const x = this.rnd(50, this.w - 50);
+          this.addRocks(
             this.makeRock(
               x,
               -30,
-              2,
-              rnd(-30, 30),
-              rnd(130, 200),
-              Math.random() < 0.5 && b.spawnTrait !== "none" ? b.spawnTrait : "none",
+              this.rollRockSize(),
+              this.rnd(-30, 30),
+              this.rnd(130, 200),
+              this.random() < 0.5 && b.spawnTrait !== "none" ? b.spawnTrait : "none",
             ),
           );
           b.rainN--;
@@ -4928,10 +5646,10 @@ export class Game {
       // charge telegraph: a tightening ring around the boss
       if (this.frame % 2 === 0) {
         this.particles.push({
-          x: b.x + rnd(-b.r, b.r) * 1.4,
-          y: b.y + rnd(-b.r, b.r) * 1.4,
-          vx: rnd(-40, 40),
-          vy: rnd(-40, 40),
+          x: b.x + this.rnd(-b.r, b.r) * 1.4,
+          y: b.y + this.rnd(-b.r, b.r) * 1.4,
+          vx: this.rnd(-40, 40),
+          vy: this.rnd(-40, 40),
           life: 0.3,
           max: 0.3,
           size: 2.4,
@@ -4949,42 +5667,42 @@ export class Game {
         if (live < BOSS_ROCK_CAP) {
           // Randomized spawn edge + randomized inward angle = a different
           // pattern every single time the ability fires.
-          const edge = Math.floor(Math.random() * 4);
+          const edge = Math.floor(this.random() * 4);
           let x = 0,
             y = 0,
             baseA = 0;
           if (edge === 0) {
-            x = rnd(60, this.w - 60);
+            x = this.rnd(60, this.w - 60);
             y = -24;
             baseA = Math.PI / 2;
           } else if (edge === 1) {
             x = this.w + 24;
-            y = rnd(60, this.h - 60);
+            y = this.rnd(60, this.h - 60);
             baseA = Math.PI;
           } else if (edge === 2) {
-            x = rnd(60, this.w - 60);
+            x = this.rnd(60, this.w - 60);
             y = this.h + 24;
             baseA = -Math.PI / 2;
           } else {
             x = -24;
-            y = rnd(60, this.h - 60);
+            y = this.rnd(60, this.h - 60);
             baseA = 0;
           }
-          const a = baseA + rnd(-0.55, 0.55);
-          const speed = rnd(215, 275);
+          const a = baseA + this.rnd(-0.55, 0.55);
+          const speed = this.rnd(215, 275);
           const cascadeRock = this.makeRock(
             x,
             y,
-            2,
+            this.rollRockSize(),
             Math.cos(a) * speed,
             Math.sin(a) * speed,
             "bounce",
           );
           cascadeRock.life = BOSS_ROCK_LIFESPAN;
           cascadeRock.keep = true;
-          this.rocks.push(cascadeRock);
+          this.addRocks(cascadeRock);
           this.rings.push({ x, y, r: 6, max: 40, life: 0.28, color: ICE, w: 2 });
-          audio.play("ricochet");
+          this.sound.play("ricochet");
           b.cascadeN--;
         } else {
           // field is full — hold the remaining launches rather than flooding
@@ -5010,21 +5728,21 @@ export class Game {
         const ox = b.x + Math.cos(ringA) * (b.r + 58);
         const oy = b.y + Math.sin(ringA) * (b.r + 58);
         // Mirror-aim: fire toward the player, but the launch point varies
-        const aimA = Math.atan2(this.p.y - oy, this.p.x - ox) + rnd(-0.12, 0.12);
-        const speed = rnd(235, 285);
+        const aimA = Math.atan2(this.p.y - oy, this.p.x - ox) + this.rnd(-0.12, 0.12);
+        const speed = this.rnd(235, 285);
         const ringRock = this.makeRock(
           clamp(ox, 24, this.w - 24),
           clamp(oy, 24, this.h - 24),
-          2,
+          this.rollRockSize(),
           Math.cos(aimA) * speed,
           Math.sin(aimA) * speed,
           "bounce",
         );
         ringRock.life = BOSS_ROCK_LIFESPAN;
         ringRock.keep = true;
-        this.rocks.push(ringRock);
+        this.addRocks(ringRock);
         this.rings.push({ x: ox, y: oy, r: 5, max: 36, life: 0.26, color: ICE, w: 2 });
-        audio.play("ricochet");
+        this.sound.play("ricochet");
         b.ricochetRing--;
       }
     }
@@ -5034,17 +5752,17 @@ export class Game {
       b.wallT -= dt;
       if (this.frame % 9 === 0) {
         const fromLeft = b.wallSide === -1;
-        const y = Math.random() * this.h;
+        const y = this.random() * this.h;
         const rock = this.makeRock(
           fromLeft ? -30 : this.w + 30,
           y,
-          2,
-          (fromLeft ? 1 : -1) * rnd(240, 320),
-          rnd(-40, 40),
+          this.rollRockSize(),
+          (fromLeft ? 1 : -1) * this.rnd(240, 320),
+          this.rnd(-40, 40),
           "fast",
         );
         rock.life = 20;
-        this.rocks.push(rock);
+        this.addRocks(rock);
         b.wallN--;
       }
     }
@@ -5054,6 +5772,7 @@ export class Game {
       d.t -= dt;
       if (d.t > 0) continue;
       b.boomDrops.splice(i, 1);
+      if (this.boomRoom() <= 0) continue;
       // never materialise on top of the ship
       let x = d.x,
         y = d.y;
@@ -5062,12 +5781,12 @@ export class Game {
         x = clamp(this.p.x + ((x - this.p.x) / dist) * 170, 40, this.w - 40);
         y = clamp(this.p.y + ((y - this.p.y) / dist) * 170, 40, this.h - 40);
       }
-      const a = Math.random() * TAU;
-      const size = (1 + Math.floor(Math.random() * 3)) as 1 | 2 | 3;
+      const a = this.random() * TAU;
+      const size = (1 + Math.floor(this.random() * 3)) as 1 | 2 | 3;
       const rock = this.makeRock(x, y, size, Math.cos(a) * 60, Math.sin(a) * 60, "boom");
       rock.life = BOSS_ROCK_LIFESPAN;
       rock.keep = true;
-      this.rocks.push(rock);
+      this.addRocks(rock);
       this.rings.push({ x, y, r: 6, max: 70, life: 0.35, color: ORANGE, w: 2.5 });
       this.burst(x, y, 10, ORANGE);
     }
@@ -5077,8 +5796,18 @@ export class Game {
       s.t -= dt;
       if (s.t <= 0) {
         b.strikes.splice(i, 1);
-        this.explode(s.x, s.y, 175, 62);
-        if (Math.hypot(this.p.x - s.x, this.p.y - s.y) < 150) this.damagePlayer(24);
+        this.explode(
+          s.x,
+          s.y,
+          GAME_CONFIG.bosses.mk4.strikeRadius,
+          62,
+          `MK${b.mk} ignition strike`,
+          0,
+        );
+        this.forEachPilot(() => {
+          if (Math.hypot(this.p.x - s.x, this.p.y - s.y) < GAME_CONFIG.bosses.mk4.strikeRadius)
+            this.damagePlayer(GAME_CONFIG.bosses.mk4.strikeDamage, `MK${b.mk} ignition strike`);
+        });
       }
     }
 
@@ -5087,16 +5816,12 @@ export class Game {
     // each MK keeps its own tempo
     b.attackTimer = ((b.final ? 1.9 : 2.6) - phase * 0.55) * b.timerMul;
 
-    const pool: ("ring" | "fan" | "shock" | "hole" | "spawn" | "ricochet" | "boom")[] = [
-      "ring",
-      "fan",
-      "shock",
-    ];
+    const pool: ("ring" | "fan" | "shock" | "hole" | "spawn" | "ricochet" | "boom" | "ignition")[] =
+      ["ring", "fan", "shock"];
     if (b.mk >= 3) pool.push("hole");
     // MK4's new signature: it sheds slow boom asteroids toward the player
     if (b.mk === 4) {
-      pool.push("boom");
-      pool.push("boom");
+      pool.push("boom", "ignition", "ignition", "ignition");
     }
     // MK3's second signature: the ricochet ring. Weighted so it shows up often
     // but never dominates the rotation.
@@ -5106,19 +5831,25 @@ export class Game {
     }
     if (phase >= 2) for (let i = 0; i < b.spawnWeight * 2; i++) pool.push("spawn");
     if (b.final) pool.push("spawn");
-    const pick = pool[Math.floor(Math.random() * pool.length)];
+    const pick = pool[Math.floor(this.random() * pool.length)];
+
+    if (pick === "ignition") {
+      this.triggerMk4ProximityStrikes(b);
+      return;
+    }
+    this.spawnBossAbilityRock(b);
 
     if (pick === "ring") {
       // MK4/MK5 pack every pattern with extra projectiles
       const n = Math.max(10, Math.round((14 + phase * 4 + (b.final ? 4 : 0)) * b.bulletMul));
-      const base = Math.random() * TAU;
+      const base = this.random() * TAU;
       const sp = (b.final ? 190 : 165) + phase * 15;
       for (let i = 0; i < n; i++) {
         const a = base + (i / n) * TAU;
         this.enemyBullet(b.x + Math.cos(a) * b.r * 0.92, b.y + Math.sin(a) * b.r * 0.92, a, sp, 8);
       }
       this.shake += 4;
-      audio.play("rail");
+      this.sound.play("rail");
     } else if (pick === "fan") {
       const ang = Math.atan2(this.p.y - b.y, this.p.x - b.x);
       const n = Math.max(3, Math.round((3 + phase + (b.final ? 1 : 0)) * b.bulletMul));
@@ -5133,7 +5864,7 @@ export class Game {
           5.5,
         );
       }
-      audio.play("ui");
+      this.sound.play("ui");
     } else if (pick === "shock") {
       // MK1 gets a long warning; MK5 barely any time at all
       b.shockDur = Math.max(0.5, 2.6 - (b.mk - 1) * 0.5);
@@ -5142,7 +5873,7 @@ export class Game {
       const baseR = 190 + b.mk * 35;
       const missingHpFactor = 1 + (1 - clamp(b.hp / b.maxHp, 0, 1)) * 0.75;
       b.shockRadius = baseR * missingHpFactor;
-      audio.play("bossCharge");
+      this.sound.play("bossCharge");
     } else if (pick === "hole") {
       // easy to outrun on MK3, pulls harder and lasts longer at MK4 and MK5
       const pull = b.mk === 3 ? 160 : b.mk === 4 ? 260 : 370;
@@ -5152,18 +5883,16 @@ export class Game {
     } else if (pick === "boom") {
       // MK4 · BOOM LAUNCH: marked drop points are scattered across the whole map.
       // After a short warning each one becomes a slow boom rock with a 30 s lifespan.
-      // Launch 3 boom asteroids normally. Once the map already has 15+
-      // asteroids, only add 1 so the arena does not become overwhelmed.
-      const live = this.rocks.length;
-      const n = live >= 15 ? 1 : 3;
+      // Reserve pending drops as well as live rocks against the hard cap.
+      const n = Math.min(3, Math.max(0, this.boomRoom() - b.boomDrops.length));
       const chosen: { x: number; y: number }[] = [];
       for (let i = 0; i < n; i++) {
         // best-of-N sampling keeps the drops spread out instead of clumped
         let best = { x: this.w / 2, y: this.h / 2 },
           bestScore = -1;
         for (let tries = 0; tries < 14; tries++) {
-          const x = rnd(70, this.w - 70),
-            y = rnd(90, this.h - 70);
+          const x = this.rnd(70, this.w - 70),
+            y = this.rnd(90, this.h - 70);
           if (Math.hypot(x - this.p.x, y - this.p.y) < 240) continue;
           if (Math.hypot(x - b.x, y - b.y) < b.r + 60) continue;
           const spread = chosen.reduce((m, c) => Math.min(m, Math.hypot(x - c.x, y - c.y)), 9999);
@@ -5189,7 +5918,7 @@ export class Game {
       this.banner = "BOOM LAUNCH";
       this.bannerSub = "WATCH THE MARKERS · FUSED ROCKS INBOUND";
       this.bannerT = 1.5;
-      audio.play("bossCharge");
+      this.sound.play("bossCharge");
     } else if (pick === "ricochet") {
       // MK3 · RICOCHET RING — form a ring of bounce rocks around the boss, then
       // fire them outward one by one, each mirror-aimed at the player.
@@ -5198,11 +5927,11 @@ export class Game {
       b.ricochetRing = Math.min(4 + phase, room);
       b.ricochetFired = 0;
       b.ricochetT = 0.3;
-      b.ricochetPhase = Math.random() * TAU;
+      b.ricochetPhase = this.random() * TAU;
       this.banner = "RICOCHET RING";
       this.bannerSub = "MIRROR-AIMED · WATCH THE BOUNCE";
       this.bannerT = 1.5;
-      audio.play("bossCharge");
+      this.sound.play("bossCharge");
     } else {
       // Offspring are capped by how cluttered the field already is, so a
       // dreadnought can never bury the player under its own spawn loop.
@@ -5210,12 +5939,12 @@ export class Game {
       const room = Math.max(0, BOSS_ROCK_CAP - live);
       const n = Math.min(b.rocksPer, room);
       for (let i = 0; i < n; i++) {
-        const a = Math.random() * TAU;
-        this.rocks.push(
+        const a = this.random() * TAU;
+        this.addRocks(
           this.makeRock(
             b.x + Math.cos(a) * b.r,
             b.y + Math.sin(a) * b.r,
-            2,
+            this.rollRockSize(),
             Math.cos(a) * 120 + b.vx,
             Math.sin(a) * 120 + b.vy,
             i === 0 ? "none" : b.spawnTrait,
@@ -5226,15 +5955,15 @@ export class Game {
       // fight and stays focused, so its warden odds are far lower than MK4's
       const sentinels = this.drones.filter((d) => d.kind === "sentinel").length;
       const wardens = this.drones.filter((d) => d.kind === "warden").length;
-      if (sentinels < 3 && Math.random() < 0.45) {
+      if (sentinels < 3 && this.random() < 0.45) {
         this.drones.push(
-          this.spawnDrone(b.x + rnd(-80, 80), b.y - b.r - 30, 55 + scaledWave(this.wave) * 11),
+          this.spawnDrone(b.x + this.rnd(-80, 80), b.y - b.r - 30, 55 + scaledWave(this.wave) * 11),
         );
       }
-      if (b.mk >= 4 && wardens < 1 && Math.random() < (b.mk === 5 ? 0.12 : 0.5)) {
+      if (b.mk >= 4 && wardens < 1 && this.random() < (b.mk === 5 ? 0.12 : 0.5)) {
         this.drones.push(
           this.spawnDrone(
-            b.x + rnd(-80, 80),
+            b.x + this.rnd(-80, 80),
             b.y + b.r + 40,
             210 + scaledWave(this.wave) * 28,
             "warden",
@@ -5242,7 +5971,7 @@ export class Game {
         );
       }
       this.burst(b.x, b.y, 16, b.spawnTrait === "none" ? MAGENTA : b.edgeColor);
-      audio.play("explodeSmall");
+      this.sound.play("explodeSmall");
     }
   }
 
@@ -5259,31 +5988,78 @@ export class Game {
     }
     this.shake += 14;
     this.flashAlpha = 0.4;
-    audio.play("explodeBig");
+    this.sound.play("explodeBig");
   }
 
-  /** dev console: spawn a rock of a given trait near the player */
-  devSpawnRock(size: 1 | 2 | 3, trait: RockTrait) {
-    let x = 0,
-      y = 0,
-      tries = 0;
-    do {
-      x = Math.random() * this.w;
-      y = Math.random() * this.h;
-      tries++;
-    } while (Math.hypot(x - this.p.x, y - this.p.y) < 240 && tries < 15);
-    this.rocks.push(this.makeRock(x, y, size, undefined, undefined, trait));
+  /** Bounded batch sizes keep accidental console input from freezing the arena. */
+  devSpawnCount(count: number) {
+    return Number.isFinite(count) ? clamp(Math.floor(count), 1, 50) : 1;
   }
 
-  /** dev console: spawn a sentinel or warden close to the player's slice of space */
-  devSpawnMob(kind: "sentinel" | "warden") {
-    const a = Math.random() * TAU;
-    const x = this.p.x + Math.cos(a) * 520;
-    const y = this.p.y + Math.sin(a) * 520;
+  /** Dev console: spawn a batch of asteroids, respecting the global boom cap. */
+  devSpawnRock(size: 1 | 2 | 3, trait: RockTrait, count = 1) {
+    for (let i = 0; i < this.devSpawnCount(count); i++) {
+      if (trait === "boom" && this.boomRoom() === 0) break;
+      let x = 0,
+        y = 0,
+        tries = 0;
+      do {
+        x = this.random() * this.w;
+        y = this.random() * this.h;
+        tries++;
+      } while (Math.hypot(x - this.p.x, y - this.p.y) < 240 && tries < 15);
+      this.addRocks(this.makeRock(x, y, size, undefined, undefined, trait));
+    }
+  }
+
+  /** Medium enemies retain their normal size and health. */
+  devSpawnMob(kind: DeveloperEnemy, count = 1, size: 1 | 2 | 3 = 2) {
     const tuningWave = scaledWave(this.wave);
-    this.drones.push(
-      this.spawnDrone(x, y, kind === "warden" ? 210 + tuningWave * 28 : 55 + tuningWave * 11, kind),
-    );
+    const hpScale = size === 1 ? 0.65 : size === 3 ? 1.6 : 1;
+    const radiusScale = size === 1 ? 0.75 : size === 3 ? 1.35 : 1;
+    for (let i = 0; i < this.devSpawnCount(count); i++) {
+      const a = this.random() * TAU;
+      const x = clamp(this.p.x + Math.cos(a) * 520, 50, this.w - 50);
+      const y = clamp(this.p.y + Math.sin(a) * 520, 50, this.h - 50);
+      const special =
+        kind === "tetherSentinel" || kind === "mineWarden" || kind === "riftSpiker" ? kind : null;
+      const baseKind =
+        kind === "tetherSentinel"
+          ? "sentinel"
+          : kind === "mineWarden"
+            ? "warden"
+            : kind === "riftSpiker"
+              ? "spiker"
+              : kind;
+      const mob = this.spawnDrone(
+        x,
+        y,
+        (special
+          ? COOP_CONFIG[special].baseHp + this.wave * COOP_CONFIG[special].hpPerWave
+          : kind === "spiker"
+            ? this.spikerHp()
+            : kind === "warden"
+              ? 210 + tuningWave * 28
+              : 55 + tuningWave * 11) * hpScale,
+        baseKind,
+      );
+      if (special) {
+        mob.r = COOP_CONFIG[special].radius;
+        mob.coop = {
+          kind: special,
+          timer:
+            special === "mineWarden"
+              ? COOP_CONFIG.mineWarden.deploymentMin
+              : special === "riftSpiker"
+                ? COOP_CONFIG.riftSpiker.cooldownSeconds
+                : COOP_CONFIG.tetherSentinel.cooldownSeconds,
+          warning: 0,
+          target: null,
+        };
+      }
+      mob.r *= radiusScale;
+      this.drones.push(mob);
+    }
   }
 
   /**
@@ -5296,8 +6072,10 @@ export class Game {
     const p = this.p;
     const base = freshPlayer();
     const keepHull = p.hull;
+    const keepMissiles = p.missiles;
     p.fireRateMul = base.fireRateMul;
     p.damageMul = base.damageMul;
+    p.rangeMul = base.rangeMul;
     p.thrust = base.thrust;
     p.maxSpeed = base.maxSpeed;
     p.turn = base.turn;
@@ -5306,19 +6084,21 @@ export class Game {
     p.extraShots = base.extraShots;
     p.pierce = base.pierce;
     p.crit = base.crit;
+    p.critMult = base.critMult;
     p.maxMissiles = base.maxMissiles;
     p.missiles = base.missiles;
     p.blastDmg = base.blastDmg;
     p.blastR = base.blastR;
     p.missileRegen = base.missileRegen;
     for (const u of STAT_UPGRADES) {
-      const n = this.stacks[u.id] ?? 0;
+      const n = clamp(this.stacks[u.id] ?? 0, 0, u.max);
+      this.stacks[u.id] = n;
       for (let i = 0; i < n; i++) u.apply(this);
     }
     // restore the hull we came in with — the upgrades' one-shot heals are part
     // of the rebuild, so don't let them stack on the player for free
     p.hull = clamp(keepHull, 1, p.maxHull);
-    p.missiles = Math.min(p.missiles, p.maxMissiles);
+    p.missiles = Math.min(keepMissiles, p.maxMissiles);
   }
 
   /** dev console: set a stat upgrade to an exact stack count */
@@ -5387,7 +6167,7 @@ export class Game {
         angle: a,
         hp: d.maxHp,
         orbit: a,
-        fireTimer: rnd(0, 0.6),
+        fireTimer: this.rnd(0, 0.6),
         hitTimer: 0,
         beamOn: false,
         beamAngle: 0,
@@ -5396,7 +6176,7 @@ export class Game {
     }
     this.floatText(this.p.x, this.p.y - 30, `SALVAGE SQUAD ×${n}`, ICE, 13);
     this.burst(this.p.x, this.p.y, 12 + n * 5, ICE);
-    audio.play("droneAssemble");
+    this.sound.play("droneAssemble");
   }
 
   /** sweep every asteroid off the sector (shower debris included) */
@@ -5420,6 +6200,23 @@ export class Game {
     const b = this.boss;
     if (!b) return;
     this.boss = null;
+    // Damage can arrive inside the bullet loop; do not shift its indices.
+    for (const shot of this.bullets) {
+      if (["enemy", "wardenOrb", "wardenShard"].includes(shot.kind)) {
+        shot.life = 0;
+        shot.dmg = 0;
+        shot.blast = 0;
+        shot.spawnT = 999999;
+      }
+    }
+    this.shower.active = false;
+    // Every dreadnought death clears the remaining hostile field so the
+    // victory beat is readable and no escort can stall the next state.
+    if (b.mk !== 1 || b.final) {
+      this.despawnAllRocks();
+      for (const d of this.drones) this.burst(d.x, d.y, 14, MAGENTA);
+      this.drones = [];
+    }
     // the first dreadnought takes the whole belt with it, so the sector can advance to wave 6
     if (b.mk === 1 && !b.final) {
       this.despawnAllRocks();
@@ -5462,8 +6259,8 @@ export class Game {
     this.comboTimer = 4;
     for (let i = 0; i < 5; i++) {
       this.rings.push({
-        x: b.x + rnd(-b.r * 0.4, b.r * 0.4),
-        y: b.y + rnd(-b.r * 0.4, b.r * 0.4),
+        x: b.x + this.rnd(-b.r * 0.4, b.r * 0.4),
+        y: b.y + this.rnd(-b.r * 0.4, b.r * 0.4),
         r: 10,
         max: b.r * (1.6 + i * 0.5),
         life: 0.9 - i * 0.1,
@@ -5476,18 +6273,18 @@ export class Game {
     this.shake += 30;
     this.flashAlpha = 0.9;
     this.timeScale = 0.35;
-    audio.play("bossDeath");
+    this.sound.play("bossDeath");
     const n = b.final ? 12 : 8;
     for (let i = 0; i < n; i++) {
       this.pickups.push({
         x: b.x,
         y: b.y,
-        vx: rnd(-140, 140),
-        vy: rnd(-140, 140),
-        kind: Math.random() < 0.2 ? "repair" : "credit",
+        vx: this.rnd(-140, 140),
+        vy: this.rnd(-140, 140),
+        kind: this.random() < 0.2 ? "repair" : "credit",
         value: b.final ? 60 : 36,
         life: 22,
-        pulse: Math.random() * TAU,
+        pulse: this.random() * TAU,
       });
     }
     this.floatText(b.x, b.y, `+${Math.round(base * mult)}`, AMBER_HOT, 22);
@@ -5510,7 +6307,7 @@ export class Game {
     this.bannerT = 3;
     this.flashAlpha = 0.7;
     this.shake += 18;
-    audio.play("bossCharge");
+    this.sound.play("bossCharge");
     this.setMode("playing");
   }
 
@@ -5519,9 +6316,9 @@ export class Game {
   burst(x: number, y: number, n: number, color: string) {
     for (let i = 0; i < n; i++) {
       if (this.particles.length > 700) break;
-      const a = Math.random() * TAU,
-        s = rnd(40, 320),
-        life = rnd(0.3, 0.9);
+      const a = this.random() * TAU,
+        s = this.rnd(40, 320),
+        life = this.rnd(0.3, 0.9);
       this.particles.push({
         x,
         y,
@@ -5529,7 +6326,7 @@ export class Game {
         vy: Math.sin(a) * s,
         life,
         max: life,
-        size: rnd(1.6, 3.6),
+        size: this.rnd(1.6, 3.6),
         color,
         drag: 0.93,
       });
@@ -5538,8 +6335,8 @@ export class Game {
 
   thrustParticle() {
     const p = this.p;
-    const a = p.angle + Math.PI + rnd(-0.3, 0.3),
-      s = rnd(120, 260);
+    const a = p.angle + Math.PI + this.rnd(-0.3, 0.3),
+      s = this.rnd(120, 260);
     this.particles.push({
       x: p.x + Math.cos(p.angle + Math.PI) * 16,
       y: p.y + Math.sin(p.angle + Math.PI) * 16,
@@ -5547,7 +6344,7 @@ export class Game {
       vy: Math.sin(a) * s + p.vy * 0.3,
       life: 0.3,
       max: 0.3,
-      size: rnd(2, 3.5),
+      size: this.rnd(2, 3.5),
       color: AMBER,
       drag: 0.9,
     });
@@ -5603,6 +6400,22 @@ export class Game {
     const pulse = 1 + Math.sin(this.frame * 0.09) * 0.08;
 
     ctx.save();
+    if (
+      d === this.salvageDrone &&
+      d.active &&
+      d.upgrades.shield > 0 &&
+      Math.hypot(d.x - this.p.x, d.y - this.p.y) <= this.salvageSupportRange()
+    ) {
+      ctx.strokeStyle = "rgba(111,231,255,0.3)";
+      ctx.lineWidth = 1 + d.upgrades.shield * 0.4;
+      ctx.beginPath();
+      ctx.moveTo(d.x, d.y);
+      ctx.lineTo(this.p.x, this.p.y);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(this.p.x, this.p.y, 25, 0, TAU);
+      ctx.stroke();
+    }
     ctx.translate(d.x, d.y);
     ctx.rotate(d.angle || 0);
     ctx.scale(scale, scale);
@@ -5637,12 +6450,12 @@ export class Game {
     ctx.lineTo(-13, 7);
     ctx.lineTo(0, 10);
     ctx.closePath();
-    ctx.fillStyle = "rgba(20,35,48,0.92)";
+    ctx.fillStyle = "rgba(12,42,28,0.92)";
     ctx.fill();
-    ctx.strokeStyle = ICE;
+    ctx.strokeStyle = "#72ef9c";
     ctx.lineWidth = 1.8;
     ctx.shadowBlur = 14;
-    ctx.shadowColor = ICE;
+    ctx.shadowColor = "#72ef9c";
     ctx.stroke();
     ctx.shadowBlur = 0;
 
@@ -5723,18 +6536,18 @@ export class Game {
     } else {
       ctx.beginPath();
       ctx.arc(-2, 0, 2.5, 0, TAU);
-      ctx.fillStyle = ICE;
+      ctx.fillStyle = "#72ef9c";
       ctx.fill();
     }
     if (d.assembly > 0) {
       const build = clamp(d.assembly / 1.8, 0, 1);
       ctx.beginPath();
       ctx.arc(0, 0, 27 + Math.sin(this.frame * 0.18) * 3, -Math.PI * build, Math.PI * build);
-      ctx.strokeStyle = ICE;
+      ctx.strokeStyle = "#72ef9c";
       ctx.lineWidth = 2;
       ctx.globalAlpha = 0.4 + (1 - build) * 0.6;
       ctx.shadowBlur = 16;
-      ctx.shadowColor = ICE;
+      ctx.shadowColor = "#72ef9c";
       ctx.stroke();
       ctx.shadowBlur = 0;
     }
@@ -5751,7 +6564,8 @@ export class Game {
       ctx.moveTo(bx, by);
       ctx.lineTo(ex, ey);
       ctx.strokeStyle = ICE;
-      ctx.lineWidth = 2.6 + (Math.random() - 0.5) * 1.6;
+      ctx.lineWidth =
+        this.laserStats(this.p.weapons.laser || 1, true).width * 0.55 + (this.random() - 0.5);
       ctx.shadowBlur = 18;
       ctx.shadowColor = ICE;
       ctx.globalAlpha = 0.9;
@@ -5761,7 +6575,7 @@ export class Game {
       ctx.stroke();
       // hot spot where it lands
       ctx.beginPath();
-      ctx.arc(ex, ey, 3 + Math.random() * 2, 0, TAU);
+      ctx.arc(ex, ey, 3 + this.random() * 2, 0, TAU);
       ctx.fillStyle = "#ffffff";
       ctx.fill();
       ctx.restore();
@@ -5790,15 +6604,217 @@ export class Game {
     }
   }
 
+  renderSpiker(ctx: CanvasRenderingContext2D, d: Drone) {
+    const spikes = this.spikerShots();
+    const warning = clamp(1 - d.fire / GAME_CONFIG.enemies.spikers.fireWarning, 0, 1);
+    const edge = d.flash > 0 ? "#fff0f4" : "#ff7aa0";
+    ctx.save();
+    ctx.translate(d.x, d.y);
+    ctx.rotate(d.angle);
+
+    // Four long gun-spines unfold into an eight-point crown in the late waves.
+    ctx.beginPath();
+    for (let i = 0; i < spikes * 2; i++) {
+      const a = (i * Math.PI) / spikes;
+      const radius = d.r * (i % 2 === 0 ? 1.18 : spikes === 8 ? 0.58 : 0.48);
+      const x = Math.cos(a) * radius,
+        y = Math.sin(a) * radius;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = d.flash > 0 ? "rgba(255,61,110,0.55)" : "rgba(35,9,25,0.94)";
+    ctx.fill();
+    ctx.strokeStyle = edge;
+    ctx.lineWidth = 2.2;
+    ctx.shadowColor = MAGENTA;
+    ctx.shadowBlur = 14 + warning * 12;
+    ctx.stroke();
+
+    // Armored ribs lead to each muzzle, so the silhouette advertises the volley.
+    for (let i = 0; i < spikes; i++) {
+      const a = (i * TAU) / spikes;
+      const dx = Math.cos(a),
+        dy = Math.sin(a);
+      ctx.beginPath();
+      ctx.moveTo(dx * d.r * 0.3, dy * d.r * 0.3);
+      ctx.lineTo(dx * d.r * 0.87, dy * d.r * 0.87);
+      ctx.strokeStyle = warning > 0 ? AMBER_HOT : "#8e1438";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(dx * d.r * 1.05, dy * d.r * 1.05, 2 + warning * 1.5, 0, TAU);
+      ctx.fillStyle = warning > 0 ? AMBER_HOT : edge;
+      ctx.fill();
+      if (warning > 0) {
+        ctx.save();
+        ctx.globalAlpha = 0.2 + warning * 0.5;
+        ctx.setLineDash([4, 6]);
+        ctx.beginPath();
+        ctx.moveTo(dx * (d.r + 8), dy * (d.r + 8));
+        ctx.lineTo(dx * (d.r + 65), dy * (d.r + 65));
+        ctx.strokeStyle = AMBER_HOT;
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+    ctx.beginPath();
+    ctx.arc(0, 0, d.r * 0.34, 0, TAU);
+    ctx.fillStyle = "#170a18";
+    ctx.fill();
+    ctx.strokeStyle = edge;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, 0, d.r * (0.13 + warning * 0.05), 0, TAU);
+    ctx.fillStyle = warning > 0 ? AMBER_HOT : "#fff0f4";
+    ctx.fill();
+    ctx.restore();
+
+    // Keep its health readable while the hull rotates.
+    ctx.save();
+    const barW = d.r * 1.7,
+      barY = d.y - d.r * 1.18 - 10;
+    ctx.fillStyle = "rgba(0,0,0,0.7)";
+    ctx.fillRect(d.x - barW / 2 - 1, barY - 1, barW + 2, 5);
+    ctx.fillStyle = "rgba(255,61,110,0.25)";
+    ctx.fillRect(d.x - barW / 2, barY, barW, 3);
+    ctx.fillStyle = edge;
+    ctx.fillRect(d.x - barW / 2, barY, barW * clamp(d.hp / d.maxHp, 0, 1), 3);
+    ctx.restore();
+  }
+
+  renderSupportShields(ctx: CanvasRenderingContext2D) {
+    ctx.save();
+    ctx.strokeStyle = "#6fe7ff";
+    ctx.lineWidth = 1.5;
+    let links = 0;
+    for (const target of [...this.rocks, ...this.drones]) {
+      const shield = target.supportShield;
+      if (!shield || shield.hp <= 0) continue;
+      const source = this.drones.find((d) => d.id === shield.sourceId);
+      if (
+        !source ||
+        Math.hypot(source.x - target.x, source.y - target.y) >
+          COOP_CONFIG.tetherSentinel.shieldRange
+      )
+        continue;
+      ctx.globalAlpha = 0.25 + 0.4 * (shield.hp / shield.maxHp);
+      ctx.beginPath();
+      ctx.arc(target.x, target.y, target.r + 5, 0, TAU);
+      ctx.stroke();
+      if (links++ < 24) {
+        ctx.globalAlpha = 0.18;
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  renderPilot(ctx: CanvasRenderingContext2D) {
+    // salvage companion sits between the hostile field and the player
+    this.renderSalvageDrone(ctx);
+    // dev squad members are real units: render them from their own state
+    if (this.salvageDrone.active) {
+      for (const c of this.salvageClones) {
+        const unit: SalvageDrone = {
+          ...this.salvageDrone,
+          x: c.x,
+          y: c.y,
+          vx: c.vx,
+          vy: c.vy,
+          angle: c.angle,
+          hp: c.hp,
+          beamOn: c.beamOn,
+          beamAngle: c.beamAngle,
+          beamLen: c.beamLen,
+          assembly: 0,
+        };
+        this.renderSalvageDrone(ctx, unit);
+      }
+    }
+
+    // player
+    if (this.mode !== "gameover" && this.p.hull > 0) {
+      const p = this.p;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.angle);
+      if (p.invuln > 0 && Math.floor(this.frame / 3) % 2 === 0) ctx.globalAlpha = 0.55;
+      if (p.thrusting) {
+        const flick = 1 + this.random() * 0.5;
+        ctx.beginPath();
+        ctx.moveTo(-12, -7);
+        ctx.lineTo(-12 - 16 * flick, 0);
+        ctx.lineTo(-12, 7);
+        ctx.closePath();
+        ctx.fillStyle = AMBER;
+        ctx.shadowBlur = 22;
+        ctx.shadowColor = AMBER;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+      }
+      ctx.beginPath();
+      ctx.moveTo(22, 0);
+      ctx.lineTo(-13, -13);
+      ctx.lineTo(-7, 0);
+      ctx.lineTo(-13, 13);
+      ctx.closePath();
+      const visibility = clamp(this.settings.shipVisibility ?? 0, 0, 1);
+      ctx.fillStyle = visibility > 0 ? `rgba(255,224,163,${visibility})` : "rgba(12,14,22,0.85)";
+      ctx.fill();
+      ctx.lineWidth = 2.2;
+      ctx.strokeStyle = this.god ? MAGENTA : AMBER_HOT;
+      ctx.shadowBlur = 16 + visibility * 30;
+      ctx.shadowColor = AMBER;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.restore();
+    }
+  }
+
+  renderBeam(ctx: CanvasRenderingContext2D) {
+    // beam
+    if (this.p.primary === "laser" && this.p.beamOn && this.mode === "playing") {
+      const p = this.p,
+        ba = this.beamAngle;
+      const beam = this.laserStats(p.weapons.laser || 1);
+      for (const angle of p.extraShots > 0 ? [ba, ba + Math.PI] : [ba]) {
+        ctx.beginPath();
+        ctx.moveTo(p.x + Math.cos(angle) * 22, p.y + Math.sin(angle) * 22);
+        ctx.lineTo(p.x + Math.cos(angle) * beam.range, p.y + Math.sin(angle) * beam.range);
+        ctx.strokeStyle = beam.color;
+        ctx.lineWidth = beam.width + (this.random() - 0.5) * 2;
+        ctx.shadowBlur = 26;
+        ctx.shadowColor = beam.color;
+        ctx.globalAlpha = 0.95;
+        ctx.stroke();
+        ctx.lineWidth = Math.max(1.2, beam.width * 0.18);
+        ctx.strokeStyle = "#ffffff";
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.shadowBlur = 0;
+      }
+    }
+  }
+
+  prepareFrame(ctx: CanvasRenderingContext2D) {
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.clearRect(0, 0, this.w, this.h);
+  }
+
   render() {
     const ctx = this.ctx;
     const { w, h } = this;
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
+    this.prepareFrame(ctx);
 
-    const shakeAmt = this.shake * (this.reduced ? 0.15 : this.settings.shake ? 1 : 0.05);
+    const shakeAmt = this.screenShakeAmount();
     ctx.save();
-    ctx.translate((Math.random() - 0.5) * shakeAmt * 2, (Math.random() - 0.5) * shakeAmt * 2);
+    ctx.translate((this.random() - 0.5) * shakeAmt * 2, (this.random() - 0.5) * shakeAmt * 2);
 
     ctx.fillStyle = this.theme.tint;
     ctx.fillRect(-60, -60, w + 120, h + 120);
@@ -5848,6 +6864,44 @@ export class Game {
 
     // rocks
     for (const r of this.rocks) {
+      if (r.coopMine) {
+        const triggered = r.coopMine.triggerTimer >= 0;
+        const pulse = 0.5 + 0.5 * Math.sin(this.frame * (triggered ? 0.4 : 0.12));
+        const radius = Math.max(25, r.r * 1.9);
+        ctx.save();
+        ctx.translate(r.x, r.y);
+        ctx.strokeStyle = "#ff263d";
+        ctx.fillStyle = "#7d1023";
+        ctx.lineWidth = 3;
+        ctx.shadowColor = "#ff263d";
+        ctx.shadowBlur = 16 + pulse * 10;
+        ctx.beginPath();
+        for (let i = 0; i < 16; i++) {
+          const angle = (i * TAU) / 16;
+          const size = radius * (i % 2 ? 0.7 : 1);
+          if (i === 0) ctx.moveTo(Math.cos(angle) * size, Math.sin(angle) * size);
+          else ctx.lineTo(Math.cos(angle) * size, Math.sin(angle) * size);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.globalAlpha = 0.4 + pulse * 0.4;
+        ctx.beginPath();
+        ctx.arc(0, 0, radius + 7 + pulse * 4, 0, TAU);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = "#fff1ed";
+        ctx.font = "bold 24px monospace";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("!", 0, 1);
+        ctx.font = "bold 9px monospace";
+        ctx.fillStyle = "#ff6675";
+        ctx.fillText(triggered ? "DETONATING" : "MINE", 0, radius + 23);
+        ctx.restore();
+        continue;
+      }
       const dmg = 1 - clamp(r.hp / r.maxHp, 0, 1);
       const special = r.trait !== "none";
       const col = TRAIT_COLOR[r.trait];
@@ -5979,8 +7033,15 @@ export class Game {
       ctx.shadowBlur = 0;
     }
 
-    // sentinels and wardens
+    this.renderSupportShields(ctx);
+
+    // Enemy silhouettes share the same magenta vector armor language.
     for (const d of this.drones) {
+      if (renderSpecialist(ctx, d, this.frame, this.spikerShots())) continue;
+      if (d.kind === "spiker") {
+        this.renderSpiker(ctx, d);
+        continue;
+      }
       const warden = d.kind === "warden";
       const s = d.r / 21;
 
@@ -6640,7 +7701,7 @@ export class Game {
       // ignition-strike telegraphs — shrinking crosshairs before detonation
       for (const s of b.strikes) {
         const prog = 1 - clamp(s.t / s.t0, 0, 1);
-        const rr = 20 + (1 - prog) * 150;
+        const rr = 20 + (1 - prog) * (GAME_CONFIG.bosses.mk4.strikeRadius - 20);
         ctx.beginPath();
         ctx.arc(s.x, s.y, rr, 0, TAU);
         ctx.strokeStyle = ORANGE;
@@ -6699,64 +7760,7 @@ export class Game {
       ctx.strokeRect(bx + 0.5, 26.5, bw - 1, 7);
     }
 
-    // salvage companion sits between the hostile field and the player
-    this.renderSalvageDrone(ctx);
-    // dev squad members are real units: render them from their own state
-    if (this.salvageDrone.active) {
-      for (const c of this.salvageClones) {
-        const unit: SalvageDrone = {
-          ...this.salvageDrone,
-          x: c.x,
-          y: c.y,
-          vx: c.vx,
-          vy: c.vy,
-          angle: c.angle,
-          hp: c.hp,
-          beamOn: c.beamOn,
-          beamAngle: c.beamAngle,
-          beamLen: c.beamLen,
-          assembly: 0,
-        };
-        this.renderSalvageDrone(ctx, unit);
-      }
-    }
-
-    // player
-    if (this.mode !== "gameover" && this.p.hull > 0) {
-      const p = this.p;
-      ctx.save();
-      ctx.translate(p.x, p.y);
-      ctx.rotate(p.angle);
-      if (p.invuln > 0 && Math.floor(this.frame / 3) % 2 === 0) ctx.globalAlpha = 0.55;
-      if (p.thrusting) {
-        const flick = 1 + Math.random() * 0.5;
-        ctx.beginPath();
-        ctx.moveTo(-12, -7);
-        ctx.lineTo(-12 - 16 * flick, 0);
-        ctx.lineTo(-12, 7);
-        ctx.closePath();
-        ctx.fillStyle = AMBER;
-        ctx.shadowBlur = 22;
-        ctx.shadowColor = AMBER;
-        ctx.fill();
-        ctx.shadowBlur = 0;
-      }
-      ctx.beginPath();
-      ctx.moveTo(22, 0);
-      ctx.lineTo(-13, -13);
-      ctx.lineTo(-7, 0);
-      ctx.lineTo(-13, 13);
-      ctx.closePath();
-      ctx.fillStyle = "rgba(12,14,22,0.85)";
-      ctx.fill();
-      ctx.lineWidth = 2.2;
-      ctx.strokeStyle = this.god ? MAGENTA : AMBER_HOT;
-      ctx.shadowBlur = 16;
-      ctx.shadowColor = AMBER;
-      ctx.stroke();
-      ctx.shadowBlur = 0;
-      ctx.restore();
-    }
+    this.forEachPilot(() => this.renderPilot(ctx));
 
     // bullets
     for (const b of this.bullets) {
@@ -6786,7 +7790,7 @@ export class Game {
         ctx.shadowColor = AMBER;
         ctx.fill();
         ctx.beginPath();
-        ctx.arc(b.x, b.y, 4.5 + (0.45 - b.fuse) * 30, 0, TAU);
+        ctx.arc(b.x, b.y, 4.5 + Math.max(0, 0.45 - b.fuse) * 30, 0, TAU);
         ctx.strokeStyle = AMBER;
         ctx.lineWidth = 1;
         ctx.globalAlpha = 0.35;
@@ -6879,25 +7883,7 @@ export class Game {
     }
     ctx.shadowBlur = 0;
 
-    // beam
-    if (this.p.primary === "laser" && this.p.beamOn && this.mode === "playing") {
-      const p = this.p,
-        ba = this.beamAngle;
-      ctx.beginPath();
-      ctx.moveTo(p.x + Math.cos(ba) * 22, p.y + Math.sin(ba) * 22);
-      ctx.lineTo(p.x + Math.cos(ba) * 1100, p.y + Math.sin(ba) * 1100);
-      ctx.strokeStyle = ICE;
-      ctx.lineWidth = 4 + (Math.random() - 0.5) * 3;
-      ctx.shadowBlur = 26;
-      ctx.shadowColor = ICE;
-      ctx.globalAlpha = 0.95;
-      ctx.stroke();
-      ctx.lineWidth = 1.2;
-      ctx.strokeStyle = "#ffffff";
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-      ctx.shadowBlur = 0;
-    }
+    this.forEachPilot(() => this.renderBeam(ctx));
 
     // arcs
     for (const arc of this.arcs) {
@@ -6912,7 +7898,7 @@ export class Game {
       const segs = 7;
       for (let i = 1; i < segs; i++) {
         const t = i / segs,
-          off = (Math.random() - 0.5) * 18;
+          off = (this.random() - 0.5) * 18;
         ctx.lineTo(arc.x1 + dx * t + nx * off, arc.y1 + dy * t + ny * off);
       }
       ctx.lineTo(arc.x2, arc.y2);
@@ -6932,7 +7918,7 @@ export class Game {
     // rings
     for (const r of this.rings) {
       ctx.beginPath();
-      ctx.arc(r.x, r.y, r.r, 0, TAU);
+      ctx.arc(r.x, r.y, Math.max(0, r.r), 0, TAU);
       ctx.strokeStyle = r.color;
       ctx.globalAlpha = clamp(r.life, 0, 1) * 0.85;
       ctx.lineWidth = r.w;
