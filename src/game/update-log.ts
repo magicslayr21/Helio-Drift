@@ -1,5 +1,20 @@
 export const UPDATE_LOG = [
   {
+    version: "0.6.7-alpha.1",
+    date: "2026-11-04",
+    title: "Specialist refit",
+    sections: [
+      {
+        title: "VISUALS",
+        items: [
+          "Tether Sentinels are now forked shield emitters with a spinning segmented halo and a crackling arc between their prongs.",
+          "Mine Wardens are heavier armored layers with a rear mine drum whose pods light up as the next mine is about to drop.",
+          "Rift Spikers are now void cores ringed by floating crystal shards that flare outward and pull in streaks of matter while the gravity pulse charges.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.6.6-alpha.1",
     date: "2026-10-16",
     title: "Crossfire tuning",
