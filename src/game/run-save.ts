@@ -6,7 +6,10 @@ import {
   SALVAGE_UPGRADES,
   SALVAGE_UPGRADE_ORDER,
   STAT_UPGRADES,
-  normalizeMissileBuild,
+  buildOf,
+  freshForge,
+  hashSeed,
+  normalizeForge,
 } from "./balance";
 
 export interface SavedLeaderboardRun {
@@ -49,6 +52,7 @@ const FIELDS = [
   "waveHold",
   "nextId",
   "beamAngle",
+  "runSeed",
   "frame",
   "banner",
   "bannerSub",
@@ -172,9 +176,17 @@ export class RunSave {
         state.p.missileHoldT ??= -1;
         state.p.missileLockT ??= 0;
         state.p.fullLockAt ??= -1;
-        // Warhead Workshop (0.7.1): older saves fit the default Blast / Direct / Impact.
-        state.p.missileBuild = normalizeMissileBuild(state.p.missileBuild);
+        // Warhead Forge (0.7.2): saves without a forge start with three Tier I stock
+        // parts (Blast / Direct / Impact) and an empty bench; missileBuild mirrors it.
+        state.p.forge = state.p.forge ? normalizeForge(state.p.forge) : freshForge();
+        state.p.missileBuild = buildOf(state.p.forge);
+        state.p.bonusLocks =
+          typeof state.p.bonusLocks === "number" && state.p.bonusLocks >= 0
+            ? state.p.bonusLocks
+            : 0;
       }
+      // The blueprint shop stream needs a seed; older runs derive one from their id.
+      if (state && typeof state.runSeed !== "number") state.runSeed = hashSeed(saved!.id);
       // New modules default to unpurchased in saves from earlier alpha releases.
       if (state?.salvageDrone?.upgrades && state.salvageDrone.upgrades.shield === undefined)
         state.salvageDrone.upgrades.shield = 0;
@@ -283,6 +295,7 @@ export class RunSave {
       game.p.beamOn = false;
       game.p.missileHeld = false;
       game.clearMissileLock();
+      game.ensureBlueprintOffers();
       game.p.thrusting = false;
       game.salvageDrone.devCount = 1;
       game.salvageDrone.beamOn = false;

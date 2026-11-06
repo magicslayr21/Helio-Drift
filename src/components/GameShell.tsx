@@ -52,6 +52,7 @@ const EMPTY_HUD: Hud = {
   missiles: 4,
   maxMissiles: 4,
   missileBuild: { payload: "blast", guidance: "direct", trigger: "impact" },
+  mastery: [],
   missileCharge: 1,
   heat: 0,
   comboTime: 0,
@@ -461,6 +462,11 @@ export default function GameShell({
     game.saveRun();
     setHud(game.snapshot());
     forceTick((v) => v + 1);
+  };
+  /** Run a Warhead Forge action and refresh the shop if it changed anything. */
+  const forgeAction = (action: (game: Game) => boolean) => {
+    const game = gameRef.current;
+    if (game && action(game)) refreshShop();
   };
 
   return (
@@ -1019,10 +1025,14 @@ export default function GameShell({
                     onEquipDrone={(id) => {
                       if (gameRef.current?.equipSalvageWeapon(id)) refreshShop();
                     }}
-                    missileBuild={hud.missileBuild}
-                    onFitWarhead={(id) => {
-                      const game = gameRef.current;
-                      if (game?.fitWarheadPart(id)) setHud(game.snapshot());
+                    forge={{
+                      info: gameRef.current!.forgeShopInfo(),
+                      onBuy: (index) => forgeAction((g) => g.buyBlueprint(index)),
+                      onMastery: (id) => forgeAction((g) => g.buyMastery(id)),
+                      onSwap: (index) => forgeAction((g) => g.swapBench(index)),
+                      onScrap: (index) => forgeAction((g) => g.scrapBench(index)),
+                      onFitStock: (id) => forgeAction((g) => g.fitWarheadPart(id)),
+                      onReroll: () => forgeAction((g) => g.rerollChoices() !== null),
                     }}
                     notice="FLIGHT PAUSED · INSTALL YOUR NEXT ADVANTAGE"
                   />

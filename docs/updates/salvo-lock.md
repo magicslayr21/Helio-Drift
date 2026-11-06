@@ -267,3 +267,49 @@ Decisions taken while building Phase 1:
   (Corkscrew), forward-swept wings with relay prongs (Relay), or a ring-wing (Orbit). Triggers
   change the nose: a pulsing 40 px sensor ring (Proximity), a docked mini missile (Chain), or
   grapple barbs plus a countdown ring once stuck (Delayed).
+
+## Phase 3 build notes (`0.7.2-alpha.1`)
+
+- **No free fitting.** The Phase 2 free fitting is gone. A part is owned once it is bought as a
+  blueprint, and the stock Blast, Direct and Impact parts can always be refitted free.
+  Phase 2 saves that had free-fitted parts migrate to the three stock parts with an empty bench,
+  as the spec's migration test requires.
+- **"Per shop visit" means per wave.** Offers are rolled once per wave, at wave start, from a
+  seeded stream: `hash(runSeed, wave, rerolls)`. Opening and closing the shop never rerolls
+  them. The run seed is saved with the run, and older saves derive it from their run id.
+- **Daily Flare:** the codebase has no Daily Flare mode yet. `Game.dailyFlare` turns off Known
+  blueprints, and a Daily Flare mode only needs to set a shared `runSeed`.
+- **Stock parts and merges:** stock parts never appear as new blueprints. An owned Tier I stock
+  part can come up as a merge, priced as common (150, so a 90 merge and a 360 Tier III). A
+  stock part that is fresh (Tier I, never paid for, no kills) is discarded rather than benched
+  when it is replaced.
+- **Full bench:** if buying would push a part onto a full bench, the offer shows BENCH FULL and
+  the purchase is refused. Nothing is ever auto-scrapped.
+- **Reroll:** the paid reroll refreshes the level-up rack (only if one is waiting) and the
+  blueprint offers together, at the same rising price. It is available from the level-up screen
+  and from the Missiles tab.
+- **Mastery kills:** a kill counts when the final hit is a missile blast, bomblet, Cryo shard,
+  burn, Crush or Aftershock. It credits each of that warhead's parts that is still fitted. Kills
+  count at every tier. Tier III opens when a Tier II part has enough kills. A part merged to
+  Tier II with enough kills already unlocks Tier III at once.
+- **Perk interpretations:**
+  - Carpet: bomblets keep 75% of the missile's velocity and go off in a line.
+  - Crush: 30 damage per second, plus 10 per tick while touching another pulled rock.
+  - Wildfire: rocks touching a burning rock get their own 1.5 s patch, up to 10 fire zones.
+  - Lead: flies to the true intercept, with turn ×1.35.
+  - Itano: triggers when a missile runs out of fuel.
+  - Halo: 60 damage per second.
+  - Detonator: replaces the tap's missile when charges are stuck.
+  - Feedback: also applies to Full Lock salvos that hit nothing.
+- **Solar Flare and Cryo are control parts.** They mark or freeze but deal no blast damage, the
+  same rule as Gravity and EMP. Sunburn applies to every damage source through the shared
+  rock, specialist and boss damage functions. Frozen specialists are disabled the same way EMP
+  disables them.
+- **Boomerang:** it re-locks when its target dies or its fuel runs out. With no re-locks left it
+  flies home for 3 s, and catching it within 26 px refunds charge. Return Fire's bonus locks
+  launch without spending rack missiles.
+- **Co-op:** each pilot's offers use the room seed mixed with the pilot id. Known blueprints do
+  not apply in co-op, because the room Worker has no player profile. A send to the teammate
+  needs a free slot on their bench. Forge actions also work during a shared pause.
+- **`devFitPart(id, tier, kills)`** installs a part directly, for the developer console and the
+  tests.

@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { ArrowLeft, ArrowRight, RefreshCw, Radio, Shield, Users } from "lucide-react";
-import { WEAPON_ORDER, normalizeMissileBuild } from "../game/balance";
+import { WEAPON_ORDER } from "../game/balance";
 import { Game } from "../game/engine";
 import { UpgradeOption } from "./UpgradeOption";
 import { ShopScreen } from "./ShopScreen";
@@ -533,6 +533,7 @@ export function MultiplayerExperience({
             notice={notice}
             onClose={() => setShopOpen(false)}
             send={sendCommand}
+            teammateCallsign={teammate?.callsign ?? "teammate"}
           />
         )}
         {devOpen && developerSession && (
@@ -1177,12 +1178,14 @@ function CoopShop({
   notice,
   onClose,
   send,
+  teammateCallsign,
 }: {
   player: AuthoritativeSnapshot["state"]["players"][CoopPlayerId];
   paused: boolean;
   notice: string;
   onClose: () => void;
   send: (message: UiCommand) => boolean;
+  teammateCallsign: string;
 }) {
   // Presentation only: reuse campaign shop statistics without advancing either simulation.
   const presentation = useMemo(
@@ -1193,6 +1196,7 @@ function CoopShop({
   presentation.salvageDrone = { ...player.drone, upgrades: { ...player.drone.upgrades } };
   presentation.credits = player.credits;
   presentation.stacks = { ...player.upgrades };
+  presentation.rerollCost = player.campaign?.rerollCost ?? 0;
   const weapons = WEAPON_ORDER.map((id) => presentation.weaponShopInfo(id));
   const drone = presentation.salvageShopInfo();
 
@@ -1227,9 +1231,16 @@ function CoopShop({
           onEquipWeapon={(id) => {
             send({ type: "selectWeapon", weapon: id });
           }}
-          missileBuild={normalizeMissileBuild(player.ship.missileBuild)}
-          onFitWarhead={(id) => {
-            send({ type: "fitWarhead", part: id });
+          forge={{
+            info: presentation.forgeShopInfo(),
+            onBuy: (index) => send({ type: "buyBlueprint", index }),
+            onMastery: (part) => send({ type: "buyMastery", part }),
+            onSwap: (index) => send({ type: "swapBench", index }),
+            onScrap: (index) => send({ type: "scrapBench", index }),
+            onFitStock: (part) => send({ type: "fitWarhead", part }),
+            onReroll: () => send({ type: "rerollUpgrades" }),
+            onSend: (index) => send({ type: "sendBench", index }),
+            teammate: teammateCallsign,
           }}
           notice={notice}
           extra={

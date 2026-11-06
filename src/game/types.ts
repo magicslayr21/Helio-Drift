@@ -29,9 +29,69 @@ export type Rarity = "common" | "rare" | "epic";
 /* ------------------------------------------------------------ warheads */
 
 export type WarheadSlot = "payload" | "guidance" | "trigger";
-export type PayloadId = "blast" | "cluster" | "gravity" | "emp" | "incendiary";
-export type GuidanceId = "direct" | "corkscrew" | "relay" | "orbit";
-export type TriggerId = "impact" | "proximity" | "chain" | "delayed";
+export type PayloadId =
+  | "blast"
+  | "cluster"
+  | "gravity"
+  | "emp"
+  | "incendiary"
+  | "solarFlare"
+  | "cryo";
+export type GuidanceId = "direct" | "corkscrew" | "relay" | "orbit" | "boomerang";
+export type TriggerId = "impact" | "proximity" | "chain" | "delayed" | "siphon";
+export type WarheadTier = 1 | 2 | 3;
+/** Tier of each fitted part, copied onto missiles at launch. */
+export type BuildTiers = Record<WarheadSlot, WarheadTier>;
+
+/** One owned part in the Forge: fitted to a slot or waiting on the bench. */
+export interface ForgePart {
+  id: WarheadPartId;
+  tier: WarheadTier;
+  /** kills landed by this part's warheads while it was fitted */
+  kills: number;
+  /** every credit spent on it (blueprint, merge, mastery): scrap refunds half */
+  spent: number;
+}
+/** A blueprint for sale this wave. */
+export interface BlueprintOffer {
+  id: WarheadPartId;
+  sold: boolean;
+}
+/** What the Missiles tab shows for one offer. */
+export interface BlueprintOfferInfo {
+  index: number;
+  id: WarheadPartId;
+  price: number;
+  merge: boolean;
+  sold: boolean;
+  /** why it cannot be bought right now, if anything other than credits */
+  blocked: string | null;
+}
+export interface ForgePartInfo {
+  part: ForgePart;
+  /** kills needed for Tier III */
+  need: number;
+  /** Tier III is available to buy */
+  masteryReady: boolean;
+  masteryPrice: number;
+  scrap: number;
+}
+export interface ForgeShopInfo {
+  fitted: Record<WarheadSlot, ForgePartInfo>;
+  bench: (ForgePartInfo | null)[];
+  offers: BlueprintOfferInfo[];
+  rerollCost: number;
+  /** stock parts that can be fitted free (their slot holds a bought part) */
+  stock: WarheadPartId[];
+}
+export interface Forge {
+  fitted: Record<WarheadSlot, ForgePart>;
+  bench: (ForgePart | null)[];
+  offers: BlueprintOffer[];
+  /** offers are rolled once per wave and again on every paid reroll */
+  offerWave: number;
+  offerRolls: number;
+}
 export type WarheadPartId = PayloadId | GuidanceId | TriggerId;
 export interface MissileBuild {
   payload: PayloadId;
@@ -82,6 +142,10 @@ export interface Player {
   fullLockAt: number;
   /** Warhead Workshop: the payload, guidance and trigger fitted to every missile. */
   missileBuild: MissileBuild;
+  /** Warhead Forge: owned parts with tier, kills and spend; missileBuild mirrors forge.fitted. */
+  forge: Forge;
+  /** Boomerang Return Fire (III): extra locks granted to the next salvo. */
+  bonusLocks: number;
   magnet: number;
   creditChance: number;
   creditValue: number;
@@ -115,6 +179,14 @@ export interface Hud {
   missiles: number;
   maxMissiles: number;
   missileBuild: MissileBuild;
+  /** mastery progress of each fitted part, for the bar under the rack */
+  mastery: {
+    slot: WarheadSlot;
+    id: WarheadPartId;
+    tier: WarheadTier;
+    kills: number;
+    need: number;
+  }[];
   missileCharge: number;
   heat: number;
   comboTime: number;
@@ -241,8 +313,19 @@ export interface Bullet {
   spiral?: { phase: number; flight: number; age: number; offset: number; amp?: number };
   /** Released inside the Full Lock window. */
   fullLock?: boolean;
-  /** Warhead parts this missile launched with. */
+  /** Warhead parts this missile launched with, and their tiers. */
   warhead?: MissileBuild;
+  tiers?: BuildTiers;
+  /** Salvo identity: Siphon caps its refunds per salvo. */
+  salvo?: number;
+  /** Boomerang: re-locks left, and whether it is flying home to be caught. */
+  boomerang?: { relocks: number; returning: boolean };
+  /** Corkscrew Itano (III): the one extra pass has been used. */
+  itano?: boolean;
+  /** Chain Cascade (III): how many more times this mini may chain. */
+  chainDepth?: number;
+  /** Shards and bomblets credit mastery to the warhead that made them. */
+  sourceWarhead?: MissileBuild;
   /** Chain mini missile: smaller, and never chains again. */
   mini?: boolean;
   /** Relay: hops taken so far and the salvo's other locks to fly on to. */
@@ -271,6 +354,10 @@ export interface Bullet {
 /** Lingering missile effects: Gravity wells and Incendiary burning patches. */
 export interface MissileZone {
   kind: "gravity" | "fire";
+  /** Gravity Crush / Incendiary Wildfire (Tier III) */
+  perk?: boolean;
+  /** which warhead made it, for mastery credit */
+  build?: MissileBuild;
   x: number;
   y: number;
   r: number;
@@ -318,6 +405,15 @@ export interface Rock {
   /** Graze bookkeeping (bit per pilot): armed while inside the band, spent once awarded. */
   grazeArm?: number;
   grazed?: number;
+  /** Warhead status effects: Solar Flare sunburn, Cryo freeze and Wildfire ignition. */
+  sunburn?: { t: number; bonus: number; prominence: boolean };
+  frozen?: number;
+  frozenV?: { vx: number; vy: number };
+  permafrost?: boolean;
+  /** shards a hit on this frozen rock releases, and the warhead that froze it */
+  cryo?: { shards: number; dmg: number; build: MissileBuild };
+  shatter?: boolean;
+  ignited?: boolean;
 }
 
 /* Sentinels hunt, wardens snipe, and spikers drift while firing radial volleys. */
@@ -360,9 +456,17 @@ export interface Drone {
   sniperAimY: number;
   /** EMP payload: seconds this specialist stays offline. */
   emp?: number;
+  /** EMP Overload (III): takes extra damage while offline. */
+  overload?: boolean;
+  /** Cryo: seconds frozen in place (treated like EMP for behaviour). */
+  frozen?: number;
+  sunburn?: { t: number; bonus: number; prominence: boolean };
 }
 
 export interface Boss {
+  /** Solar Flare sunburn and Cryo slow (bosses move 40% slower instead of freezing). */
+  sunburn?: { t: number; bonus: number; prominence: boolean };
+  chill?: number;
   id: number;
   name: string;
   suffix: string;

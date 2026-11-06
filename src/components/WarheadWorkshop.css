@@ -244,3 +244,218 @@
     animation: none !important;
   }
 }
+
+/* ------------------------------------------------------------ forge (0.7.2) */
+.forge-fitted,
+.forge-offers,
+.forge-bench {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.forge-bench {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.forge-fitted-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.forge-fitted-head strong {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.forge-fitted-head small {
+  color: var(--rarity-color);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.forge-tier {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.forge-tier i {
+  width: 9px;
+  height: 3px;
+  background: #ffffff1c;
+}
+.forge-tier i.is-on {
+  background: var(--part-color);
+}
+.forge-tier i.is-mastered {
+  background: linear-gradient(90deg, #ffe7a0, #ffb03a);
+  box-shadow: 0 0 6px #ffcf6a;
+}
+.forge-tier b {
+  margin-left: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--part-color);
+}
+.forge-perk {
+  font-size: 8.5px;
+  line-height: 1.5;
+  color: #6f7180;
+  border-left: 2px solid #ffffff14;
+  padding-left: 7px;
+}
+.forge-perk b {
+  color: #8f8a7c;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.forge-perk.is-on {
+  color: #e8d7bb;
+  border-left-color: #ffcf6a;
+}
+.forge-perk.is-on b {
+  color: #ffcf6a;
+}
+.helio-shop .warhead-card.is-mastered {
+  border-color: #ffcf6a;
+  box-shadow:
+    inset 0 2px #ffcf6a,
+    0 0 22px #ffcf6a22;
+  background:
+    radial-gradient(ellipse at 80% 0, #ffcf6a14, transparent 70%),
+    color-mix(in srgb, var(--part-color) 6%, #10141e);
+}
+.forge-mastery span {
+  display: flex;
+  justify-content: space-between;
+  color: #8d8a82;
+  font-size: 7.5px;
+  letter-spacing: 0.1em;
+}
+.forge-mastery b {
+  color: #d1b587;
+  font-weight: 500;
+}
+.forge-mastery i {
+  display: block;
+  height: 3px;
+  margin-top: 4px;
+  background: #ffffff12;
+  overflow: hidden;
+}
+.forge-mastery em {
+  display: block;
+  height: 100%;
+  background: var(--part-color);
+  box-shadow: 0 0 6px var(--part-color);
+  transition: width 300ms ease-out;
+}
+.forge-mastery.is-done em {
+  background: linear-gradient(90deg, #ffe7a0, #ffb03a);
+}
+.helio-shop .forge-action {
+  padding: 7px 9px;
+  border: 1px solid color-mix(in srgb, var(--part-color) 45%, #2a3040);
+  background: color-mix(in srgb, var(--part-color) 8%, #0c0f18);
+  color: var(--part-color);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.helio-shop .forge-action:not(:disabled):hover {
+  border-color: var(--part-color);
+}
+.helio-shop .forge-action:disabled {
+  opacity: 0.45;
+}
+.helio-shop .forge-action--mastery {
+  border-color: #ffcf6a;
+  color: #ffe7a0;
+  background: linear-gradient(115deg, #ffcf6a22, #ffb03a0a);
+  animation: forge-ready 1.4s ease-in-out infinite;
+}
+.helio-shop .forge-action--scrap {
+  color: #c3944c;
+  border-color: #c3944c55;
+  background: #c3944c0d;
+}
+.forge-bench-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.forge-bench-empty {
+  display: grid;
+  place-items: center;
+  min-height: 110px;
+  color: #4d5262;
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  border: 1px dashed #2a3040;
+  background: repeating-linear-gradient(135deg, #ffffff03 0 1px, transparent 1px 9px);
+}
+.helio-shop .forge-offer {
+  overflow: hidden;
+}
+.helio-shop .forge-offer.is-sold {
+  opacity: 0.45;
+  filter: grayscale(0.6);
+}
+.forge-ribbon {
+  position: absolute;
+  top: 12px;
+  right: -34px;
+  width: 130px;
+  padding: 3px 0;
+  transform: rotate(35deg);
+  text-align: center;
+  font-size: 7.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #170c00;
+  background: linear-gradient(90deg, #ffe7a0, #ffb03a);
+  box-shadow: 0 2px 10px #ffb03a55;
+}
+.helio-shop .forge-chip {
+  margin-top: 10px;
+  margin-right: 8px;
+  padding: 7px 11px;
+  border: 1px solid #ff5ad850;
+  background: #ff5ad80c;
+  color: #ff8ae4;
+  font-size: 8px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.helio-shop .forge-chip:not(:disabled):hover {
+  border-color: #ff5ad8;
+}
+.helio-shop .forge-chip:disabled {
+  opacity: 0.45;
+}
+.forge-empty {
+  color: #6f7180;
+  font-size: 9px;
+}
+@keyframes forge-ready {
+  50% {
+    box-shadow: 0 0 14px #ffcf6a55;
+  }
+}
+@media (max-width: 900px) {
+  .forge-fitted,
+  .forge-offers {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 620px) {
+  .forge-bench {
+    grid-template-columns: 1fr;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .helio-shop .forge-action--mastery {
+    animation: none;
+  }
+}

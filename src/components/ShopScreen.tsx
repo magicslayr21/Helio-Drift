@@ -8,17 +8,10 @@ import {
   type ReactNode,
 } from "react";
 import { WEAPON_DEFS, WEAPON_ORDER } from "../game/balance";
-import type {
-  MissileBuild,
-  SalvageShopInfo,
-  SalvageUpgradeId,
-  WarheadPartId,
-  WeaponId,
-  WeaponShopInfo,
-} from "../game/types";
+import type { SalvageShopInfo, SalvageUpgradeId, WeaponId, WeaponShopInfo } from "../game/types";
 import { audio } from "../game/audio";
 import { ShopIcon, WeaponIcon, WEAPON_ICONS } from "./ShopIcons";
-import { WarheadWorkshop } from "./WarheadWorkshop";
+import { WarheadForge, type WarheadForgeProps } from "./WarheadWorkshop";
 import "./ShopScreen.css";
 
 type Purchase = {
@@ -46,8 +39,8 @@ export interface ShopScreenProps {
   onBuyDrone: (id: SalvageUpgradeId | "base") => void;
   onEquipDrone: (id: WeaponId | null) => void;
   onEquipWeapon?: (id: WeaponId) => void;
-  missileBuild: MissileBuild;
-  onFitWarhead: (id: WarheadPartId) => void;
+  /** Warhead Forge state and actions (Missiles tab). */
+  forge: Omit<WarheadForgeProps, "credits">;
   notice?: string;
   extra?: ReactNode;
 }
@@ -62,8 +55,7 @@ export function ShopScreen({
   onBuyDrone,
   onEquipDrone,
   onEquipWeapon,
-  missileBuild,
-  onFitWarhead,
+  forge,
   notice,
   extra,
 }: ShopScreenProps) {
@@ -267,7 +259,7 @@ export function ShopScreen({
           <ShopIcon id="missiles" />
           <span>
             <strong>Missiles</strong>
-            <small>Warhead Workshop / 3 slots</small>
+            <small>Warhead Forge / Blueprints</small>
           </span>
           <i>03</i>
         </button>
@@ -279,7 +271,7 @@ export function ShopScreen({
             id={`${panelId}-missiles`}
             aria-labelledby={`${panelId}-missiles-tab`}
           >
-            <WarheadWorkshop build={missileBuild} onFit={onFitWarhead} />
+            <WarheadForge {...forge} credits={credits} />
           </section>
         ) : tab === "weapons" ? (
           <section

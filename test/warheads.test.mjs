@@ -74,7 +74,7 @@ function rock(g, x, y, size = 1, hp = 1e6) {
 
 /** Fit a full build and launch one missile at a target, parked right on it. */
 function armed(g, build, target, at = target) {
-  for (const id of Object.values(build)) g.fitWarheadPart(id);
+  for (const id of Object.values(build)) g.devFitPart(id);
   const b = g.launchMissile({ angle: 0, target: target?.id });
   if (at) Object.assign(b, { x: at.x, y: at.y });
   return b;
@@ -95,12 +95,20 @@ const captureBlasts = (g, t) => {
 
 /* ------------------------------------------------------------ table and fitting */
 
-test("the Workshop has 13 parts with the spec's slots and rarities", () => {
+test("the Forge has 17 parts (7 payloads, 5 guidance, 5 triggers) with the spec's rarities", () => {
   const bySlot = (slot) =>
     Object.keys(WARHEAD_PARTS).filter((id) => WARHEAD_PARTS[id].slot === slot);
-  assert.deepEqual(bySlot("payload"), ["blast", "cluster", "gravity", "emp", "incendiary"]);
-  assert.deepEqual(bySlot("guidance"), ["direct", "corkscrew", "relay", "orbit"]);
-  assert.deepEqual(bySlot("trigger"), ["impact", "proximity", "chain", "delayed"]);
+  assert.deepEqual(bySlot("payload"), [
+    "blast",
+    "cluster",
+    "gravity",
+    "emp",
+    "incendiary",
+    "solarFlare",
+    "cryo",
+  ]);
+  assert.deepEqual(bySlot("guidance"), ["direct", "corkscrew", "relay", "orbit", "boomerang"]);
+  assert.deepEqual(bySlot("trigger"), ["impact", "proximity", "chain", "delayed", "siphon"]);
   const rarity = Object.fromEntries(Object.entries(WARHEAD_PARTS).map(([id, p]) => [id, p.rarity]));
   assert.deepEqual(rarity, {
     blast: "default",
@@ -108,32 +116,39 @@ test("the Workshop has 13 parts with the spec's slots and rarities", () => {
     gravity: "rare",
     emp: "epic",
     incendiary: "common",
+    solarFlare: "epic",
+    cryo: "rare",
     direct: "default",
     corkscrew: "common",
     relay: "epic",
     orbit: "rare",
+    boomerang: "rare",
     impact: "default",
     proximity: "common",
     chain: "epic",
     delayed: "rare",
+    siphon: "epic",
   });
 });
 
-test("new ships fit Blast, Direct and Impact; fitting swaps only its own slot", () => {
+test("new ships fit Blast, Direct and Impact; installing a part swaps only its own slot", () => {
   const g = game();
   assert.deepEqual(g.p.missileBuild, build());
-  assert.equal(g.fitWarheadPart("orbit"), true);
+  assert.equal(g.devFitPart("orbit"), true);
   assert.deepEqual(g.p.missileBuild, build({ guidance: "orbit" }));
-  assert.equal(g.fitWarheadPart("orbit"), false, "already fitted");
-  assert.equal(g.fitWarheadPart("plasma"), false, "unknown part");
-  assert.equal(g.fitWarheadPart("__proto__"), false);
+  assert.equal(g.devFitPart("plasma"), false, "unknown part");
+  assert.equal(g.devFitPart("__proto__"), false);
   assert.deepEqual(g.p.missileBuild, build({ guidance: "orbit" }));
+  // without the shop, only owned parts can be fitted: a stock refit is free
+  assert.equal(g.fitWarheadPart("cluster"), false, "unowned parts must be bought");
+  assert.equal(g.fitWarheadPart("direct"), true, "stock parts refit for free");
+  assert.deepEqual(g.p.missileBuild, build());
 });
 
 test("a refit never changes a missile already in flight", () => {
   const g = game();
   const b = g.launchMissile({ angle: 0 });
-  g.fitWarheadPart("cluster");
+  g.devFitPart("cluster");
   assert.equal(b.warhead.payload, "blast");
   assert.equal(g.launchMissile({ angle: 0 }).warhead.payload, "cluster");
 });
@@ -163,8 +178,8 @@ test("old saves migrate to Blast, Direct and Impact", async (t) => {
   assert.equal(new RunSave().restore(restored), true);
   assert.deepEqual(restored.p.missileBuild, build());
   // and a fitted build survives a save round trip
-  restored.fitWarheadPart("emp");
-  restored.fitWarheadPart("delayed");
+  restored.devFitPart("emp");
+  restored.devFitPart("delayed");
   new RunSave().begin(restored);
   const again = game();
   assert.equal(new RunSave().restore(again), true);
@@ -188,7 +203,7 @@ test("Cluster: 6 bomblets × 16 damage that scatter and detonate without hurting
   const target = rock(g, 400, 300);
   g.detonateMissile(armed(g, build({ payload: "cluster" }), target));
   const bomblets = g.bullets.filter((b) => b.kind === "bomblet");
-  assert.equal(bomblets.length, W.cluster.bomblets);
+  assert.equal(bomblets.length, W.cluster.bomblets[0]);
   assert.ok(bomblets.every((b) => b.extraDmg === 16));
   // they scatter in every direction
   const angles = bomblets.map((b) => Math.atan2(b.vy, b.vx));
@@ -281,10 +296,10 @@ test("Direct: turn rate 6.5 and no spiral on a tap", () => {
 
 test("Corkscrew: +15% speed and a wider spiral, even on a tap", () => {
   const g = game();
-  g.fitWarheadPart("corkscrew");
+  g.devFitPart("corkscrew");
   const b = g.launchMissile({ angle: 0 });
   close(Math.hypot(b.vx, b.vy), GAME_CONFIG.salvo.launchSpeed * 1.15);
-  assert.equal(b.spiral.amp, W.corkscrew.spiralMultiplier);
+  assert.equal(b.spiral.amp, W.corkscrew.spiralMultiplier[0]);
 });
 
 test("Relay: a kill flies on to another lock at 60% damage, up to 2 hops", () => {
@@ -292,7 +307,7 @@ test("Relay: a kill flies on to another lock at 60% damage, up to 2 hops", () =>
   const a = rock(g, 300, 300, 1, 1);
   const b = rock(g, 500, 300, 1, 1e6);
   const c = rock(g, 700, 300, 1, 1e6);
-  g.fitWarheadPart("relay");
+  g.devFitPart("relay");
   const first = g.launchMissile({ angle: 0, target: a.id, relayTargets: [a.id, b.id, c.id] });
   Object.assign(first, { x: a.x, y: a.y });
   g.bullets = [];
@@ -325,7 +340,7 @@ test("Relay: a kill flies on to another lock at 60% damage, up to 2 hops", () =>
 test("Orbit: circles the ship for 1.5 s, blocks 1 enemy shot, then strikes", () => {
   const g = game();
   const target = rock(g, 700, 200);
-  g.fitWarheadPart("orbit");
+  g.devFitPart("orbit");
   const m = g.launchMissile({ angle: 0, target: target.id });
   assert.equal(m.orbit.t, 1.5);
   const shot = (y) => ({
@@ -378,7 +393,7 @@ test("Impact: detonates on contact", (t) => {
 test("Proximity: detonates 40 px early with +20% radius", (t) => {
   const g = game();
   const target = rock(g, 700, 300);
-  g.fitWarheadPart("proximity");
+  g.devFitPart("proximity");
   const blasts = captureBlasts(g, t);
   const m = g.launchMissile({ angle: -Math.PI / 2, target: target.id });
   for (let i = 0; i < 120 && g.bullets.length; i++) g.updateBullets(DT);
@@ -409,7 +424,7 @@ test("Delayed: sticks to the target and detonates after 1 s for 1.6× damage", (
   const g = game();
   const target = rock(g, 700, 400);
   target.vx = 60;
-  g.fitWarheadPart("delayed");
+  g.devFitPart("delayed");
   const blasts = captureBlasts(g, t);
   const m = g.launchMissile({ angle: -Math.PI / 2, target: target.id });
   let stuckAt = -1;
@@ -428,19 +443,39 @@ test("Delayed: sticks to the target and detonates after 1 s for 1.6× damage", (
 
 /* ------------------------------------------------------------ co-op */
 
-test("co-op pilots fit their own warheads through the fitWarhead command", () => {
+test("co-op pilots run their own Forge through room commands", () => {
   const sim = new LocalCoopSimulation({ seed: 3, callsigns: ["Alpha", "Bravo"] });
-  const command = (playerId, sequence, part) => ({ type: "fitWarhead", playerId, sequence, part });
-  assert.equal(sim.submit(command("p1", 1, "cluster")), true);
-  assert.equal(sim.submit(command("p2", 1, "orbit")), true);
-  assert.equal(sim.submit(command("p2", 2, "warp-drive")), false);
+  const g = sim.game;
+  for (const id of ["p1", "p2"]) {
+    sim.state.players[id].credits = 5000;
+    g.bindPilot(id);
+    g.ensureBlueprintOffers();
+    g.releasePilot();
+  }
+  const offers = (id) => sim.state.players[id].ship.forge.offers.map((o) => o.id);
+  assert.equal(offers("p1").length, 3);
+  assert.notDeepEqual(offers("p1"), offers("p2"), "each pilot has their own offers");
+  const command = (playerId, sequence, extra) => ({
+    type: "buyBlueprint",
+    playerId,
+    sequence,
+    ...extra,
+  });
+  assert.equal(sim.submit(command("p1", 1, { index: 0 })), true);
+  assert.equal(sim.submit(command("p2", 1, { index: 7 })), false, "index out of range");
   sim.stepTicks(1);
-  assert.deepEqual(sim.state.players.p1.ship.missileBuild, build({ payload: "cluster" }));
-  assert.deepEqual(sim.state.players.p2.ship.missileBuild, build({ guidance: "orbit" }));
-  // a room checkpoint from before the Workshop restores with default parts
+  const bought = offers("p1")[0];
+  const slot = WARHEAD_PARTS[bought].slot;
+  assert.equal(sim.state.players.p1.ship.forge.fitted[slot].id, bought);
+  assert.equal(sim.state.players.p1.ship.missileBuild[slot], bought);
+  assert.deepEqual(sim.state.players.p2.ship.missileBuild, build());
+  // a room checkpoint from before the Forge restores with three stock parts and an empty bench
   const snapshot = sim.snapshot();
+  delete snapshot.players.p1.ship.forge;
   delete snapshot.players.p1.ship.missileBuild;
   const restored = LocalCoopSimulation.restore(snapshot);
+  const forge = restored.state.players.p1.ship.forge;
   assert.deepEqual(restored.state.players.p1.ship.missileBuild, build());
-  assert.deepEqual(restored.state.players.p2.ship.missileBuild, build({ guidance: "orbit" }));
+  assert.deepEqual(forge.bench, [null, null]);
+  assert.ok(Object.values(forge.fitted).every((part) => part.tier === 1));
 });
