@@ -86,29 +86,43 @@ Hold E (or the on-screen Missile button) to paint locks; release to fire. Values
 | Kill / boss main-weapon hit charge |                                                   +3% / +0.5% each |
 | Co-op Crossfire                    | Both pilots' missiles on one target within 1 s: ×1.4, +6 Overdrive |
 
-## Warhead Workshop parts (Tier I)
+## Warhead Forge parts
 
-Values live in `GAME_CONFIG.warheads`; the part table is `WARHEAD_PARTS` in `balance.ts`.
-New ships fit Blast, Direct and Impact. Fitting is free in this release.
+Values live in `GAME_CONFIG.warheads` (per-tier arrays) and `GAME_CONFIG.forge`; the part table is
+`WARHEAD_PARTS` in `balance.ts`. New ships fit stock Blast, Direct and Impact at Tier I.
 
-| Slot     | Part       | Rarity  | Tier I effect                                                                |
-| -------- | ---------- | ------- | ---------------------------------------------------------------------------- |
-| Payload  | Blast      | Default | 42 damage, 72 radius                                                         |
-| Payload  | Cluster    | Rare    | 6 bomblets × 16 damage, 30 radius, 0.35–0.6 s fuses; no damage to the pilot  |
-| Payload  | Gravity    | Rare    | 1.5 s well, 160 radius, pull 620 on size 1–2 rocks (not meteors or bosses)   |
-| Payload  | EMP        | Epic    | Specialists within 110 offline for 3 s; Tether Sentinel shields drop         |
-| Payload  | Incendiary | Common  | Patch of blast radius for 2 s, 20 damage/s in 0.25 s ticks (bosses included) |
-| Guidance | Direct     | Default | Turn rate 6.5                                                                |
-| Guidance | Corkscrew  | Common  | +15% speed, spiral amplitude ×1.6 (tap missiles spiral too)                  |
-| Guidance | Relay      | Epic    | A killing blast flies on to another salvo lock at 60% damage, up to 2 hops   |
-| Guidance | Orbit      | Rare    | Orbits the ship at 48 px for 1.5 s, blocks 1 enemy shot each, then strikes   |
-| Trigger  | Impact     | Default | Detonates on contact                                                         |
-| Trigger  | Proximity  | Common  | Detonates within 40 px of a hostile's hull; radius ×1.2                      |
-| Trigger  | Chain      | Epic    | Each full-size blast launches 1 mini missile at 30% damage and 70% radius    |
-| Trigger  | Delayed    | Rare    | Sticks on contact, detonates after 1 s for ×1.6 damage                       |
+| Part        | Slot     | Rarity  | Tier I                                       | Tier II                              | Tier III perk                                                |
+| ----------- | -------- | ------- | -------------------------------------------- | ------------------------------------ | ------------------------------------------------------------ |
+| Blast       | Payload  | Default | 42 dmg, 72 r                                 | 50 dmg, 80 r                         | Aftershock: second blast 0.4 s later at 40%                  |
+| Cluster     | Payload  | Rare    | 6 × 16 bomblets                              | 8 × 18                               | Carpet: bomblets roll on along the missile's path            |
+| Gravity     | Payload  | Rare    | 1.5 s, 160 r                                 | 2 s, 200 r                           | Crush: pulled rocks take 30 dmg/s, +10 per contact tick      |
+| EMP         | Payload  | Epic    | 3 s disable (110 r)                          | 4 s; Warden mines fizzle             | Overload: disabled enemies take +50% damage                  |
+| Incendiary  | Payload  | Common  | 2 s, 20 dmg/s                                | 3 s, 28 dmg/s                        | Wildfire: touching rocks ignite (1.5 s patches, 10 fire cap) |
+| Solar Flare | Payload  | Epic    | +20% damage taken, 4 s                       | +30%, 5 s; Sentinels hold fire 1.5 s | Prominence: marked kills mark targets within 110             |
+| Cryo        | Payload  | Rare    | 1.5 s freeze; 4 × 10 shards; boss −40% speed | 2 s; 6 × 12 shards                   | Permafrost: frozen rocks block enemy shots                   |
+| Direct      | Guidance | Default | Turn 6.5                                     | +20% speed                           | Lead: true intercept, turn ×1.35                             |
+| Corkscrew   | Guidance | Common  | +15% speed, spiral ×1.6                      | +25% speed, spiral ×2                | Itano: a missile that runs out loops back for one more pass  |
+| Relay       | Guidance | Epic    | 2 hops at 60%                                | 3 hops at 70%                        | Chainbreaker: each hop at 110%                               |
+| Orbit       | Guidance | Rare    | 1.5 s, blocks 1 shot                         | 2.5 s, blocks 2                      | Halo: orbiting missiles deal 60 dmg/s to rocks they touch    |
+| Boomerang   | Guidance | Rare    | 1 re-lock; 30% refund when caught            | 2 re-locks; 50% refund               | Return Fire: each catch adds +1 lock to the next salvo       |
+| Impact      | Trigger  | Default | Contact                                      | +10% damage                          | Breach: +40% damage against boss hulls                       |
+| Proximity   | Trigger  | Common  | 40 px early, +20% r                          | +30% r                               | Airburst: blasts delete enemy shots in range                 |
+| Chain       | Trigger  | Epic    | Mini at 30% (70% r)                          | Mini at 40%                          | Cascade: minis chain once more                               |
+| Delayed     | Trigger  | Rare    | 1 s, 1.6×                                    | 0.8 s, 1.8×                          | Detonator: tap E to set off stuck charges at 2×              |
+| Siphon      | Trigger  | Epic    | 8% charge per hit, 1 missile per salvo       | 12%, +1 hull per kill                | Feedback: Full Lock salvos refund one whole missile          |
+
+| Forge value                   |                                                                      Setting |
+| ----------------------------- | ---------------------------------------------------------------------------: |
+| Offers                        |      3 per wave, seeded by run seed, wave and reroll count; epic from wave 6 |
+| Roll weights                  | Common 1, rare 0.7, epic 0.4; Known blueprints ×2 (not in Daily Flare/co-op) |
+| List price                    |                                     Common and stock 150, rare 320, epic 620 |
+| Merge (Tier I → II)           |                                                            60% of list price |
+| Mastery kills (Tier II → III) |                                      Epic 90, rare 120, common and stock 150 |
+| Tier III price                |                                     round5(price × 1.55²): 360 / 770 / 1,490 |
+| Bench / scrap                 |                                2 slots, free swaps / 50% of everything spent |
 
 Payload damage and control scale with the shot: Full Lock, Relay hops, Chain minis and Delayed
-all multiply the payload. Chain minis carry Gravity and EMP at 50% duration.
+all multiply the payload. Chain minis carry Gravity, EMP, Solar Flare and Cryo at 50% duration.
 
 ## Player weapons
 

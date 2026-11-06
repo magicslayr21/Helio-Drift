@@ -123,26 +123,100 @@ export const GAME_CONFIG = {
   },
 
   /** Warhead Workshop (0.7.1): Tier I values for every payload, guidance and trigger part. */
+  /**
+   * Warhead Workshop / Forge. Per-tier values are [Tier I, Tier II, Tier III];
+   * Tier III keeps Tier II's numbers and switches on the part's perk.
+   */
   warheads: {
+    blast: {
+      damage: [42, 50, 50],
+      radius: [72, 80, 80],
+      aftershockDelay: 0.4,
+      aftershockShare: 0.4,
+    },
     cluster: {
-      bomblets: 6,
-      bombletDamage: 16,
+      bomblets: [6, 8, 8],
+      bombletDamage: [16, 18, 18],
       bombletRadius: 30,
       scatterSpeed: 170,
       fuseMin: 0.35,
       fuseMax: 0.6,
+      /** Carpet (III): bomblets keep this share of the missile's velocity and roll on */
+      carpetCarry: 0.75,
     },
-    gravity: { duration: 1.5, radius: 160, pull: 620, maxRockSize: 2 },
-    emp: { duration: 3, radius: 110 },
-    incendiary: { duration: 2, dps: 20, tick: 0.25 },
-    corkscrew: { speedMultiplier: 1.15, spiralMultiplier: 1.6 },
-    relay: { hops: 2, damageMultiplier: 0.6, searchRange: 700 },
-    orbit: { duration: 1.5, blocks: 1, radius: 48, angularSpeed: 4.2 },
-    proximity: { distance: 40, radiusMultiplier: 1.2 },
-    chain: { damageMultiplier: 0.3, radiusMultiplier: 0.7, speed: 420 },
-    delayed: { fuse: 1, damageMultiplier: 1.6 },
+    gravity: {
+      duration: [1.5, 2, 2],
+      radius: [160, 200, 200],
+      pull: 620,
+      maxRockSize: 2,
+      /** Crush (III): pulled rocks burn down and grind against each other */
+      crushDps: 30,
+      crushContactDamage: 10,
+    },
+    emp: { duration: [3, 4, 4], radius: 110, overloadMultiplier: 1.5 },
+    incendiary: {
+      duration: [2, 3, 3],
+      dps: [20, 28, 28],
+      tick: 0.25,
+      /** Wildfire (III): touching rocks catch and burn on their own */
+      wildfireReach: 10,
+      wildfireDuration: 1.5,
+      wildfireCap: 10,
+    },
+    solarFlare: {
+      bonus: [0.2, 0.3, 0.3],
+      duration: [4, 5, 5],
+      /** Tier II+: Sentinels caught in the flare hold fire */
+      sentinelSilence: [0, 1.5, 1.5],
+      prominenceRadius: 110,
+    },
+    cryo: {
+      duration: [1.5, 2, 2],
+      shards: [4, 6, 6],
+      shardDamage: [10, 12, 12],
+      shardSpeed: 340,
+      bossSlow: 0.4,
+    },
+    direct: { speedMultiplier: [1, 1.2, 1.2], leadTurnMultiplier: 1.35 },
+    corkscrew: { speedMultiplier: [1.15, 1.25, 1.25], spiralMultiplier: [1.6, 2, 2] },
+    relay: { hops: [2, 3, 3], damageMultiplier: [0.6, 0.7, 1.1], searchRange: 700 },
+    orbit: {
+      duration: [1.5, 2.5, 2.5],
+      blocks: [1, 2, 2],
+      radius: 48,
+      angularSpeed: 4.2,
+      haloDps: 60,
+    },
+    boomerang: { relocks: [1, 2, 2], refund: [0.3, 0.5, 0.5], catchRadius: 26, returnLife: 3 },
+    impact: { damageMultiplier: [1, 1.1, 1.1], breachMultiplier: 1.4 },
+    proximity: { distance: 40, radiusMultiplier: [1.2, 1.3, 1.3] },
+    chain: {
+      damageMultiplier: [0.3, 0.4, 0.4],
+      radiusMultiplier: 0.7,
+      speed: 420,
+      /** Cascade (III): minis may chain this many more times */
+      cascadeDepth: 1,
+    },
+    delayed: { fuse: [1, 0.8, 0.8], damageMultiplier: [1.6, 1.8, 1.8], detonatorMultiplier: 2 },
+    siphon: { refund: [0.08, 0.12, 0.12], salvoCap: 1, hullPerKill: [0, 1, 1] },
     /** Mini missiles (Chain) carry the payload's control effects at this duration. */
     miniControlDuration: 0.5,
+  },
+
+  /** Warhead Forge (0.7.2): blueprint offers, merges, mastery, bench and scrap. */
+  forge: {
+    offers: 3,
+    epicWave: 6,
+    /** list prices; default parts are priced as common */
+    prices: { default: 150, common: 150, rare: 320, epic: 620 },
+    /** roll weights, in line with the weapon shop (common 1, rare 0.7, epic 0.4) */
+    weights: { default: 1, common: 1, rare: 0.7, epic: 0.4 },
+    knownBlueprintWeight: 2,
+    mergeShare: 0.6,
+    masteryPriceMultiplier: 1.55,
+    masteryKills: { default: 150, common: 150, rare: 120, epic: 90 },
+    benchSlots: 2,
+    scrapShare: 0.5,
   },
 
   weaponProgression: {

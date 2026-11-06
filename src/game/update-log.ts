@@ -1,5 +1,54 @@
 export const UPDATE_LOG = [
   {
+    version: "0.7.2-alpha.1",
+    date: "2026-11-06",
+    title: "Warhead forge",
+    sections: [
+      {
+        title: "FORGE",
+        items: [
+          "The Missiles tab is now the Warhead Forge. Each wave offers 3 blueprints from a seeded shop stream; epic parts appear from wave 6.",
+          "Blueprints cost 150 (common), 320 (rare) or 620 (epic). Buying fits the part at once and the replaced part moves to the bench. Stock Blast, Direct and Impact parts are free and can always be refitted.",
+          "An offer for a Tier I part you own shows MERGE → II and costs 60% of list price.",
+          "Mastery: each part counts the kills its warheads land while fitted. At 90 (epic), 120 (rare) or 150 (common and stock) kills a Tier II part can be raised to Tier III for 360, 770 or 1,490 credits.",
+          "Two bench slots keep tier and kills. Swapping is free; scrapping returns half of everything spent on the part.",
+          "The paid reroll now refreshes the blueprint offers together with the upgrade rack.",
+          "Parts reset each run. A part taken to Tier III becomes a Known blueprint and appears twice as often in later runs.",
+        ],
+      },
+      {
+        title: "NEW PARTS",
+        items: [
+          "Solar Flare (epic payload): targets in the blast take +20% damage from all sources for 4 s.",
+          "Cryo (rare payload): freezes for 1.5 s; any hit on a frozen rock shatters it into 4 shards × 10 damage. Bosses are slowed 40% instead.",
+          "Boomerang (rare guidance): a missile that misses, or loses its target, re-locks the nearest target once; catching it unused refunds 30% of a missile.",
+          "Siphon (epic trigger): each enemy hit by a blast refunds 8% of a missile, up to 1 missile per salvo.",
+        ],
+      },
+      {
+        title: "TIERS",
+        items: [
+          "Every part has Tier II values and a Tier III perk: Aftershock, Carpet, Crush, Overload, Wildfire, Prominence, Permafrost, Lead, Itano, Chainbreaker, Halo, Return Fire, Breach, Airburst, Cascade, Detonator and Feedback.",
+          "Detonator: with Delayed at Tier III, tap E to set off every stuck charge early at 2×.",
+        ],
+      },
+      {
+        title: "VISUALS",
+        items: [
+          "Forge cards show tier pips, a mastery bar and the perk, glowing gold once mastered; merge offers wear a MERGE → II ribbon.",
+          "A thin mastery bar sits under the missile rack, and MASTERY READY appears when Tier III unlocks.",
+          "Missiles show one tail chevron per upgraded part and a gold rim once any part is mastered. New art for Solar Flare coronas, Cryo frost shells and shards, Boomerang crescent wings and Siphon intake vanes.",
+        ],
+      },
+      {
+        title: "CO-OP",
+        items: [
+          "Each pilot has their own Forge, offers and bench. During the shop a pilot can send a bench part to their teammate's bench.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.7.1-alpha.1",
     date: "2026-11-06",
     title: "Warhead workshop",

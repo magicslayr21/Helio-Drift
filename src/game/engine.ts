@@ -44,9 +44,21 @@ import {
   freshSalvageDrone,
   DEFAULT_MISSILE_BUILD,
   WARHEAD_PARTS,
+  WARHEAD_SLOTS,
   isWarheadPart,
   normalizeMissileBuild,
+  normalizeForge,
+  buildOf,
+  tiersOf,
+  masteryKills,
+  masteryPrice,
+  mergePrice,
+  partPrice,
+  scrapValue,
+  stockPart,
+  rollBlueprintOffers,
 } from "./balance";
+import { addKnownBlueprint, loadKnownBlueprints } from "./blueprints";
 import type {
   Mode,
   WeaponId,
@@ -79,6 +91,12 @@ import type {
   PayloadId,
   WarheadPartId,
   WarheadSlot,
+  BuildTiers,
+  Forge,
+  ForgePart,
+  ForgePartInfo,
+  ForgeShopInfo,
+  WarheadTier,
 } from "./types";
 import { renderSpecialist } from "./render-specialists";
 import { DEFAULT_SETTINGS } from "./preferences";
@@ -350,7 +368,7 @@ export class Game {
   }
   pickupCollected(_pickup: Pickup) {}
   loseRockHp(rock: Rock, amount: number) {
-    rock.hp -= this.absorbSupportShield(rock, amount);
+    rock.hp -= this.absorbSupportShield(rock, amount * this.markMultiplier(rock));
   }
   addBullet(...bullets: Bullet[]) {
     this.bullets.push(...bullets);
@@ -436,6 +454,31 @@ export class Game {
   missileTrails = new Map<unknown, { x: number; y: number }[]>();
   /** Gravity wells and Incendiary patches left by Workshop payloads. */
   missileZones: MissileZone[] = [];
+  /** Blast Aftershock (III): blasts waiting to go off. */
+  pendingBlasts: {
+    x: number;
+    y: number;
+    r: number;
+    dmg: number;
+    t: number;
+    color: string;
+    ownerId?: "p1" | "p2";
+    build: MissileBuild;
+    tiers: BuildTiers;
+  }[] = [];
+  /** Salvo numbering, and Siphon's refund total per salvo (capped at one missile). */
+  salvoSeq = 0;
+  siphonSalvos: Record<number, number> = {};
+  siphonTotal = 0;
+  /** The warhead whose damage is being applied right now: kills credit its parts' mastery. */
+  warheadCredit: MissileBuild | null = null;
+  warheadCreditTiers: BuildTiers | null = null;
+  /** Breach (Impact III) multiplier for the blast in progress. */
+  blastBossMul = 1;
+  /** Seed for the blueprint shop stream; a Daily Flare run would set a shared seed. */
+  runSeed = 0;
+  /** Daily Flare runs ignore Known blueprints so every pilot sees the same offers. */
+  dailyFlare = false;
   banner = "";
   bannerSub = "";
   bannerT = 0;
@@ -670,6 +713,11 @@ export class Game {
     this.leaderboardRun = null;
     this.choices = [];
     this.rerollCost = 0;
+    // a fresh shop stream for every run; Warhead parts reset with the player
+    this.runSeed = (this.random() * 2 ** 32) >>> 0;
+    this.pendingBlasts = [];
+    this.missileZones = [];
+    this.siphonSalvos = {};
     this.p = freshPlayer();
     this.salvageDrone = freshSalvageDrone();
     this.salvageClones = [];
@@ -999,19 +1047,258 @@ export class Game {
     };
   }
 
+  /* ------------------------------------------------------------ warhead forge */
+
+  /** The bound pilot's forge, repaired if a save or room snapshot left it malformed. */
+  forgeOf(): Forge {
+    const p = this.p;
+    if (!p.forge || !p.forge.fitted) p.forge = normalizeForge(p.forge);
+    return p.forge;
+  }
+
+  /** Seed for this pilot's blueprint offers (co-op mixes in the pilot id). */
+  blueprintSeed(): number {
+    return this.runSeed >>> 0;
+  }
+
+  /** Known blueprints weight this run's offers, except in Daily Flare and co-op rooms. */
+  knownBlueprints(): WarheadPartId[] {
+    if (this.dailyFlare || this.cooperative) return [];
+    return loadKnownBlueprints();
+  }
+
+  ownedParts(): ForgePart[] {
+    const f = this.forgeOf();
+    return [
+      ...WARHEAD_SLOTS.map((slot) => f.fitted[slot]),
+      ...f.bench.filter((p): p is ForgePart => !!p),
+    ];
+  }
+
+  ownedPart(id: WarheadPartId): ForgePart | undefined {
+    return this.ownedParts().find((part) => part.id === id);
+  }
+
+  /** missileBuild mirrors the fitted parts so every reader sees the same warhead. */
+  syncForge() {
+    this.p.missileBuild = buildOf(this.forgeOf());
+  }
+
+  /** Offers are rolled once per wave from the seeded shop stream (and again on a reroll). */
+  ensureBlueprintOffers(force = false) {
+    const f = this.forgeOf();
+    if (!force && f.offerWave === this.wave && f.offers.length) return;
+    if (f.offerWave !== this.wave) f.offerRolls = 0;
+    f.offerWave = this.wave;
+    f.offers = rollBlueprintOffers({
+      seed: this.blueprintSeed(),
+      wave: this.wave,
+      rolls: f.offerRolls,
+      owned: this.ownedParts(),
+      known: this.knownBlueprints(),
+    });
+  }
+
+  /** A stock part nobody paid for or used can simply be discarded on a refit. */
+  isFreshStock(part: ForgePart) {
+    return (
+      WARHEAD_PARTS[part.id].rarity === "default" && part.tier === 1 && !part.spent && !part.kills
+    );
+  }
+
+  /** Put a part on the bench; false when both bench slots are taken. */
+  benchPart(part: ForgePart): boolean {
+    if (this.isFreshStock(part)) return true;
+    const bench = this.forgeOf().bench;
+    const free = bench.indexOf(null);
+    if (free < 0) return false;
+    bench[free] = part;
+    return true;
+  }
+
+  /** Why an offer cannot be bought (apart from credits), or null. */
+  blueprintBlocked(index: number): string | null {
+    const f = this.forgeOf();
+    const offer = f.offers[index];
+    if (!offer) return "NO OFFER";
+    if (offer.sold) return "SOLD";
+    const owned = this.ownedPart(offer.id);
+    if (owned) return owned.tier === 1 ? null : "OWNED";
+    const current = f.fitted[WARHEAD_PARTS[offer.id].slot];
+    if (!this.isFreshStock(current) && !f.bench.includes(null)) return "BENCH FULL";
+    return null;
+  }
+
+  blueprintPrice(index: number): number {
+    const offer = this.forgeOf().offers[index];
+    if (!offer) return Infinity;
+    return this.ownedPart(offer.id) ? mergePrice(offer.id) : partPrice(offer.id);
+  }
+
   /**
-   * Warhead Workshop: fit a part to its slot. Fitting is free in this release;
-   * the part it replaces simply comes off. Missiles already in flight keep the
-   * warhead they launched with.
+   * Buy a blueprint offer. A new part is fitted at once and the part it replaces
+   * moves to the bench; an offer for a part you own at Tier I merges it to Tier II
+   * for 60% of list price.
+   */
+  buyBlueprint(index: number): boolean {
+    this.ensureBlueprintOffers();
+    const f = this.forgeOf();
+    const offer = f.offers[index];
+    if (!offer || this.blueprintBlocked(index)) return false;
+    const price = this.blueprintPrice(index);
+    if (this.credits < price) return false;
+    const owned = this.ownedPart(offer.id);
+    if (owned) {
+      owned.tier = 2;
+      owned.spent += price;
+      this.floatText(
+        this.p.x,
+        this.p.y - 30,
+        `${WARHEAD_PARTS[offer.id].name.toUpperCase()} II`,
+        WARHEAD_PARTS[offer.id].color,
+        14,
+      );
+      if (owned.kills >= masteryKills(owned.id)) this.announceMastery(owned.id);
+    } else {
+      const slot = WARHEAD_PARTS[offer.id].slot;
+      if (!this.benchPart(f.fitted[slot])) return false;
+      f.fitted[slot] = { id: offer.id, tier: 1, kills: 0, spent: price };
+    }
+    this.credits -= price;
+    offer.sold = true;
+    this.syncForge();
+    this.sound.play("buy");
+    return true;
+  }
+
+  /** Tier II → III: unlocked by kills, bought in the Missiles tab. */
+  buyMastery(id: WarheadPartId): boolean {
+    const part = isWarheadPart(id) ? this.ownedPart(id) : undefined;
+    if (!part || part.tier !== 2 || part.kills < masteryKills(id)) return false;
+    const price = masteryPrice(id);
+    if (this.credits < price) return false;
+    this.credits -= price;
+    part.tier = 3;
+    part.spent += price;
+    this.recordKnownBlueprint(id);
+    this.syncForge();
+    this.floatText(
+      this.p.x,
+      this.p.y - 30,
+      `${WARHEAD_PARTS[id].perk.name.toUpperCase()} UNLOCKED`,
+      WARHEAD_PARTS[id].color,
+      14,
+    );
+    this.sound.play("levelup");
+    return true;
+  }
+
+  /** A Tier III part becomes a Known blueprint in the pilot's profile. */
+  recordKnownBlueprint(id: WarheadPartId) {
+    if (!this.cooperative && !this.dailyFlare) addKnownBlueprint(id);
+  }
+
+  /** Swap a bench part into its slot; the fitted part takes its bench slot. Free. */
+  swapBench(index: number): boolean {
+    const f = this.forgeOf();
+    const part = f.bench[index];
+    if (!part) return false;
+    const slot = WARHEAD_PARTS[part.id].slot;
+    const current = f.fitted[slot];
+    f.fitted[slot] = part;
+    f.bench[index] = this.isFreshStock(current) ? null : current;
+    this.syncForge();
+    this.sound.play("cycle");
+    return true;
+  }
+
+  /** Scrap a bench part for half of everything ever spent on it. */
+  scrapBench(index: number): boolean {
+    const f = this.forgeOf();
+    const part = f.bench[index];
+    if (!part) return false;
+    const refund = scrapValue(part);
+    this.credits += refund;
+    f.bench[index] = null;
+    this.floatText(this.p.x, this.p.y - 30, `SCRAP +${refund} CR`, AMBER_HOT, 13);
+    this.sound.play("creditDrop");
+    return true;
+  }
+
+  /** Refit a slot's free stock part (Blast, Direct, Impact); the current part goes to the bench. */
+  fitStock(slot: WarheadSlot): boolean {
+    const f = this.forgeOf();
+    const id = DEFAULT_MISSILE_BUILD[slot];
+    if (f.fitted[slot].id === id) return false;
+    const benched = f.bench.findIndex((p) => p?.id === id);
+    if (benched >= 0) return this.swapBench(benched);
+    if (!this.benchPart(f.fitted[slot])) return false;
+    f.fitted[slot] = stockPart(id);
+    this.syncForge();
+    this.sound.play("cycle");
+    return true;
+  }
+
+  /**
+   * Fit a part you own: a bench part swaps in, a stock part is refitted free.
+   * Parts you do not own are bought as blueprints instead.
    */
   fitWarheadPart(id: WarheadPartId): boolean {
     if (!isWarheadPart(id)) return false;
-    const slot: WarheadSlot = WARHEAD_PARTS[id].slot;
-    const build = normalizeMissileBuild(this.p.missileBuild);
-    if (build[slot] === id) return false;
-    this.p.missileBuild = { ...build, [slot]: id };
-    this.sound.play("cycle");
+    const f = this.forgeOf();
+    const benched = f.bench.findIndex((p) => p?.id === id);
+    if (benched >= 0) return this.swapBench(benched);
+    const slot = WARHEAD_PARTS[id].slot;
+    if (DEFAULT_MISSILE_BUILD[slot] === id) return this.fitStock(slot);
+    return false;
+  }
+
+  /** Developer console and tests: install a part at a tier, bypassing the shop. */
+  devFitPart(id: WarheadPartId, tier: WarheadTier = 1, kills = 0): boolean {
+    if (!isWarheadPart(id)) return false;
+    this.forgeOf().fitted[WARHEAD_PARTS[id].slot] = { id, tier, kills, spent: 0 };
+    this.syncForge();
     return true;
+  }
+
+  /** Remove a bench part to hand to a teammate (co-op); returns it, or null. */
+  takeBenchPart(index: number): ForgePart | null {
+    const f = this.forgeOf();
+    const part = f.bench[index] ?? null;
+    if (part) f.bench[index] = null;
+    return part;
+  }
+
+  /** Everything the Missiles tab needs. */
+  forgeShopInfo(): ForgeShopInfo {
+    const f = this.forgeOf();
+    const info = (part: ForgePart): ForgePartInfo => ({
+      part: { ...part },
+      need: masteryKills(part.id),
+      masteryReady: part.tier === 2 && part.kills >= masteryKills(part.id),
+      masteryPrice: masteryPrice(part.id),
+      scrap: scrapValue(part),
+    });
+    return {
+      fitted: {
+        payload: info(f.fitted.payload),
+        guidance: info(f.fitted.guidance),
+        trigger: info(f.fitted.trigger),
+      },
+      bench: f.bench.map((p) => (p ? info(p) : null)),
+      offers: f.offers.map((offer, index) => ({
+        index,
+        id: offer.id,
+        price: this.blueprintPrice(index),
+        merge: Boolean(this.ownedPart(offer.id)),
+        sold: offer.sold,
+        blocked: this.blueprintBlocked(index),
+      })),
+      rerollCost: this.rerollCost,
+      stock: WARHEAD_SLOTS.filter((slot) => f.fitted[slot].id !== DEFAULT_MISSILE_BUILD[slot]).map(
+        (slot) => DEFAULT_MISSILE_BUILD[slot],
+      ),
+    };
   }
 
   buyWeapon(w: WeaponId): boolean {
@@ -1224,6 +1511,16 @@ export class Game {
       missiles: p.missiles,
       maxMissiles: p.maxMissiles,
       missileBuild: normalizeMissileBuild(p.missileBuild),
+      mastery: WARHEAD_SLOTS.map((slot) => {
+        const part = this.forgeOf().fitted[slot];
+        return {
+          slot,
+          id: part.id,
+          tier: part.tier,
+          kills: part.kills,
+          need: masteryKills(part.id),
+        };
+      }),
       missileCharge:
         p.missiles >= p.maxMissiles ? 1 : clamp(p.missileCharge / p.missileRegen, 0, 1),
       heat: p.heat,
@@ -1382,6 +1679,18 @@ export class Game {
       // a boom chain-reaction can remove several rocks mid-pass, so the slot may already be gone
       if (!r) continue;
       if (this.updateRockSpecial(r, dt)) continue;
+      if ((r.frozen ?? 0) > 0) {
+        // Cryo: frozen solid until it thaws, then it picks up where it left off
+        r.frozen = Math.max(0, (r.frozen ?? 0) - dt);
+        r.flash = Math.max(0, r.flash - dt * 4);
+        if (r.frozen <= 0) {
+          if (r.frozenV) Object.assign(r, r.frozenV);
+          delete r.frozenV;
+          delete r.cryo;
+          r.permafrost = false;
+        }
+        continue;
+      }
       this.selectTarget(r.x, r.y);
       const p = this.p;
       // transient wall rocks quietly expire after their lifetime
@@ -1573,7 +1882,7 @@ export class Game {
 
     // ---- wardens ----
     for (const d of this.drones) {
-      if ((d.emp ?? 0) > 0) {
+      if ((d.emp ?? 0) > 0 || (d.frozen ?? 0) > 0) {
         this.driftDisabledDrone(d, dt);
         continue;
       }
@@ -1583,6 +1892,8 @@ export class Game {
 
     this.updateTethers(dt);
     this.updateMissileZones(dt);
+    this.updatePendingBlasts(dt);
+    this.updateWarheadMarks(dt);
 
     // ---- salvage drone ----
     this.forEachPilot(() => this.updateSalvageDrone(dt));
@@ -1590,7 +1901,16 @@ export class Game {
     // ---- boss ----
     if (this.boss) {
       this.selectTarget(this.boss.x, this.boss.y);
-      this.updateBoss(this.boss, dt);
+      const bo = this.boss;
+      const x0 = bo.x,
+        y0 = bo.y;
+      this.updateBoss(bo, dt);
+      // Cryo chills a boss instead of freezing it: it moves 40% slower
+      if ((bo.chill ?? 0) > 0 && this.boss === bo) {
+        const keep = 1 - GAME_CONFIG.warheads.cryo.bossSlow;
+        bo.x = x0 + (bo.x - x0) * keep;
+        bo.y = y0 + (bo.y - y0) * keep;
+      }
     }
 
     // ---- ship collisions ----
@@ -2804,10 +3124,12 @@ export class Game {
     const range =
       (b.kind === "missile" ? 900 : b.kind === "rail" ? 1500 : 520) * (this.p.rangeMul ?? 1);
     let target: Hostile | undefined;
+    if (b.boomerang?.returning) return;
     if (b.kind === "seeker") target = this.nearestTarget(b.x, b.y, range);
     else {
       target = b.target != null ? this.findTarget(b.target) : undefined;
-      if (!target) target = this.nearestTarget(b.x, b.y, range);
+      // Boomerang spends a limited number of re-locks instead of retargeting freely
+      if (!target && !b.boomerang) target = this.nearestTarget(b.x, b.y, range);
     }
     if (!target) return;
     if (b.kind === "rail") {
@@ -2828,7 +3150,10 @@ export class Game {
     const tt = clamp(dist / spd, 0, 1.2);
     const lx = target.x + target.vx * tt,
       ly = target.y + target.vy * tt;
-    const desired = Math.atan2(ly - b.y, lx - b.x);
+    // Lead (Direct III) flies to the true intercept instead of a clamped lead
+    const lead =
+      b.kind === "missile" && b.warhead?.guidance === "direct" && (b.tiers?.guidance ?? 1) >= 3;
+    const desired = lead ? this.interceptAngle(b, target) : Math.atan2(ly - b.y, lx - b.x);
     const cur = Math.atan2(b.vy, b.vx);
     let na = cur + clamp(wrapAngle(desired - cur), -b.turn * dt, b.turn * dt);
     if (b.kind === "rail") {
@@ -2918,6 +3243,9 @@ export class Game {
       const b = this.bullets[i];
       if (!b) continue;
       this.selectBulletPilot(b);
+      // kills from this projectile credit the warhead that made it (missiles, bomblets, shards)
+      this.warheadCredit = b.kind === "missile" ? (b.warhead ?? null) : (b.sourceWarhead ?? null);
+      this.warheadCreditTiers = b.tiers ?? null;
       const p = this.p;
       if (b.life <= 0 && ["enemy", "wardenOrb", "wardenShard"].includes(b.kind)) {
         this.bullets.splice(i, 1);
@@ -2933,7 +3261,8 @@ export class Game {
         b.stuck.t -= dt;
         if (!t || b.stuck.t <= 0) {
           b.missileDmg =
-            (b.missileDmg ?? p.blastDmg) * GAME_CONFIG.warheads.delayed.damageMultiplier;
+            (b.missileDmg ?? p.blastDmg) *
+            this.tierValue(GAME_CONFIG.warheads.delayed.damageMultiplier, b.tiers?.trigger);
           this.detonateMissile(b);
           this.bullets.splice(i, 1);
         }
@@ -2942,6 +3271,12 @@ export class Game {
       if (b.kind === "missile" && b.orbit) {
         this.orbitMissile(b, dt);
         continue;
+      }
+      if (b.kind === "missile" && b.boomerang) {
+        if (this.boomerangMissile(b)) {
+          this.bullets.splice(i, 1);
+          continue;
+        }
       }
       if (b.kind === "bomblet") {
         b.fuse -= dt;
@@ -3069,7 +3404,8 @@ export class Game {
           continue;
         }
       }
-      if (b.life <= 0) {
+      // Boomerang re-locks or turns home; Itano (Corkscrew III) loops back for one more pass
+      if (b.life <= 0 && !(b.kind === "missile" && this.missileSecondChance(b))) {
         if (b.kind === "missile") this.detonateMissile(b);
         if (b.kind === "bomblet") this.detonateBomblet(b);
         if (b.kind === "flak") this.detonateFlak(b);
@@ -3103,6 +3439,17 @@ export class Game {
           }
         }
         if (ateByClone) {
+          this.bullets.splice(i, 1);
+          continue;
+        }
+        // Permafrost (Cryo III): frozen rocks soak up enemy shots
+        if (
+          this.rocks.some(
+            (r) =>
+              r.permafrost && (r.frozen ?? 0) > 0 && Math.hypot(r.x - b.x, r.y - b.y) < r.r + b.r,
+          )
+        ) {
+          this.burst(b.x, b.y, 4, WARHEAD_PARTS.cryo.color);
           this.bullets.splice(i, 1);
           continue;
         }
@@ -3602,12 +3949,13 @@ export class Game {
       this.clearMissileLock();
       return;
     }
-    // Locks on dead targets drop; the rack is the hard ceiling on locks.
-    p.missileLocks = p.missileLocks.filter((id) => this.findTarget(id)).slice(0, p.missiles);
+    // Locks on dead targets drop; the rack (plus any Return Fire locks) is the ceiling.
+    const rack = this.lockCeiling();
+    p.missileLocks = p.missileLocks.filter((id) => this.findTarget(id)).slice(0, rack);
     if (key) {
       p.missileHoldT += dt;
       p.missileLockT -= dt;
-      if (p.missileLockT <= 0 && p.missileLocks.length < p.missiles) {
+      if (p.missileLockT <= 0 && p.missileLocks.length < rack) {
         const t = this.pickLockTarget();
         if (t) {
           p.missileLocks.push(t.id);
@@ -3616,7 +3964,7 @@ export class Game {
           this.sound.play("lock");
         } else p.missileLockT = 0;
       }
-      const full = p.missiles > 0 && p.missileLocks.length >= p.missiles;
+      const full = rack > 0 && p.missileLocks.length >= rack;
       if (full && p.fullLockAt < 0) {
         p.fullLockAt = p.missileHoldT;
         this.sound.play("fullLock");
@@ -3629,10 +3977,17 @@ export class Game {
     const fullLock =
       locks.length > 0 && p.fullLockAt >= 0 && held - p.fullLockAt <= cfg.fullLockWindow;
     this.clearMissileLock();
-    if (p.missiles <= 0 || p.missileTimer > 0) return;
     const tap = held < cfg.tapWindow && locks.length <= 1;
-    if (tap || locks.length === 0) this.fireMissile();
-    else this.releaseSalvo(locks, fullLock);
+    // Delayed Detonator (III): a tap sets off every stuck charge early instead of firing
+    if (tap && this.detonateStuckCharges()) return;
+    if (this.lockCeiling() <= 0 || p.missileTimer > 0) return;
+    if ((tap || locks.length === 0) && p.missiles > 0) this.fireMissile();
+    else if (locks.length) this.releaseSalvo(locks, fullLock);
+  }
+
+  /** Locks a salvo may hold: missiles in the rack plus Boomerang Return Fire bonus locks. */
+  lockCeiling() {
+    return this.p.missiles + (this.p.bonusLocks ?? 0);
   }
 
   clearMissileLock() {
@@ -3679,6 +4034,11 @@ export class Game {
     obj.grazed = (obj.grazed ?? 0) | (this.specialPilotId() === "p2" ? 2 : 1);
   }
 
+  /** The value for a part at a tier from a [I, II, III] table. */
+  tierValue<T>(table: readonly T[], tier: WarheadTier | undefined): T {
+    return table[Math.min(table.length, Math.max(1, tier ?? 1)) - 1];
+  }
+
   /** Spawn one missile with the pilot's fitted warhead (or an explicit one for follow-ups). */
   launchMissile(opts: {
     angle: number;
@@ -3696,20 +4056,38 @@ export class Game {
     dmg?: number;
     radius?: number;
     warhead?: MissileBuild;
+    tiers?: BuildTiers;
     mini?: boolean;
+    chainDepth?: number;
     hops?: number;
     relayTargets?: number[];
     orbitAngle?: number;
+    salvo?: number;
   }) {
     const p = this.p;
     const cfg = GAME_CONFIG.salvo;
     const W = GAME_CONFIG.warheads;
-    const build = normalizeMissileBuild(opts.warhead ?? p.missileBuild);
+    const forge = this.forgeOf();
+    const build = normalizeMissileBuild(opts.warhead ?? buildOf(forge));
+    const tiers: BuildTiers = { ...(opts.tiers ?? tiersOf(forge)) };
     const followUp = opts.x !== undefined;
+    const guidanceSpeed =
+      build.guidance === "corkscrew"
+        ? this.tierValue(W.corkscrew.speedMultiplier, tiers.guidance)
+        : build.guidance === "direct"
+          ? this.tierValue(W.direct.speedMultiplier, tiers.guidance)
+          : 1;
     const speed =
-      (opts.mini ? W.chain.speed : cfg.launchSpeed) *
-      (opts.speedMul ?? 1) *
-      (build.guidance === "corkscrew" ? W.corkscrew.speedMultiplier : 1);
+      (opts.mini ? W.chain.speed : cfg.launchSpeed) * (opts.speedMul ?? 1) * guidanceSpeed;
+    // Blast's own tiers raise the warhead's base damage and radius
+    const blastDmgMul =
+      build.payload === "blast"
+        ? this.tierValue(W.blast.damage, tiers.payload) / W.blast.damage[0]
+        : 1;
+    const blastRMul =
+      build.payload === "blast"
+        ? this.tierValue(W.blast.radius, tiers.payload) / W.blast.radius[0]
+        : 1;
     const o = opts.offset ?? 0;
     const ox = opts.x ?? p.x,
       oy = opts.y ?? p.y;
@@ -3732,19 +4110,32 @@ export class Game {
       fuse: 0,
       extra: 0,
       extraDmg: 0,
-      missileDmg: opts.dmg ?? p.blastDmg * (opts.dmgMul ?? 1),
-      missileR: opts.radius ?? p.blastR,
+      missileDmg: opts.dmg ?? p.blastDmg * blastDmgMul * (opts.dmgMul ?? 1),
+      missileR: opts.radius ?? p.blastR * blastRMul,
       warhead: build,
+      tiers,
     };
+    if (opts.salvo !== undefined) missile.salvo = opts.salvo;
     if (opts.mini) missile.mini = true;
+    if (opts.chainDepth) missile.chainDepth = opts.chainDepth;
     if (opts.hops) missile.hops = opts.hops;
     if (opts.relayTargets?.length) missile.relayTargets = opts.relayTargets.slice();
-    const amp = build.guidance === "corkscrew" ? W.corkscrew.spiralMultiplier : 1;
+    if (build.guidance === "boomerang")
+      missile.boomerang = {
+        relocks: this.tierValue(W.boomerang.relocks, tiers.guidance),
+        returning: false,
+      };
+    if (build.guidance === "direct" && tiers.guidance >= 3)
+      missile.turn = cfg.turn * W.direct.leadTurnMultiplier;
+    const amp =
+      build.guidance === "corkscrew"
+        ? this.tierValue(W.corkscrew.spiralMultiplier, tiers.guidance)
+        : 1;
     if (build.guidance === "orbit" && !followUp) {
       missile.orbit = {
-        t: W.orbit.duration,
+        t: this.tierValue(W.orbit.duration, tiers.guidance),
         angle: opts.orbitAngle ?? opts.angle,
-        blocks: W.orbit.blocks,
+        blocks: this.tierValue(W.orbit.blocks, tiers.guidance),
       };
     } else if (opts.phase !== undefined || (build.guidance === "corkscrew" && !opts.mini)) {
       const phase = opts.phase ?? 0;
@@ -3770,8 +4161,9 @@ export class Game {
   releaseSalvo(locks: number[], fullLock: boolean) {
     const p = this.p;
     const cfg = GAME_CONFIG.salvo;
-    const n = Math.min(locks.length, p.missiles);
+    const n = Math.min(locks.length, this.lockCeiling());
     const speedMul = fullLock ? cfg.fullLockSpeedMultiplier : 1;
+    const salvo = ++this.salvoSeq;
     for (let i = 0; i < n; i++) {
       const side = i % 2 === 0 ? 1 : -1;
       const t = this.findTarget(locks[i]);
@@ -3791,9 +4183,13 @@ export class Game {
         relayTargets: locks,
         // Orbit guidance spreads the salvo evenly around the ship
         orbitAngle: p.angle + (i / n) * TAU,
+        salvo,
       });
     }
-    p.missiles -= n;
+    // the rack pays first; Return Fire bonus locks cover the rest for free
+    const fromRack = Math.min(n, p.missiles);
+    p.missiles -= fromRack;
+    p.bonusLocks = Math.max(0, (p.bonusLocks ?? 0) - (n - fromRack));
     p.missileTimer = cfg.releaseCooldown;
     this.shake += 3 + n * 1.5;
     this.sound.play("missile");
@@ -3801,6 +4197,12 @@ export class Game {
       this.salvoFlash = Math.max(this.salvoFlash, 0.55);
       this.floatText(p.x, p.y - 40, "FULL LOCK", "#ffffff", 14);
       this.rings.push({ x: p.x, y: p.y, r: 18, max: 90, life: 0.35, color: "#ffffff", w: 2 });
+      // Siphon Feedback (III): a Full Lock salvo refunds one whole missile
+      const trigger = this.forgeOf().fitted.trigger;
+      if (trigger.id === "siphon" && trigger.tier >= 3) {
+        this.addMissileCharge(1);
+        this.floatText(p.x, p.y + 34, "FEEDBACK", WARHEAD_PARTS.siphon.color, 11);
+      }
     }
   }
 
@@ -3813,9 +4215,31 @@ export class Game {
     const a = lock ? Math.atan2(lock.y - p.y, lock.x - p.x) : this.assistAngle(p.angle);
     // launch along the ship's nose but bend hard toward the lock straight away
     const la = p.angle + clamp(wrapAngle(a - p.angle), -0.6, 0.6);
-    this.launchMissile({ angle: la, target: lock?.id });
+    this.launchMissile({ angle: la, target: lock?.id, salvo: ++this.salvoSeq });
     this.shake += 4;
     this.sound.play("missile");
+  }
+
+  /** Delayed Detonator (III): set off this pilot's stuck charges at 2×. True if any went off. */
+  detonateStuckCharges(): boolean {
+    const trigger = this.forgeOf().fitted.trigger;
+    if (trigger.id !== "delayed" || trigger.tier < 3) return false;
+    const me = this.specialPilotId();
+    let any = false;
+    for (let i = this.bullets.length - 1; i >= 0; i--) {
+      const b = this.bullets[i];
+      if (b.kind !== "missile" || !b.stuck) continue;
+      if (this.cooperative && (b.ownerId ?? "p1") !== me) continue;
+      b.missileDmg =
+        (b.missileDmg ?? this.p.blastDmg) * GAME_CONFIG.warheads.delayed.detonatorMultiplier;
+      this.warheadCredit = b.warhead ?? null;
+      this.detonateMissile(b);
+      this.warheadCredit = null;
+      this.bullets.splice(this.bullets.indexOf(b), 1);
+      any = true;
+    }
+    if (any) this.floatText(this.p.x, this.p.y - 36, "DETONATE", WARHEAD_PARTS.delayed.color, 12);
+    return any;
   }
 
   /** Corkscrew: a decaying sine offset perpendicular to the guided velocity. */
@@ -3842,7 +4266,12 @@ export class Game {
     if (b.warhead?.trigger === "delayed" && !b.stuck) {
       const t = this.findTarget(id);
       if (t) {
-        b.stuck = { id, dx: b.x - t.x, dy: b.y - t.y, t: GAME_CONFIG.warheads.delayed.fuse };
+        b.stuck = {
+          id,
+          dx: b.x - t.x,
+          dy: b.y - t.y,
+          t: this.tierValue(GAME_CONFIG.warheads.delayed.fuse, b.tiers?.trigger),
+        };
         b.target = id;
         this.sound.play("lock");
         this.rings.push({ x: b.x, y: b.y, r: 4, max: 22, life: 0.25, color: b.color, w: 2 });
@@ -3877,6 +4306,11 @@ export class Game {
         if (o.blocks <= 0) break;
       }
     }
+    // Halo (III): the orbiting ring grinds any rock it touches
+    if ((b.tiers?.guidance ?? 1) >= 3) {
+      for (const r of [...this.rocks])
+        if (Math.hypot(r.x - b.x, r.y - b.y) < r.r + b.r) this.zoneDamage(r.id, W.haloDps * dt);
+    }
     if (o.t > 0 && p.hull > 0) return;
     delete b.orbit;
     let t = b.target != null ? this.findTarget(b.target) : undefined;
@@ -3886,6 +4320,133 @@ export class Game {
     b.vx = Math.cos(a) * spd;
     b.vy = Math.sin(a) * spd;
     b.life = Math.max(b.life, 3);
+  }
+
+  /**
+   * Boomerang guidance: a lost target spends a re-lock on the nearest hostile;
+   * with none left the missile turns for home. Returns true when it was caught.
+   */
+  boomerangMissile(b: Bullet): boolean {
+    const bm = b.boomerang!;
+    const W = GAME_CONFIG.warheads.boomerang;
+    const p = this.p;
+    if (!bm.returning) {
+      if (b.target != null && this.findTarget(b.target)) return false;
+      const next = this.nearestTarget(b.x, b.y, 900 * (p.rangeMul ?? 1));
+      if (bm.relocks > 0 && next) {
+        bm.relocks--;
+        b.target = next.id;
+        this.rings.push({
+          x: b.x,
+          y: b.y,
+          r: 3,
+          max: 18,
+          life: 0.2,
+          color: WARHEAD_PARTS.boomerang.color,
+          w: 1.5,
+        });
+        return false;
+      }
+      bm.returning = true;
+      b.target = undefined;
+      b.life = Math.max(b.life, W.returnLife);
+    }
+    // fly home
+    const spd = Math.hypot(b.vx, b.vy) || GAME_CONFIG.salvo.launchSpeed;
+    const desired = Math.atan2(p.y - b.y, p.x - b.x);
+    const cur = Math.atan2(b.vy, b.vx);
+    const na =
+      cur + clamp(wrapAngle(desired - cur), -b.turn * 1.4 * (1 / 60), b.turn * 1.4 * (1 / 60));
+    b.vx = Math.cos(na) * spd;
+    b.vy = Math.sin(na) * spd;
+    if (p.hull <= 0 || Math.hypot(p.x - b.x, p.y - b.y) > W.catchRadius) return false;
+    // caught unused: refund part of a missile, and Return Fire banks an extra lock
+    const tier = b.tiers?.guidance ?? 1;
+    this.addMissileCharge(this.tierValue(W.refund, tier));
+    if (tier >= 3) p.bonusLocks = (p.bonusLocks ?? 0) + 1;
+    this.floatText(
+      p.x,
+      p.y - 30,
+      tier >= 3 ? "CAUGHT · +1 LOCK" : "CAUGHT",
+      WARHEAD_PARTS.boomerang.color,
+      11,
+    );
+    this.rings.push({
+      x: p.x,
+      y: p.y,
+      r: 10,
+      max: 40,
+      life: 0.3,
+      color: WARHEAD_PARTS.boomerang.color,
+      w: 2,
+    });
+    this.sound.play("pickup");
+    return true;
+  }
+
+  /** Lead (Direct III): aim at the true intercept point of a moving target. */
+  interceptAngle(b: Bullet, t: Hostile): number {
+    const dx = t.x - b.x,
+      dy = t.y - b.y;
+    const s = Math.hypot(b.vx, b.vy) || 1;
+    const a = t.vx * t.vx + t.vy * t.vy - s * s;
+    const bq = 2 * (dx * t.vx + dy * t.vy);
+    const c = dx * dx + dy * dy;
+    let time = 0;
+    if (Math.abs(a) < 1e-6) time = bq !== 0 ? -c / bq : 0;
+    else {
+      const disc = bq * bq - 4 * a * c;
+      if (disc >= 0) {
+        const r1 = (-bq - Math.sqrt(disc)) / (2 * a),
+          r2 = (-bq + Math.sqrt(disc)) / (2 * a);
+        time = Math.min(...[r1, r2].filter((v) => v > 0), 3);
+      }
+    }
+    time = clamp(Number.isFinite(time) ? time : 0, 0, 3);
+    return Math.atan2(dy + t.vy * time, dx + t.vx * time);
+  }
+
+  /** A missile out of fuel gets one more go: Boomerang re-locks or flies home, Itano loops back. */
+  missileSecondChance(b: Bullet): boolean {
+    const W = GAME_CONFIG.warheads;
+    const p = this.p;
+    if (b.boomerang) {
+      const bm = b.boomerang;
+      if (bm.returning) return false;
+      const next = this.nearestTarget(b.x, b.y, 900 * (p.rangeMul ?? 1));
+      if (bm.relocks > 0 && next) {
+        bm.relocks--;
+        b.target = next.id;
+        b.life = 1.6;
+        return true;
+      }
+      bm.returning = true;
+      b.target = undefined;
+      b.life = W.boomerang.returnLife;
+      return true;
+    }
+    if (
+      b.warhead?.guidance === "corkscrew" &&
+      (b.tiers?.guidance ?? 1) >= 3 &&
+      !b.itano &&
+      !b.mini
+    ) {
+      b.itano = true;
+      b.life = 1.6;
+      if (b.target == null || !this.findTarget(b.target))
+        b.target = this.nearestTarget(b.x, b.y, 900 * (p.rangeMul ?? 1))?.id;
+      const amp = this.tierValue(W.corkscrew.spiralMultiplier, b.tiers?.guidance);
+      b.spiral = {
+        phase: Math.PI / 2,
+        flight: 1.2,
+        age: 0,
+        offset: GAME_CONFIG.salvo.spiralAmplitude * amp,
+        amp,
+      };
+      this.floatText(b.x, b.y - 14, "ITANO", WARHEAD_PARTS.corkscrew.color, 10);
+      return true;
+    }
+    return false;
   }
 
   /** Proximity trigger: is any hostile within the early-detonation distance? */
@@ -3902,10 +4463,13 @@ export class Game {
     const cfg = GAME_CONFIG.salvo;
     const W = GAME_CONFIG.warheads;
     const build = b.warhead ?? DEFAULT_MISSILE_BUILD;
+    const tiers = b.tiers ?? { payload: 1, guidance: 1, trigger: 1 };
     const baseDmg = b.missileDmg ?? p.blastDmg;
     let dmg = baseDmg;
     let radius = b.missileR ?? p.blastR;
-    if (build.trigger === "proximity") radius *= W.proximity.radiusMultiplier;
+    if (build.trigger === "proximity")
+      radius *= this.tierValue(W.proximity.radiusMultiplier, tiers.trigger);
+    if (build.trigger === "impact") dmg *= this.tierValue(W.impact.damageMultiplier, tiers.trigger);
     let crossfire = false;
     if (this.cooperative && b.target != null) {
       const owner = b.ownerId ?? this.specialPilotId();
@@ -3924,15 +4488,47 @@ export class Game {
         if (this.missileClock - this.missileMarks[+id].at > cfg.crossfireWindow)
           delete this.missileMarks[+id];
     }
+    const previousCredit = this.warheadCredit;
+    this.warheadCredit = build;
+    this.warheadCreditTiers = tiers;
     const targetAlive = b.target != null && !!this.findTarget(b.target);
-    this.applyPayload(b, build, dmg, radius, crossfire);
+    // Siphon counts every hostile the blast reaches, before the payload changes the field
+    const touched =
+      build.trigger === "siphon"
+        ? this.hostiles().filter((t) => Math.hypot(t.x - b.x, t.y - b.y) < radius + t.r).length
+        : 0;
+    // Breach (Impact III): +40% against boss hulls
+    this.blastBossMul =
+      build.trigger === "impact" && tiers.trigger >= 3 ? W.impact.breachMultiplier : 1;
+    this.applyPayload(b, build, tiers, dmg, radius, crossfire);
+    this.blastBossMul = 1;
+
+    if (touched) this.siphonRefund(b, touched, tiers.trigger);
+    // Airburst (Proximity III): the blast deletes enemy shots in range
+    if (build.trigger === "proximity" && tiers.trigger >= 3) {
+      for (const s of this.bullets)
+        if (
+          (s.kind === "enemy" || s.kind === "wardenShard") &&
+          Math.hypot(s.x - b.x, s.y - b.y) < radius
+        )
+          s.life = 0;
+      this.rings.push({
+        x: b.x,
+        y: b.y,
+        r: radius * 0.9,
+        max: radius * 1.05,
+        life: 0.25,
+        color: WARHEAD_PARTS.proximity.color,
+        w: 1.5,
+      });
+    }
 
     // Relay: a kill by this blast sends the warhead on to another of the salvo's locks
     if (
       build.guidance === "relay" &&
       targetAlive &&
       !this.findTarget(b.target!) &&
-      (b.hops ?? 0) < W.relay.hops
+      (b.hops ?? 0) < this.tierValue(W.relay.hops, tiers.guidance)
     ) {
       const next =
         (b.relayTargets ?? [])
@@ -3946,20 +4542,24 @@ export class Game {
           x: b.x,
           y: b.y,
           target: next.id,
-          dmg: baseDmg * W.relay.damageMultiplier,
+          // Chainbreaker (III): each hop gains instead of losing damage
+          dmg: baseDmg * this.tierValue(W.relay.damageMultiplier, tiers.guidance),
           radius: b.missileR,
           warhead: build,
+          tiers,
           hops: (b.hops ?? 0) + 1,
           relayTargets: b.relayTargets,
           mini: b.mini,
+          chainDepth: b.chainDepth,
           fullLock: b.fullLock,
+          salvo: b.salvo,
         });
         this.floatText(b.x, b.y - 20, "RELAY", WARHEAD_PARTS.relay.color, 11);
       }
     }
 
-    // Chain: every full-size blast launches one mini missile at the next hostile
-    if (build.trigger === "chain" && !b.mini) {
+    // Chain: every full-size blast launches one mini missile; Cascade lets minis chain once more
+    if (build.trigger === "chain" && (!b.mini || (b.chainDepth ?? 0) > 0)) {
       let best: Hostile | undefined;
       let bd = 900 * (p.rangeMul ?? 1);
       for (const t of this.hostiles()) {
@@ -3976,44 +4576,107 @@ export class Game {
         y: b.y,
         offset: 6,
         target: best?.id,
-        dmg: baseDmg * W.chain.damageMultiplier,
+        dmg: baseDmg * this.tierValue(W.chain.damageMultiplier, tiers.trigger),
         radius: (b.missileR ?? p.blastR) * W.chain.radiusMultiplier,
         warhead: build,
+        tiers,
         mini: true,
+        chainDepth: b.mini
+          ? (b.chainDepth ?? 0) - 1
+          : tiers.trigger >= 3
+            ? W.chain.cascadeDepth
+            : 0,
+        salvo: b.salvo,
       });
     }
+    this.warheadCredit = previousCredit;
+  }
+
+  /** Siphon: each hostile hit refunds charge, never more than one missile per salvo. */
+  siphonRefund(b: Bullet, hits: number, tier: WarheadTier) {
+    const W = GAME_CONFIG.warheads.siphon;
+    const key = b.salvo ?? -1;
+    const used = this.siphonSalvos[key] ?? 0;
+    const amount = Math.min(W.salvoCap - used, hits * this.tierValue(W.refund, tier));
+    if (amount <= 0) return;
+    this.siphonSalvos[key] = used + amount;
+    this.addMissileCharge(amount);
+    this.siphonTotal += amount;
+    this.particles.push({
+      x: b.x,
+      y: b.y,
+      vx: (this.p.x - b.x) * 2,
+      vy: (this.p.y - b.y) * 2,
+      life: 0.45,
+      max: 0.45,
+      size: 3,
+      color: WARHEAD_PARTS.siphon.color,
+      drag: 0.98,
+    });
   }
 
   /** The payload decides what a detonation actually does. */
-  applyPayload(b: Bullet, build: MissileBuild, dmg: number, radius: number, crossfire: boolean) {
+  applyPayload(
+    b: Bullet,
+    build: MissileBuild,
+    tiers: BuildTiers,
+    dmg: number,
+    radius: number,
+    crossfire: boolean,
+  ) {
     const p = this.p;
     const W = GAME_CONFIG.warheads;
+    const t = tiers.payload;
+    const perk = t >= 3;
     const color = WARHEAD_PARTS[build.payload].color;
     const style = { color: b.color, fullLock: b.fullLock, crossfire, payload: build.payload };
     // control and damage values scale with the shot's power (Full Lock, Relay, Chain, Delayed)
-    const power = dmg / (p.blastDmg || GAME_CONFIG.player.blastDamage);
+    const baseDmg =
+      build.payload === "blast"
+        ? p.blastDmg * (this.tierValue(W.blast.damage, t) / W.blast.damage[0])
+        : p.blastDmg;
+    const power = dmg / (baseDmg || GAME_CONFIG.player.blastDamage);
     const reach = radius / (p.blastR || GAME_CONFIG.player.blastRadius);
     const control = b.mini ? W.miniControlDuration : 1;
     const x = b.x,
       y = b.y;
+    const hostilesIn = (r: number) =>
+      this.hostiles().filter((h) => Math.hypot(h.x - x, h.y - y) <= r + h.r);
     switch (build.payload) {
       case "blast":
         this.explode(x, y, radius, dmg, "Missile blast", undefined, style);
+        // Aftershock (III): a second blast 0.4 s later at 40%
+        if (perk)
+          this.pendingBlasts.push({
+            x,
+            y,
+            r: radius,
+            dmg: dmg * W.blast.aftershockShare,
+            t: W.blast.aftershockDelay,
+            color: b.color,
+            ownerId: b.ownerId,
+            build,
+            tiers,
+          });
         return;
       case "cluster": {
         this.missileBlastFx(x, y, radius * 0.45, { ...style, small: true });
         this.sound.play("flak");
-        const n = W.cluster.bomblets;
+        const n = this.tierValue(W.cluster.bomblets, t);
+        const sp = Math.hypot(b.vx, b.vy) || 1;
         for (let i = 0; i < n; i++) {
           const a = (i / n) * TAU + this.rnd(-0.3, 0.3);
           const v = W.cluster.scatterSpeed * this.rnd(0.65, 1.1) * Math.sqrt(reach);
+          // Carpet (III): bomblets keep rolling along the missile's path and go off in a line
+          const carry = perk ? W.cluster.carpetCarry : 0.15;
+          const scatter = perk ? 0.35 : 1;
           this.addBullet({
             x,
             y,
-            vx: Math.cos(a) * v + b.vx * 0.15,
-            vy: Math.sin(a) * v + b.vy * 0.15,
+            vx: Math.cos(a) * v * scatter + b.vx * carry,
+            vy: Math.sin(a) * v * scatter + b.vy * carry,
             r: 4,
-            life: 1.4,
+            life: 1.8,
             dmg: 0,
             kind: "bomblet",
             pierce: 0,
@@ -4021,41 +4684,59 @@ export class Game {
             hitIds: new Set(),
             turn: 0,
             bounces: 0,
-            fuse: this.rnd(W.cluster.fuseMin, W.cluster.fuseMax),
+            fuse: perk
+              ? W.cluster.fuseMin + (i / n) * (0.4 + 60 / sp)
+              : this.rnd(W.cluster.fuseMin, W.cluster.fuseMax),
             extra: 0,
-            extraDmg: W.cluster.bombletDamage * power,
+            extraDmg: this.tierValue(W.cluster.bombletDamage, t) * power,
             blastR: W.cluster.bombletRadius * reach,
+            sourceWarhead: build,
           });
         }
         return;
       }
-      case "gravity":
+      case "gravity": {
+        const dur = this.tierValue(W.gravity.duration, t) * control;
+        const r = this.tierValue(W.gravity.radius, t) * reach;
         this.missileZones.push({
           kind: "gravity",
           x,
           y,
-          r: W.gravity.radius * reach,
-          life: W.gravity.duration * control,
-          max: W.gravity.duration * control,
-          dps: 0,
-          tick: 0,
+          r,
+          life: dur,
+          max: dur,
+          dps: perk ? W.gravity.crushDps * power : 0,
+          tick: W.incendiary.tick,
+          ticksLeft: perk ? Math.round(dur / W.incendiary.tick) : 0,
           ownerId: b.ownerId,
           seed: this.random() * TAU,
+          perk,
+          build,
         });
-        this.rings.push({ x, y, r: W.gravity.radius * reach, max: 6, life: 0.45, color, w: 3 });
+        this.rings.push({ x, y, r, max: 6, life: 0.45, color, w: 3 });
         this.sound.play("bossCharge");
         return;
+      }
       case "emp": {
         const r = W.emp.radius * reach;
-        const duration = W.emp.duration * control;
+        const duration = this.tierValue(W.emp.duration, t) * control;
         for (const d of this.drones) {
           if (Math.hypot(d.x - x, d.y - y) > r + d.r) continue;
           d.emp = Math.max(d.emp ?? 0, duration);
+          if (perk) d.overload = true;
           delete d.supportShield;
         }
-        for (const rock of this.rocks)
-          if (rock.supportShield && Math.hypot(rock.x - x, rock.y - y) <= r + rock.r)
-            delete rock.supportShield;
+        for (let i = this.rocks.length - 1; i >= 0; i--) {
+          const rock = this.rocks[i];
+          if (Math.hypot(rock.x - x, rock.y - y) > r + rock.r) continue;
+          if (rock.supportShield) delete rock.supportShield;
+          // Tier II+: Warden mines fizzle out harmlessly
+          if (t >= 2 && rock.coopMine) {
+            this.rocks.splice(i, 1);
+            this.burst(rock.x, rock.y, 8, color);
+            this.floatText(rock.x, rock.y - 12, "FIZZLE", color, 10);
+          }
+        }
         this.missileBlastFx(x, y, r, { ...style, color });
         for (let i = 0; i < 6; i++) {
           const a = (i / 6) * TAU + this.random();
@@ -4070,33 +4751,178 @@ export class Game {
         this.sound.play("arc");
         return;
       }
-      case "incendiary":
+      case "incendiary": {
+        const dur = this.tierValue(W.incendiary.duration, t);
         this.missileZones.push({
           kind: "fire",
           x,
           y,
           r: radius,
-          life: W.incendiary.duration,
-          max: W.incendiary.duration,
-          dps: W.incendiary.dps * power,
-          // 20 dps over 2 s lands as 8 ticks of 5, the first a quarter-second in
+          life: dur,
+          max: dur,
+          dps: this.tierValue(W.incendiary.dps, t) * power,
+          // the first tick lands a quarter-second in: 20 dps over 2 s is 8 ticks of 5
           tick: W.incendiary.tick,
-          ticksLeft: Math.round(W.incendiary.duration / W.incendiary.tick),
+          ticksLeft: Math.round(dur / W.incendiary.tick),
           ownerId: b.ownerId,
           seed: this.random() * TAU,
+          perk,
+          build,
         });
         this.missileBlastFx(x, y, radius * 0.6, { ...style, color, small: true });
         this.sound.play("flak");
         return;
+      }
+      case "solarFlare": {
+        const bonus = this.tierValue(W.solarFlare.bonus, t);
+        const dur = this.tierValue(W.solarFlare.duration, t) * control;
+        const silence = this.tierValue(W.solarFlare.sentinelSilence, t);
+        for (const h of hostilesIn(radius)) {
+          this.markSunburn(h.id, dur, bonus, perk);
+          const d = silence > 0 ? this.drones.find((dr) => dr.id === h.id) : undefined;
+          if (d && d.kind === "sentinel" && !d.coop) d.fire = Math.max(d.fire, silence);
+        }
+        this.missileBlastFx(x, y, radius, { ...style, color });
+        this.rings.push({
+          x,
+          y,
+          r: radius * 0.3,
+          max: radius * 1.4,
+          life: 0.55,
+          color: "#fff4c2",
+          w: 2,
+        });
+        this.sound.play("crit");
+        return;
+      }
+      case "cryo": {
+        const dur = this.tierValue(W.cryo.duration, t) * control;
+        for (const r of this.rocks) {
+          if (Math.hypot(r.x - x, r.y - y) > radius + r.r || r.trait === "meteor") continue;
+          if (!((r.frozen ?? 0) > 0)) r.frozenV = { vx: r.vx, vy: r.vy };
+          r.frozen = Math.max(r.frozen ?? 0, dur);
+          r.vx = 0;
+          r.vy = 0;
+          r.permafrost = perk;
+          r.cryo = {
+            shards: this.tierValue(W.cryo.shards, t),
+            dmg: this.tierValue(W.cryo.shardDamage, t) * power,
+            build,
+          };
+        }
+        for (const d of this.drones)
+          if (Math.hypot(d.x - x, d.y - y) <= radius + d.r) d.frozen = Math.max(d.frozen ?? 0, dur);
+        const bo = this.boss;
+        if (bo && Math.hypot(bo.x - x, bo.y - y) <= radius + bo.r)
+          bo.chill = Math.max(bo.chill ?? 0, dur);
+        this.missileBlastFx(x, y, radius, { ...style, color });
+        this.sound.play("ricochet");
+        return;
+      }
     }
+  }
+
+  /** Solar Flare: mark a target so every source deals bonus damage to it. */
+  markSunburn(id: number, t: number, bonus: number, prominence: boolean) {
+    const target: { sunburn?: Rock["sunburn"] } | undefined =
+      this.boss?.id === id
+        ? this.boss
+        : (this.rocks.find((r) => r.id === id) ?? this.drones.find((d) => d.id === id));
+    if (!target) return;
+    const cur = target.sunburn;
+    target.sunburn = {
+      t: Math.max(t, cur?.t ?? 0),
+      bonus: Math.max(bonus, cur?.bonus ?? 0),
+      prominence: prominence || Boolean(cur?.prominence),
+    };
+  }
+
+  /** Damage multiplier from Solar Flare sunburn (and EMP Overload on specialists). */
+  markMultiplier(target: { sunburn?: Rock["sunburn"]; emp?: number; overload?: boolean }) {
+    let mul = target.sunburn && target.sunburn.t > 0 ? 1 + target.sunburn.bonus : 1;
+    if (target.overload && (target.emp ?? 0) > 0)
+      mul *= GAME_CONFIG.warheads.emp.overloadMultiplier;
+    return mul;
+  }
+
+  /** Prominence (Solar Flare III): a marked kill releases a mini flare that marks neighbours. */
+  prominenceFlare(x: number, y: number, mark: NonNullable<Rock["sunburn"]>) {
+    if (!mark.prominence || mark.t <= 0) return;
+    const r = GAME_CONFIG.warheads.solarFlare.prominenceRadius;
+    for (const h of this.hostiles())
+      if (Math.hypot(h.x - x, h.y - y) <= r + h.r) this.markSunburn(h.id, mark.t, mark.bonus, true);
+    this.rings.push({ x, y, r: 6, max: r, life: 0.4, color: WARHEAD_PARTS.solarFlare.color, w: 2 });
+  }
+
+  /** Cryo: a hit on a frozen rock shatters it into shards instead of splitting. */
+  shatterRock(index: number) {
+    const r = this.rocks[index];
+    if (!r || !r.cryo) return;
+    const { shards, dmg, build } = r.cryo;
+    r.shatter = true;
+    for (let i = 0; i < shards; i++) {
+      const a = (i / shards) * TAU + this.random() * 0.4;
+      this.addBullet({
+        x: r.x + Math.cos(a) * r.r * 0.6,
+        y: r.y + Math.sin(a) * r.r * 0.6,
+        vx: Math.cos(a) * GAME_CONFIG.warheads.cryo.shardSpeed,
+        vy: Math.sin(a) * GAME_CONFIG.warheads.cryo.shardSpeed,
+        r: 4,
+        life: 0.6,
+        dmg,
+        kind: "shrap",
+        pierce: 0,
+        color: WARHEAD_PARTS.cryo.color,
+        hitIds: new Set([r.id]),
+        turn: 0,
+        bounces: 0,
+        fuse: 0,
+        extra: 0,
+        extraDmg: 0,
+        sourceWarhead: build,
+      });
+    }
+    this.rings.push({
+      x: r.x,
+      y: r.y,
+      r: r.r * 0.6,
+      max: r.r * 1.6,
+      life: 0.3,
+      color: WARHEAD_PARTS.cryo.color,
+      w: 2,
+    });
+    this.sound.play("ricochet");
+    r.hp = 0;
+    this.breakRock(index, 0, 0);
   }
 
   /** Cluster bomblet: a small blast that cannot hurt the pilot. */
   detonateBomblet(b: Bullet) {
+    const previous = this.warheadCredit;
+    this.warheadCredit = b.sourceWarhead ?? previous;
     this.explode(b.x, b.y, b.blastR ?? 30, b.extraDmg, "Cluster bomblet", 0, {
       color: b.color,
       small: true,
     });
+    this.warheadCredit = previous;
+  }
+
+  /** Aftershock blasts waiting to go off. */
+  updatePendingBlasts(dt: number) {
+    for (let i = this.pendingBlasts.length - 1; i >= 0; i--) {
+      const pb = this.pendingBlasts[i];
+      pb.t -= dt;
+      if (pb.t > 0) continue;
+      this.pendingBlasts.splice(i, 1);
+      this.selectBulletPilot({ kind: "missile", ownerId: pb.ownerId } as Bullet);
+      this.warheadCredit = pb.build;
+      this.warheadCreditTiers = pb.tiers;
+      this.explode(pb.x, pb.y, pb.r, pb.dmg, "Aftershock", 0, {
+        color: pb.color,
+        payload: "blast",
+      });
+      this.warheadCredit = null;
+    }
   }
 
   /** Gravity wells pull small and medium rocks; Incendiary patches burn whatever stands in them. */
@@ -4105,13 +4931,18 @@ export class Game {
     for (let i = this.missileZones.length - 1; i >= 0; i--) {
       const z = this.missileZones[i];
       z.life -= dt;
+      this.selectBulletPilot({ kind: "missile", ownerId: z.ownerId } as Bullet);
+      this.warheadCredit = z.build ?? null;
       if (z.kind === "gravity") {
+        const pulled: Rock[] = [];
         for (const r of this.rocks) {
           if (r.size > W.gravity.maxRockSize || r.trait === "meteor") continue;
           const dx = z.x - r.x,
             dy = z.y - r.y;
           const d = Math.hypot(dx, dy);
-          if (d > z.r + r.r || d < 2) continue;
+          if (d > z.r + r.r) continue;
+          pulled.push(r);
+          if (d < 2) continue;
           const pull = W.gravity.pull * (0.35 + 0.65 * (1 - d / (z.r + r.r)));
           r.vx += (dx / d) * pull * dt;
           r.vy += (dy / d) * pull * dt;
@@ -4120,18 +4951,72 @@ export class Game {
           r.vx *= damp;
           r.vy *= damp;
         }
+        // Crush (III): pulled rocks take damage over time and grind against each other
+        if (z.perk) {
+          z.tick -= dt;
+          while (z.tick <= 1e-6 && (z.ticksLeft ?? 0) > 0) {
+            z.tick += W.incendiary.tick;
+            z.ticksLeft = (z.ticksLeft ?? 1) - 1;
+            const ids = pulled.map((r) => r.id);
+            const contacts = new Set<number>();
+            for (let a = 0; a < pulled.length; a++)
+              for (let c = a + 1; c < pulled.length; c++) {
+                const ra = pulled[a],
+                  rc = pulled[c];
+                if (Math.hypot(ra.x - rc.x, ra.y - rc.y) < ra.r + rc.r) {
+                  contacts.add(ra.id);
+                  contacts.add(rc.id);
+                }
+              }
+            for (const id of ids) {
+              const extra = contacts.has(id) ? W.gravity.crushContactDamage : 0;
+              this.zoneDamage(id, z.dps * W.incendiary.tick + extra);
+            }
+          }
+        }
       } else {
         z.tick -= dt;
         while (z.tick <= 1e-6 && (z.ticksLeft ?? 0) > 0) {
           z.tick += W.incendiary.tick;
           z.ticksLeft = (z.ticksLeft ?? 1) - 1;
-          this.selectBulletPilot({ kind: "missile", ownerId: z.ownerId } as Bullet);
           const amount = z.dps * W.incendiary.tick;
           for (const t of this.hostiles())
             if (Math.hypot(t.x - z.x, t.y - z.y) <= z.r + t.r) this.zoneDamage(t.id, amount);
+          if (z.perk) this.spreadWildfire(z);
         }
       }
+      this.warheadCredit = null;
       if (z.life <= 1e-6 && !(z.ticksLeft ?? 0)) this.missileZones.splice(i, 1);
+    }
+  }
+
+  /** Wildfire (Incendiary III): rocks touching a burning rock catch fire themselves. */
+  spreadWildfire(z: MissileZone) {
+    const W = GAME_CONFIG.warheads.incendiary;
+    const burning = this.rocks.filter((r) => Math.hypot(r.x - z.x, r.y - z.y) <= z.r + r.r);
+    for (const src of burning) {
+      src.ignited = true;
+      for (const r of this.rocks) {
+        if (r.ignited || this.missileZones.filter((m) => m.kind === "fire").length >= W.wildfireCap)
+          continue;
+        if (Math.hypot(r.x - src.x, r.y - src.y) > r.r + src.r + W.wildfireReach) continue;
+        r.ignited = true;
+        this.missileZones.push({
+          kind: "fire",
+          x: r.x,
+          y: r.y,
+          r: r.r + 14,
+          life: W.wildfireDuration,
+          max: W.wildfireDuration,
+          dps: z.dps,
+          tick: W.tick,
+          ticksLeft: Math.round(W.wildfireDuration / W.tick),
+          ownerId: z.ownerId,
+          seed: this.random() * TAU,
+          perk: true,
+          build: z.build,
+        });
+      }
     }
   }
 
@@ -4162,12 +5047,14 @@ export class Game {
     if (di >= 0) this.damageDrone(di, amount, false, true);
   }
 
-  /** EMP: an offline specialist drifts to a stop and does nothing else. */
+  /** EMP / Cryo: an offline specialist drifts to a stop and does nothing else. */
   driftDisabledDrone(d: Drone, dt: number) {
     d.emp = Math.max(0, (d.emp ?? 0) - dt);
+    d.frozen = Math.max(0, (d.frozen ?? 0) - dt);
+    if (!d.emp) d.overload = false;
     const damp = Math.max(0, 1 - 1.8 * dt);
-    d.vx *= damp;
-    d.vy *= damp;
+    d.vx *= d.frozen ? 0 : damp;
+    d.vy *= d.frozen ? 0 : damp;
     d.x = clamp(d.x + d.vx * dt, d.r, this.w - d.r);
     d.y = clamp(d.y + d.vy * dt, d.r, this.h - d.r);
     d.flash = Math.max(0, d.flash - dt * 4);
@@ -4175,9 +5062,56 @@ export class Game {
     d.pulseCharge = undefined;
   }
 
+  /** Count down sunburn marks on everything that can carry one. */
+  updateWarheadMarks(dt: number) {
+    const tick = (o: { sunburn?: Rock["sunburn"] }) => {
+      if (!o.sunburn) return;
+      o.sunburn.t -= dt;
+      if (o.sunburn.t <= 0) delete o.sunburn;
+    };
+    for (const r of this.rocks) tick(r);
+    for (const d of this.drones) tick(d);
+    if (this.boss) {
+      tick(this.boss);
+      if (this.boss.chill) this.boss.chill = Math.max(0, this.boss.chill - dt);
+    }
+  }
+
+  /**
+   * A kill landed by a warhead (missile blast, bomblet, shard, burn or aftershock)
+   * counts toward the mastery of every part of that warhead still fitted.
+   */
+  creditWarheadKill(mark?: Rock["sunburn"], x = 0, y = 0) {
+    if (mark) this.prominenceFlare(x, y, mark);
+    const build = this.warheadCredit;
+    if (!build) return;
+    const forge = this.forgeOf();
+    for (const slot of WARHEAD_SLOTS) {
+      const part = forge.fitted[slot];
+      if (part.id !== build[slot]) continue;
+      part.kills++;
+      if (part.tier === 2 && part.kills === masteryKills(part.id)) this.announceMastery(part.id);
+    }
+    // Siphon Tier II+: +1 hull per kill
+    const trigger = forge.fitted.trigger;
+    if (build.trigger === "siphon" && trigger.id === "siphon" && trigger.tier >= 2) {
+      const heal = this.tierValue(GAME_CONFIG.warheads.siphon.hullPerKill, trigger.tier);
+      this.p.hull = Math.min(this.p.maxHull, this.p.hull + heal);
+    }
+  }
+
+  announceMastery(id: WarheadPartId) {
+    this.floatText(this.p.x, this.p.y - 46, "MASTERY READY", WARHEAD_PARTS[id].color, 13);
+    this.sound.play("levelup");
+  }
+
   hitRock(index: number, dmg: number, vx: number, vy: number, crit: boolean) {
     const r = this.rocks[index];
     if (!r) return;
+    if ((r.frozen ?? 0) > 0 && r.cryo) {
+      this.shatterRock(index);
+      return;
+    }
     this.loseRockHp(r, dmg);
     r.flash = 1;
     r.vx += vx * 0.012;
@@ -4192,7 +5126,7 @@ export class Game {
   damageDrone(index: number, dmg: number, crit: boolean, quiet = false) {
     const d = this.drones[index];
     if (!d) return;
-    d.hp -= this.absorbSupportShield(d, dmg);
+    d.hp -= this.absorbSupportShield(d, dmg * this.markMultiplier(d));
     d.flash = 1;
     if (!quiet) {
       this.burst(d.x, d.y, crit ? 10 : 6, crit ? AMBER_HOT : ICE);
@@ -4208,7 +5142,7 @@ export class Game {
    * (the vanish, the two ambushes and the return) has finished.
    */
   loseBossHp(bo: Boss, amount: number) {
-    bo.hp -= amount;
+    bo.hp -= amount * this.markMultiplier(bo);
     if (!bo.mk6 || bo.movement.mk6RaidDone) return;
     const floor = bo.maxHp * 0.5;
     if (bo.hp >= floor) return;
@@ -4274,6 +5208,7 @@ export class Game {
     this.combo++;
     this.comboTimer = 4;
     this.addMissileCharge(GAME_CONFIG.salvo.killCharge);
+    this.creditWarheadKill(r.sunburn, r.x, r.y);
 
     // meteorites: cheap to kill, rich to salvage, never split
     if (r.trait === "meteorite") {
@@ -4356,7 +5291,8 @@ export class Game {
     // Large explosive asteroids detonate without producing descendants.
     if (r.trait === "boom") this.rockBoom(r);
 
-    if (r.size > 1 && !(r.trait === "boom" && r.size === 3)) {
+    // a Cryo-shattered rock is gone: its shards replace the usual split
+    if (r.size > 1 && !r.shatter && !(r.trait === "boom" && r.size === 3)) {
       for (let i = 0; i < 2; i++) {
         const a = this.random() * TAU;
         const child = this.makeRock(
@@ -4428,6 +5364,7 @@ export class Game {
     const d = this.drones[index];
     if (!d) return;
     this.drones.splice(index, 1);
+    this.creditWarheadKill(d.sunburn, d.x, d.y);
     const warden = d.kind === "warden";
     const heavy = warden || d.kind === "spiker";
     if (warden) {
@@ -4581,13 +5518,18 @@ export class Game {
     return picked;
   }
 
-  /** spend credits to reroll the rack — the price doubles every time */
+  /**
+   * Spend credits to reroll: the level-up rack (if one is waiting) and this
+   * wave's blueprint offers refresh together. The price rises every time.
+   */
   rerollChoices(): number | null {
     if (this.credits < this.rerollCost) return null;
     const paid = this.rerollCost;
     this.credits -= this.rerollCost;
     this.rerollCost = Math.round(this.rerollCost * 1.8);
-    this.choices = this.rollChoices();
+    if (this.choices.length) this.choices = this.rollChoices();
+    this.forgeOf().offerRolls++;
+    this.ensureBlueprintOffers(true);
     this.sound.play("buy");
     return paid;
   }
@@ -4695,7 +5637,10 @@ export class Game {
       const bo = this.boss;
       const bd = Math.hypot(bo.x - x, bo.y - y);
       if (bd < radius + bo.r) {
-        this.loseBossHp(bo, dmg * (1 - clamp((bd - bo.r) / radius, 0, 1) * 0.6));
+        this.loseBossHp(
+          bo,
+          dmg * this.blastBossMul * (1 - clamp((bd - bo.r) / radius, 0, 1) * 0.6),
+        );
         bo.flash = 1;
         if (bo.hp <= 0) this.killBoss();
       }
@@ -5139,6 +6084,8 @@ export class Game {
       if (spawned) this.bannerSub += ` · +${spawned} SPIKER${spawned > 1 ? "S" : ""}`;
     }
     this.p.missiles = Math.min(this.p.maxMissiles, this.p.missiles + 1);
+    // every pilot gets this wave's blueprint offers from the seeded shop stream
+    this.forEachPilot(() => this.ensureBlueprintOffers());
     this.sound.play("wave");
     // Between-wave salvage is generous enough that a player can afford the
     // armory early: by the MK1 boss (wave 5) this alone totals ~760 CR.
@@ -6967,6 +7914,7 @@ export class Game {
     const b = this.boss;
     if (!b) return;
     this.boss = null;
+    this.creditWarheadKill();
     // Damage can arrive inside the bullet loop; do not shift its indices.
     for (const shot of this.bullets) {
       if (["enemy", "wardenOrb", "wardenShard"].includes(shot.kind)) {
@@ -7828,6 +8776,14 @@ export class Game {
         ctx.moveTo(5, 2.4 * s);
         ctx.lineTo(12, 4.2 * s);
         ctx.stroke();
+      } else if (w.guidance === "boomerang") {
+        // crescent wings that curl back toward the tail
+        ctx.beginPath();
+        ctx.moveTo(1, 2.2 * s);
+        ctx.quadraticCurveTo(-3, 8 * s, -11, 7.5 * s);
+        ctx.quadraticCurveTo(-5, 5 * s, -6, 2 * s);
+        ctx.closePath();
+        ctx.fill();
       } else if (w.guidance !== "orbit") {
         ctx.beginPath();
         ctx.moveTo(-3, 2.2 * s);
@@ -7923,6 +8879,32 @@ export class Game {
       ctx.quadraticCurveTo(-1, 0.5, -1.5, 1.8);
       ctx.closePath();
       ctx.fill();
+    } else if (w.payload === "solarFlare") {
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      ctx.arc(-1.5, 0, 1.4, 0, TAU);
+      ctx.fill();
+      ctx.lineWidth = 0.7;
+      const spin = this.frame * 0.15 + seed;
+      for (let k = 0; k < 4; k++) {
+        const a = spin + (k * Math.PI) / 2;
+        ctx.beginPath();
+        ctx.moveTo(-1.5 + Math.cos(a) * 2, Math.sin(a) * 2);
+        ctx.lineTo(-1.5 + Math.cos(a) * 3.2, Math.sin(a) * 3.2);
+        ctx.stroke();
+      }
+    } else if (w.payload === "cryo") {
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      for (let k = 0; k < 6; k++) {
+        const a = (k / 6) * TAU;
+        const px = -1.5 + Math.cos(a) * 2,
+          py = Math.sin(a) * 2;
+        if (k === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.stroke();
     } else ctx.fillRect(-2.5, -2.6, 2.2, 5.2);
     ctx.globalAlpha = 1;
 
@@ -7936,6 +8918,49 @@ export class Game {
       ctx.moveTo(8, -1.5);
       ctx.lineTo(12, -4);
       ctx.stroke();
+    }
+    if (w.trigger === "siphon") {
+      // intake vanes splayed back from the nose
+      ctx.strokeStyle = WARHEAD_PARTS.siphon.color;
+      ctx.lineWidth = 0.9;
+      ctx.beginPath();
+      ctx.moveTo(9, 2);
+      ctx.lineTo(5, 4.6);
+      ctx.moveTo(9, -2);
+      ctx.lineTo(5, -4.6);
+      ctx.stroke();
+    }
+    // Forge tiers: one tail chevron per Tier II+ part, and a gold rim once any part is mastered
+    const t = b.tiers;
+    if (t) {
+      const upgraded = [t.payload, t.guidance, t.trigger].filter((v) => v >= 2).length;
+      const mastered = t.payload === 3 || t.guidance === 3 || t.trigger === 3;
+      if (mastered) {
+        ctx.strokeStyle = "#ffcf6a";
+        ctx.lineWidth = 0.7;
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = "#ffcf6a";
+        ctx.beginPath();
+        ctx.moveTo(9.8, 0);
+        ctx.lineTo(6.4, -3.3);
+        ctx.lineTo(-8.4, -3.3);
+        ctx.lineTo(-9.8, 0);
+        ctx.lineTo(-8.4, 3.3);
+        ctx.lineTo(6.4, 3.3);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+      }
+      ctx.strokeStyle = mastered ? "#ffcf6a" : hot;
+      ctx.lineWidth = 0.8;
+      for (let k = 0; k < upgraded; k++) {
+        const x = -5 - k * 1.8;
+        ctx.beginPath();
+        ctx.moveTo(x + 1, -1.6);
+        ctx.lineTo(x, 0);
+        ctx.lineTo(x + 1, 1.6);
+        ctx.stroke();
+      }
     }
     if (w.trigger === "chain" && !b.mini) {
       // a mini missile docked under the belly
@@ -7975,7 +9000,7 @@ export class Game {
     }
     if (b.stuck) {
       // Delayed fuse: a ring that fills as the charge counts down, blinking faster at the end
-      const fuse = GAME_CONFIG.warheads.delayed.fuse;
+      const fuse = this.tierValue(GAME_CONFIG.warheads.delayed.fuse, b.tiers?.trigger);
       const left = clamp(b.stuck.t / fuse, 0, 1);
       const blink = Math.sin((1 - left) * (1 - left) * 60) > 0;
       ctx.save();
@@ -8140,11 +9165,89 @@ export class Game {
     }
   }
 
+  /**
+   * Warhead status marks: frozen rocks wear a frost shell with crystal spines,
+   * sunburned targets a slowly turning gold corona, and a chilled boss a frost ring.
+   */
+  renderWarheadStatus(ctx: CanvasRenderingContext2D) {
+    const ice = WARHEAD_PARTS.cryo.color;
+    const sun = WARHEAD_PARTS.solarFlare.color;
+    const corona = (x: number, y: number, r: number, t: number, id: number) => {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(this.frame * 0.02 + id);
+      ctx.globalAlpha = Math.min(1, t * 2) * 0.8;
+      ctx.strokeStyle = sun;
+      ctx.lineWidth = 1.4;
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = sun;
+      ctx.setLineDash([3, 5]);
+      ctx.beginPath();
+      ctx.arc(0, 0, r + 6, 0, TAU);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * TAU;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * (r + 8), Math.sin(a) * (r + 8));
+        ctx.lineTo(Math.cos(a) * (r + 12), Math.sin(a) * (r + 12));
+        ctx.stroke();
+      }
+      ctx.restore();
+    };
+    for (const r of this.rocks) {
+      if ((r.frozen ?? 0) > 0) {
+        ctx.save();
+        ctx.translate(r.x, r.y);
+        const fade = Math.min(1, (r.frozen ?? 0) * 3);
+        const shell = ctx.createRadialGradient(0, 0, r.r * 0.3, 0, 0, r.r + 6);
+        shell.addColorStop(0, "rgba(159,216,255,0.05)");
+        shell.addColorStop(1, "rgba(159,216,255,0.32)");
+        ctx.globalAlpha = fade;
+        ctx.fillStyle = shell;
+        ctx.beginPath();
+        ctx.arc(0, 0, r.r + 6, 0, TAU);
+        ctx.fill();
+        ctx.strokeStyle = r.permafrost ? "#ffffff" : ice;
+        ctx.lineWidth = r.permafrost ? 1.6 : 1.1;
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = ice;
+        for (let k = 0; k < 6; k++) {
+          const a = (k / 6) * TAU + r.id;
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(a) * r.r * 0.75, Math.sin(a) * r.r * 0.75);
+          ctx.lineTo(Math.cos(a) * (r.r + 7), Math.sin(a) * (r.r + 7));
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+      if (r.sunburn) corona(r.x, r.y, r.r, r.sunburn.t, r.id);
+    }
+    for (const d of this.drones) if (d.sunburn) corona(d.x, d.y, d.r, d.sunburn.t, d.id);
+    const bo = this.boss;
+    if (bo) {
+      if (bo.sunburn) corona(bo.x, bo.y, bo.r, bo.sunburn.t, bo.id);
+      if ((bo.chill ?? 0) > 0) {
+        ctx.save();
+        ctx.strokeStyle = ice;
+        ctx.globalAlpha = 0.55;
+        ctx.lineWidth = 3;
+        ctx.setLineDash([10, 6]);
+        ctx.lineDashOffset = this.frame * 0.4;
+        ctx.beginPath();
+        ctx.arc(bo.x, bo.y, bo.r + 14, 0, TAU);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+  }
+
   /** EMP: offline specialists flicker grey with arcs crawling over the hull. */
   renderEmpOverlay(ctx: CanvasRenderingContext2D) {
-    const color = WARHEAD_PARTS.emp.color;
     for (const d of this.drones) {
-      if (!((d.emp ?? 0) > 0)) continue;
+      const frozen = (d.frozen ?? 0) > 0 && !((d.emp ?? 0) > 0);
+      if (!((d.emp ?? 0) > 0) && !frozen) continue;
+      const color = frozen ? WARHEAD_PARTS.cryo.color : WARHEAD_PARTS.emp.color;
       ctx.save();
       ctx.translate(d.x, d.y);
       ctx.globalAlpha = 0.35 + 0.25 * Math.sin(this.frame * 0.9 + d.id);
@@ -8173,7 +9276,11 @@ export class Game {
       ctx.textAlign = "center";
       ctx.fillStyle = color;
       ctx.globalAlpha = this.frame % 30 < 20 ? 0.9 : 0.3;
-      ctx.fillText(`OFFLINE ${Math.ceil(d.emp ?? 0)}`, 0, -d.r - 8);
+      ctx.fillText(
+        frozen ? `FROZEN ${Math.ceil(d.frozen ?? 0)}` : `OFFLINE ${Math.ceil(d.emp ?? 0)}`,
+        0,
+        -d.r - 8,
+      );
       ctx.restore();
     }
   }
@@ -9233,6 +10340,7 @@ export class Game {
     }
 
     this.renderEmpOverlay(ctx);
+    this.renderWarheadStatus(ctx);
     this.forEachPilot(() => this.renderPilot(ctx));
 
     // bullets

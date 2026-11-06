@@ -6,7 +6,9 @@ import {
   THEMES,
   STAT_UPGRADES,
   isWarheadPart,
-  normalizeMissileBuild,
+  buildOf,
+  freshForge,
+  normalizeForge,
 } from "../balance";
 import {
   applyDeveloperCommand,
@@ -34,6 +36,9 @@ export interface LocalCoopOptions {
 }
 
 /** Room clock and commands around the ORIGINAL campaign, not a second combat engine. */
+/** Warhead Forge loadout commands: allowed during the shared pause like other shop actions. */
+const FORGE_COMMANDS = ["buyBlueprint", "buyMastery", "swapBench", "scrapBench", "sendBench"];
+
 export class LocalCoopSimulation {
   state: CoopMatchState;
   readonly width: number;
@@ -128,8 +133,10 @@ export class LocalCoopSimulation {
         p.ship.blastR = GAME_CONFIG.player.blastRadius;
         p.ship.missileCharge = 0;
       }
-      // Warhead Workshop (0.7.1): rooms from earlier builds fit the default parts.
-      p.ship.missileBuild = normalizeMissileBuild(p.ship.missileBuild);
+      // Warhead Forge (0.7.2): rooms from earlier builds start with stock parts and an empty bench.
+      p.ship.forge = p.ship.forge ? normalizeForge(p.ship.forge) : freshForge();
+      p.ship.missileBuild = buildOf(p.ship.forge);
+      p.ship.bonusLocks ??= 0;
     }
     sim.game = sim.createGame();
     if (snapshot.campaign) restoreCampaignWorld(sim.game, snapshot.campaign);
@@ -361,11 +368,25 @@ export class LocalCoopSimulation {
       !Object.prototype.hasOwnProperty.call(p.drone.upgrades, command.upgrade)
     )
       return false;
-    if (command.type === "fitWarhead" && !isWarheadPart(command.part)) return false;
+    if (
+      (command.type === "fitWarhead" || command.type === "buyMastery") &&
+      !isWarheadPart(command.part)
+    )
+      return false;
+    if (
+      ["buyBlueprint", "swapBench", "scrapBench", "sendBench"].includes(command.type) &&
+      !(
+        Number.isInteger((command as { index: number }).index) &&
+        (command as { index: number }).index >= 0 &&
+        (command as { index: number }).index < 3
+      )
+    )
+      return false;
     if (
       ![
         "input",
         "fitWarhead",
+        ...FORGE_COMMANDS,
         "buyWeapon",
         "selectWeapon",
         "buyDrone",
@@ -402,6 +423,7 @@ export class LocalCoopSimulation {
         "buyDroneUpgrade",
         "equipDroneWeapon",
         "fitWarhead",
+        ...FORGE_COMMANDS,
         "chooseUpgrade",
         "rerollUpgrades",
       ].includes(c.type);
@@ -557,6 +579,31 @@ export class LocalCoopSimulation {
           item = c.part;
           accepted = g.fitWarheadPart(c.part);
           break;
+        case "buyBlueprint":
+          accepted = g.buyBlueprint(c.index);
+          break;
+        case "buyMastery":
+          item = c.part;
+          accepted = g.buyMastery(c.part);
+          break;
+        case "swapBench":
+          accepted = g.swapBench(c.index);
+          break;
+        case "scrapBench":
+          accepted = g.scrapBench(c.index);
+          break;
+        case "sendBench": {
+          // hand a bench part to the teammate's bench, if they have room
+          const mate = this.state.players[p.id === "p1" ? "p2" : "p1"];
+          const mateForge = (mate.ship.forge = normalizeForge(mate.ship.forge));
+          const free = mateForge.bench.indexOf(null);
+          const part = free >= 0 ? g.takeBenchPart(c.index) : null;
+          if (part) {
+            mateForge.bench[free] = part;
+            accepted = true;
+          }
+          break;
+        }
         case "chooseUpgrade":
           item = c.upgrade;
           accepted =
@@ -571,7 +618,8 @@ export class LocalCoopSimulation {
           }
           break;
         case "rerollUpgrades":
-          accepted = g.choices.length > 0 && g.rerollChoices() !== null;
+          // one paid reroll refreshes the level-up rack and the blueprint offers together
+          accepted = g.rerollChoices() !== null;
           break;
         case "activateOverdrive":
           if (

@@ -54,6 +54,11 @@ export type MultiplayerClientMessage =
   | { type: "buyDroneUpgrade"; sequence: number; upgrade: SalvageUpgradeId }
   | { type: "equipDroneWeapon"; sequence: number; weapon: WeaponId | null }
   | { type: "fitWarhead"; sequence: number; part: import("../types").WarheadPartId }
+  | { type: "buyBlueprint"; sequence: number; index: number }
+  | { type: "buyMastery"; sequence: number; part: import("../types").WarheadPartId }
+  | { type: "swapBench"; sequence: number; index: number }
+  | { type: "scrapBench"; sequence: number; index: number }
+  | { type: "sendBench"; sequence: number; index: number }
   | { type: "chooseUpgrade"; sequence: number; upgrade: string }
   | { type: "rerollUpgrades"; sequence: number }
   | { type: "activateOverdrive"; sequence: number }

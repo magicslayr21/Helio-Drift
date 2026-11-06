@@ -13,6 +13,13 @@ import type {
   SalvageUpgradeId,
   SectorTheme,
   StatUpgrade,
+  BlueprintOffer,
+  BuildTiers,
+  Forge,
+  ForgePart,
+  GuidanceId,
+  PayloadId,
+  TriggerId,
   WarheadPartId,
   WarheadRarity,
   WarheadSlot,
@@ -290,103 +297,187 @@ export interface WarheadPartDef {
   rarity: WarheadRarity;
   /** Tier I effect, as shown in the Workshop. */
   effect: string;
+  /** Tier II effect and the Tier III perk (name and text). */
+  tier2: string;
+  perk: { name: string; text: string };
   /** Warhead tint: seeker cap, plume core and blast highlights. */
   color: string;
 }
 
 const W = GAME_CONFIG.warheads;
+const pct = (n: number) => `${Math.round(n * 100)}%`;
 export const WARHEAD_SLOTS: WarheadSlot[] = ["payload", "guidance", "trigger"];
 export const WARHEAD_PARTS: Record<WarheadPartId, WarheadPartDef> = {
   blast: {
     slot: "payload",
     name: "Blast",
     rarity: "default",
-    effect: `${GAME_CONFIG.player.blastDamage} damage in a ${GAME_CONFIG.player.blastRadius} radius.`,
+    effect: `${W.blast.damage[0]} damage in a ${W.blast.radius[0]} radius.`,
+    tier2: `${W.blast.damage[1]} damage in an ${W.blast.radius[1]} radius.`,
+    perk: {
+      name: "Aftershock",
+      text: `A second blast ${W.blast.aftershockDelay} s later at ${pct(W.blast.aftershockShare)}.`,
+    },
     color: "#ff3d6e",
   },
   cluster: {
     slot: "payload",
     name: "Cluster",
     rarity: "rare",
-    effect: `Bursts into ${W.cluster.bomblets} bomblets × ${W.cluster.bombletDamage} damage that scatter and detonate.`,
+    effect: `Bursts into ${W.cluster.bomblets[0]} bomblets × ${W.cluster.bombletDamage[0]} damage that scatter and detonate.`,
+    tier2: `${W.cluster.bomblets[1]} bomblets × ${W.cluster.bombletDamage[1]} damage.`,
+    perk: { name: "Carpet", text: "Bomblets roll on along the missile's path." },
     color: "#ffb03a",
   },
   gravity: {
     slot: "payload",
     name: "Gravity",
     rarity: "rare",
-    effect: `Opens a ${W.gravity.duration} s well that pulls small and medium rocks within ${W.gravity.radius}.`,
+    effect: `Opens a ${W.gravity.duration[0]} s well that pulls small and medium rocks within ${W.gravity.radius[0]}.`,
+    tier2: `${W.gravity.duration[1]} s well, ${W.gravity.radius[1]} radius.`,
+    perk: {
+      name: "Crush",
+      text: `Pulled rocks take ${W.gravity.crushDps} damage per second and collide with each other.`,
+    },
     color: "#a98bff",
   },
   emp: {
     slot: "payload",
     name: "EMP",
     rarity: "epic",
-    effect: `Disables specialists for ${W.emp.duration} s and drops Tether Sentinel shields.`,
+    effect: `Disables specialists for ${W.emp.duration[0]} s and drops Tether Sentinel shields.`,
+    tier2: `${W.emp.duration[1]} s disable; Warden mines fizzle.`,
+    perk: {
+      name: "Overload",
+      text: `Disabled enemies take +${pct(W.emp.overloadMultiplier - 1)} damage.`,
+    },
     color: "#8ff7ff",
   },
   incendiary: {
     slot: "payload",
     name: "Incendiary",
     rarity: "common",
-    effect: `Leaves a burning patch for ${W.incendiary.duration} s, ${W.incendiary.dps} damage per second.`,
+    effect: `Leaves a burning patch for ${W.incendiary.duration[0]} s, ${W.incendiary.dps[0]} damage per second.`,
+    tier2: `${W.incendiary.duration[1]} s at ${W.incendiary.dps[1]} damage per second.`,
+    perk: { name: "Wildfire", text: "Fire spreads to touching rocks." },
     color: "#ff7a2e",
+  },
+  solarFlare: {
+    slot: "payload",
+    name: "Solar Flare",
+    rarity: "epic",
+    effect: `Sunburn: targets in the blast take +${pct(W.solarFlare.bonus[0])} damage from all sources for ${W.solarFlare.duration[0]} s.`,
+    tier2: `+${pct(W.solarFlare.bonus[1])} for ${W.solarFlare.duration[1]} s; Sentinels stop firing for ${W.solarFlare.sentinelSilence[1]} s.`,
+    perk: {
+      name: "Prominence",
+      text: "Marked kills release a mini flare that marks nearby targets.",
+    },
+    color: "#ffd23f",
+  },
+  cryo: {
+    slot: "payload",
+    name: "Cryo",
+    rarity: "rare",
+    effect: `Freezes for ${W.cryo.duration[0]} s; a hit on a frozen rock shatters it into ${W.cryo.shards[0]} shards × ${W.cryo.shardDamage[0]} damage. Bosses are slowed ${pct(W.cryo.bossSlow)} instead.`,
+    tier2: `${W.cryo.duration[1]} s freeze; ${W.cryo.shards[1]} shards × ${W.cryo.shardDamage[1]} damage.`,
+    perk: { name: "Permafrost", text: "Frozen rocks block enemy shots." },
+    color: "#9fd8ff",
   },
   direct: {
     slot: "guidance",
     name: "Direct",
     rarity: "default",
     effect: `Pure pursuit with a ${GAME_CONFIG.salvo.turn} turn rate.`,
+    tier2: `+${pct(W.direct.speedMultiplier[1] - 1)} speed.`,
+    perk: { name: "Lead", text: "Predicts target movement and flies to the intercept." },
     color: "#ffe0a3",
   },
   corkscrew: {
     slot: "guidance",
     name: "Corkscrew",
     rarity: "common",
-    effect: `+${Math.round((W.corkscrew.speedMultiplier - 1) * 100)}% speed and a wider spiral.`,
+    effect: `+${pct(W.corkscrew.speedMultiplier[0] - 1)} speed and a wider spiral.`,
+    tier2: `+${pct(W.corkscrew.speedMultiplier[1] - 1)} speed and an even wider spiral.`,
+    perk: { name: "Itano", text: "A missile that misses spirals back for one more pass." },
     color: "#ffd166",
   },
   relay: {
     slot: "guidance",
     name: "Relay",
     rarity: "epic",
-    effect: `On a kill, flies on to another lock at ${W.relay.damageMultiplier * 100}% damage, up to ${W.relay.hops} hops.`,
+    effect: `On a kill, flies on to another lock at ${pct(W.relay.damageMultiplier[0])} damage, up to ${W.relay.hops[0]} hops.`,
+    tier2: `${W.relay.hops[1]} hops at ${pct(W.relay.damageMultiplier[1])}.`,
+    perk: { name: "Chainbreaker", text: "Each hop gains +10% instead of losing damage." },
     color: "#7dffb2",
   },
   orbit: {
     slot: "guidance",
     name: "Orbit",
     rarity: "rare",
-    effect: `Circles the ship for ${W.orbit.duration} s blocking ${W.orbit.blocks} enemy shot each, then strikes.`,
+    effect: `Circles the ship for ${W.orbit.duration[0]} s blocking ${W.orbit.blocks[0]} enemy shot each, then strikes.`,
+    tier2: `${W.orbit.duration[1]} s, blocks ${W.orbit.blocks[1]} shots.`,
+    perk: { name: "Halo", text: "Orbiting missiles damage rocks they touch." },
     color: "#6fe7ff",
+  },
+  boomerang: {
+    slot: "guidance",
+    name: "Boomerang",
+    rarity: "rare",
+    effect: `A missile that misses, or whose target dies, re-locks the nearest target ${W.boomerang.relocks[0]}×; catching it unused refunds ${pct(W.boomerang.refund[0])} of a missile.`,
+    tier2: `${W.boomerang.relocks[1]} re-locks; ${pct(W.boomerang.refund[1])} refund.`,
+    perk: { name: "Return Fire", text: "Each caught missile adds +1 lock to the next salvo." },
+    color: "#c6ff6b",
   },
   impact: {
     slot: "trigger",
     name: "Impact",
     rarity: "default",
     effect: "Detonates on contact.",
+    tier2: `+${pct(W.impact.damageMultiplier[1] - 1)} damage.`,
+    perk: {
+      name: "Breach",
+      text: `+${pct(W.impact.breachMultiplier - 1)} damage against boss hulls.`,
+    },
     color: "#ffe0a3",
   },
   proximity: {
     slot: "trigger",
     name: "Proximity",
     rarity: "common",
-    effect: `Detonates ${W.proximity.distance} px early with +${Math.round((W.proximity.radiusMultiplier - 1) * 100)}% radius.`,
+    effect: `Detonates ${W.proximity.distance} px early with +${pct(W.proximity.radiusMultiplier[0] - 1)} radius.`,
+    tier2: `+${pct(W.proximity.radiusMultiplier[1] - 1)} radius.`,
+    perk: { name: "Airburst", text: "Blasts delete enemy shots in range." },
     color: "#ffd166",
   },
   chain: {
     slot: "trigger",
     name: "Chain",
     rarity: "epic",
-    effect: `Each blast launches a mini missile at ${W.chain.damageMultiplier * 100}% damage.`,
+    effect: `Each blast launches a mini missile at ${pct(W.chain.damageMultiplier[0])} damage.`,
+    tier2: `Mini missile at ${pct(W.chain.damageMultiplier[1])} damage.`,
+    perk: { name: "Cascade", text: "Mini missiles can chain once more." },
     color: "#ff5ad8",
   },
   delayed: {
     slot: "trigger",
     name: "Delayed",
     rarity: "rare",
-    effect: `Sticks to the target and detonates after ${W.delayed.fuse} s for ${W.delayed.damageMultiplier}× damage.`,
+    effect: `Sticks to the target and detonates after ${W.delayed.fuse[0]} s for ${W.delayed.damageMultiplier[0]}× damage.`,
+    tier2: `${W.delayed.fuse[1]} s fuse for ${W.delayed.damageMultiplier[1]}× damage.`,
+    perk: {
+      name: "Detonator",
+      text: `Tap E to set off every stuck charge early at ${W.delayed.detonatorMultiplier}×.`,
+    },
     color: "#ff9168",
+  },
+  siphon: {
+    slot: "trigger",
+    name: "Siphon",
+    rarity: "epic",
+    effect: `Each enemy hit by a blast refunds ${pct(W.siphon.refund[0])} of a missile, up to ${W.siphon.salvoCap} missile per salvo.`,
+    tier2: `${pct(W.siphon.refund[1])} per hit and +${W.siphon.hullPerKill[1]} hull per kill.`,
+    perk: { name: "Feedback", text: "Full Lock salvos refund one whole missile." },
+    color: "#5dffd9",
   },
 };
 
@@ -405,6 +496,155 @@ export function normalizeMissileBuild(build: unknown): MissileBuild {
     guidance: pick("guidance", DEFAULT_MISSILE_BUILD.guidance),
     trigger: pick("trigger", DEFAULT_MISSILE_BUILD.trigger),
   };
+}
+
+/* ------------------------------------------------------------ warhead forge */
+
+const F = GAME_CONFIG.forge;
+const round5 = (n: number) => Math.round(n / 5) * 5;
+
+/** The blueprint's list price (default parts are priced as common). */
+export const partPrice = (id: WarheadPartId) => F.prices[WARHEAD_PARTS[id].rarity];
+/** Tier I → II merge: 60% of list price. */
+export const mergePrice = (id: WarheadPartId) => Math.round(partPrice(id) * F.mergeShare);
+/** Tier II → III mastery: round5(price × 1.55²). */
+export const masteryPrice = (id: WarheadPartId) =>
+  round5(partPrice(id) * F.masteryPriceMultiplier ** 2);
+/** Kills needed before Tier III unlocks: 90 epic, 120 rare, 150 common and default. */
+export const masteryKills = (id: WarheadPartId) => F.masteryKills[WARHEAD_PARTS[id].rarity];
+/** Scrap returns half of every credit spent on the part. */
+export const scrapValue = (part: ForgePart) => Math.floor(part.spent * F.scrapShare);
+
+export const stockPart = (id: WarheadPartId): ForgePart => ({ id, tier: 1, kills: 0, spent: 0 });
+
+export function freshForge(): Forge {
+  return {
+    fitted: {
+      payload: stockPart(DEFAULT_MISSILE_BUILD.payload),
+      guidance: stockPart(DEFAULT_MISSILE_BUILD.guidance),
+      trigger: stockPart(DEFAULT_MISSILE_BUILD.trigger),
+    },
+    bench: Array.from({ length: F.benchSlots }, () => null),
+    offers: [],
+    offerWave: -1,
+    offerRolls: 0,
+  };
+}
+
+function normalizePart(raw: unknown, slot?: WarheadSlot): ForgePart | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (!isWarheadPart(r.id) || (slot && WARHEAD_PARTS[r.id].slot !== slot)) return null;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0);
+  const tier = r.tier === 2 || r.tier === 3 ? r.tier : 1;
+  return { id: r.id, tier, kills: Math.floor(num(r.kills)), spent: Math.floor(num(r.spent)) };
+}
+
+/** Repair a forge from a save or room checkpoint; anything unreadable becomes the stock forge. */
+export function normalizeForge(raw: unknown): Forge {
+  const fresh = freshForge();
+  if (!raw || typeof raw !== "object") return fresh;
+  const r = raw as Record<string, unknown>;
+  const fitted = (r.fitted && typeof r.fitted === "object" ? r.fitted : {}) as Record<
+    string,
+    unknown
+  >;
+  const bench = Array.isArray(r.bench) ? r.bench : [];
+  const offers = Array.isArray(r.offers) ? r.offers : [];
+  return {
+    fitted: {
+      payload: normalizePart(fitted.payload, "payload") ?? fresh.fitted.payload,
+      guidance: normalizePart(fitted.guidance, "guidance") ?? fresh.fitted.guidance,
+      trigger: normalizePart(fitted.trigger, "trigger") ?? fresh.fitted.trigger,
+    },
+    bench: Array.from({ length: F.benchSlots }, (_, i) => normalizePart(bench[i])),
+    offers: offers
+      .filter((o): o is BlueprintOffer => !!o && isWarheadPart((o as BlueprintOffer).id))
+      .slice(0, F.offers)
+      .map((o) => ({ id: o.id, sold: Boolean(o.sold) })),
+    offerWave: typeof r.offerWave === "number" && Number.isFinite(r.offerWave) ? r.offerWave : -1,
+    offerRolls:
+      typeof r.offerRolls === "number" && Number.isFinite(r.offerRolls) ? r.offerRolls : 0,
+  };
+}
+
+/** missileBuild always mirrors the fitted parts. */
+export const buildOf = (forge: Forge): MissileBuild => ({
+  payload: forge.fitted.payload.id as PayloadId,
+  guidance: forge.fitted.guidance.id as GuidanceId,
+  trigger: forge.fitted.trigger.id as TriggerId,
+});
+export const tiersOf = (forge: Forge): BuildTiers => ({
+  payload: forge.fitted.payload.tier,
+  guidance: forge.fitted.guidance.tier,
+  trigger: forge.fitted.trigger.tier,
+});
+
+/** A small, stable 32-bit hash for deriving per-wave offer seeds. */
+export function hashSeed(...parts: (number | string)[]): number {
+  let h = 2166136261 >>> 0;
+  for (const part of parts) {
+    const text = String(part);
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    h ^= 0x9e3779b9;
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h >>> 0;
+}
+
+/**
+ * Roll this wave's blueprint offers from the seeded shop stream: the same seed,
+ * wave and reroll count always give the same offers, whatever else the run did.
+ * Owned parts already at Tier II or III are never offered again; an owned
+ * Tier I part (default parts included) comes back as a merge.
+ */
+export function rollBlueprintOffers(opts: {
+  seed: number;
+  wave: number;
+  rolls: number;
+  owned: ForgePart[];
+  known?: Iterable<WarheadPartId>;
+}): BlueprintOffer[] {
+  let state = hashSeed(opts.seed, opts.wave, opts.rolls);
+  const next = () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let v = state;
+    v = Math.imul(v ^ (v >>> 15), v | 1);
+    v ^= v + Math.imul(v ^ (v >>> 7), v | 61);
+    return ((v ^ (v >>> 14)) >>> 0) / 4294967296;
+  };
+  const known = new Set(opts.known ?? []);
+  const owned = new Map(opts.owned.map((p) => [p.id, p.tier]));
+  const pool = (Object.keys(WARHEAD_PARTS) as WarheadPartId[])
+    .filter((id) => {
+      const def = WARHEAD_PARTS[id];
+      const tier = owned.get(id);
+      if (tier !== undefined) return tier === 1;
+      if (def.rarity === "default") return false;
+      return def.rarity !== "epic" || opts.wave >= F.epicWave;
+    })
+    .map((id) => ({
+      id,
+      weight: F.weights[WARHEAD_PARTS[id].rarity] * (known.has(id) ? F.knownBlueprintWeight : 1),
+    }));
+  const offers: BlueprintOffer[] = [];
+  while (offers.length < F.offers && pool.length) {
+    const total = pool.reduce((sum, e) => sum + e.weight, 0);
+    let roll = next() * total;
+    let index = pool.length - 1;
+    for (let i = 0; i < pool.length; i++) {
+      roll -= pool[i].weight;
+      if (roll <= 0) {
+        index = i;
+        break;
+      }
+    }
+    offers.push({ id: pool.splice(index, 1)[0].id, sold: false });
+  }
+  return offers;
 }
 
 /* ------------------------------------------------------------ salvage drone */
@@ -668,6 +908,8 @@ export function freshPlayer(): Player {
     missileLockT: 0,
     fullLockAt: -1,
     missileBuild: { ...DEFAULT_MISSILE_BUILD },
+    forge: freshForge(),
+    bonusLocks: 0,
     magnet: GAME_CONFIG.player.magnet,
     creditChance: GAME_CONFIG.player.creditChance,
     creditValue: GAME_CONFIG.player.creditValue,

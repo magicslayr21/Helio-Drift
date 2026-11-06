@@ -35,15 +35,21 @@ const WARHEAD_PARTS = new Set([
   "gravity",
   "emp",
   "incendiary",
+  "solarFlare",
+  "cryo",
   "direct",
   "corkscrew",
   "relay",
   "orbit",
+  "boomerang",
   "impact",
   "proximity",
   "chain",
   "delayed",
+  "siphon",
 ]);
+// Warhead Forge loadout commands that address an offer or bench slot by index.
+const FORGE_INDEX_COMMANDS = new Set(["buyBlueprint", "swapBench", "scrapBench", "sendBench"]);
 
 class RequestError extends Error {
   constructor(status, message) {
@@ -635,6 +641,11 @@ export class MatchRoom {
       case "buyDroneUpgrade":
       case "equipDroneWeapon":
       case "fitWarhead":
+      case "buyBlueprint":
+      case "buyMastery":
+      case "swapBench":
+      case "scrapBench":
+      case "sendBench":
       case "chooseUpgrade":
       case "rerollUpgrades":
       case "activateOverdrive":
@@ -799,7 +810,11 @@ export class MatchRoom {
       if (!DRONE_UPGRADES.has(message.upgrade))
         return this.sendError(socket, "invalid_command", "Drone upgrade is invalid.");
       command.upgrade = message.upgrade;
-    } else if (message.type === "fitWarhead") {
+    } else if (FORGE_INDEX_COMMANDS.has(message.type)) {
+      if (!Number.isInteger(message.index) || message.index < 0 || message.index > 2)
+        return this.sendError(socket, "invalid_command", "Forge slot is invalid.");
+      command.index = message.index;
+    } else if (message.type === "fitWarhead" || message.type === "buyMastery") {
       if (!WARHEAD_PARTS.has(message.part))
         return this.sendError(socket, "invalid_command", "Warhead part is invalid.");
       command.part = message.part;
