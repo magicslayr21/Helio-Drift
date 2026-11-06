@@ -16,6 +16,9 @@ export type Sfx =
   | "beamStop"
   | "overheat"
   | "missile"
+  | "lock"
+  | "fullLock"
+  | "graze"
   | "explodeBig"
   | "explodeSmall"
   | "hit"
@@ -243,6 +246,20 @@ class AudioEngine {
       case "missile":
         this.tone("sawtooth", 300, 900, 0.26, 0.16, { filter: 2200 });
         this.burst(0.3, 0.14, 1600, 300);
+        break;
+      case "lock":
+        // seeker-head chirp: each lock climbs a little so a full salvo reads as a rising scale
+        if (!this.gate("lock", 60)) return;
+        this.tone("square", 1180 + Math.random() * 120, 1480, 0.05, 0.07, { filter: 4200 });
+        break;
+      case "fullLock":
+        this.tone("triangle", 1320, 1320, 0.09, 0.1, { filter: 6000 });
+        this.tone("triangle", 1980, 1980, 0.14, 0.09, { filter: 6000, delay: 0.06 });
+        break;
+      case "graze":
+        if (!this.gate("graze", 90)) return;
+        this.burst(0.08, 0.05, 7000, 2400, 3);
+        this.tone("sine", 2200, 2600, 0.05, 0.04);
         break;
       case "seeker":
         if (!this.gate("seeker", 40)) return;

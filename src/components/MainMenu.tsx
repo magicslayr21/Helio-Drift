@@ -224,7 +224,8 @@ export function MainMenu({
             <button onClick={onUpdateLog}>Update log</button>
           </nav>
           <p className="launch-hint">
-            WASD thrust · Mouse aim · Click fire · Tab weapon · E missile · P pause
+            WASD thrust · Mouse aim · Click fire · Tab weapon · E tap / hold to lock missiles · P
+            pause
           </p>
         </section>
         <aside className="launch-sidebar">

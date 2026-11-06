@@ -46,9 +46,9 @@ otherwise noted. Damage and health are game units.
 | Critical-hit damage           |                                        2.2× |
 | Starting weapon               |                              Pulse, level 1 |
 | Other starting weapons        |                            Locked (level 0) |
-| Missiles / rack capacity      |                                       3 / 3 |
-| Missile regeneration          |                       1 missile every 6.5 s |
-| Missile blast damage / radius |                                     68 / 96 |
+| Missiles / rack capacity      |                                       4 / 4 |
+| Missile regeneration          |                        1 missile every 12 s |
+| Missile blast damage / radius |                         42 / 72 per missile |
 | Pickup magnet range           |                                         150 |
 | Credit-drop chance base       | 72%, plus 7 percentage points per rock size |
 | Credit value multiplier       |                                        1.0× |
@@ -64,6 +64,27 @@ maximum stacks, Overclock multiplies fire rate by 1.6771×; Hollow-Point
 multiplies weapon damage by 1.9738×; critical chance reaches 41%; and four
 Thruster Kit stacks produce 649.3 thrust, 681.7 maximum speed, and 5.15 turn
 rate. Twin-Linked Feeder adds 1 shot and Sabot Rounds add 3 pierce.
+
+## Salvo Lock missiles
+
+Hold E (or the on-screen Missile button) to paint locks; release to fire. Values live in
+`GAME_CONFIG.salvo` and `GAME_CONFIG.player`.
+
+| Value                              |                                                            Setting |
+| ---------------------------------- | -----------------------------------------------------------------: |
+| Lock cone                          |               70° total (±35°) from the nose, 700 px × range bonus |
+| Lock rate                          |                                1 lock every 0.11 s while E is held |
+| Locks per target                   |                   Large rock 2; boss any number; everything else 1 |
+| Lock ceiling                       |                              Missiles currently loaded in the rack |
+| Tap                                |        Released within 0.15 s with 0–1 locks: 1 missile at nearest |
+| Release cooldown                   |                                                             0.35 s |
+| Salvo launch                       |   ±90° from the nose, alternating sides, 380 speed, turn 6.5 rad/s |
+| Corkscrew offset                   |   `sin(t × 4π + phase) × 38 × (1 − t)`, t = normalised flight time |
+| Per-missile blast                  |                                               42 damage, 72 radius |
+| Full Lock window / bonus           |        Release within 0.3 s: ×1.25 damage, +20% speed, white flash |
+| Graze band                         |    Obstacle radius + 14 + 26 px without a hit: +12% of one missile |
+| Kill / boss main-weapon hit charge |                                                   +3% / +0.5% each |
+| Co-op Crossfire                    | Both pilots' missiles on one target within 1 s: ×1.4, +6 Overdrive |
 
 ## Player weapons
 
@@ -217,20 +238,20 @@ They have four long firing spikes on waves 11–19 and an eight-point crown from
 wave 20 onward. The spikes light up and hold their firing directions during a
 0.65-second warning before all shots fire simultaneously.
 
-| Value | Setting |
-| --- | --- |
-| First appearance | Wave 11 |
-| Health | `215 + wave × 44`, matching ordinary Wardens |
-| Hull radius | 31 px |
-| Volley before wave 20 | 4 shots, 90° apart, every 4 seconds |
-| Volley from wave 20 | 8 shots, 45° apart, every 3.2 seconds |
-| Projectile | 7 damage, 225 px/s, radius 5 px, lifetime 4.2 seconds |
-| Movement | Drift at 105–145 px/s, change heading every 2.2–4.2 s, bounce at screen edges |
-| Player collision | Player takes 14 damage before armor; Spiker takes no ram damage |
-| Natural population | One from wave 11; 25% chance of a second on waves 20–25 |
-| Wave-15 escort | One Spiker starts beside MK3 |
-| MK6 reinforcements | Each escort call adds one if none is alive; never stacks live Spikers |
-| Defeat rewards | Warden-equivalent score, XP, and credit drops |
+| Value                 | Setting                                                                       |
+| --------------------- | ----------------------------------------------------------------------------- |
+| First appearance      | Wave 11                                                                       |
+| Health                | `215 + wave × 44`, matching ordinary Wardens                                  |
+| Hull radius           | 31 px                                                                         |
+| Volley before wave 20 | 4 shots, 90° apart, every 4 seconds                                           |
+| Volley from wave 20   | 8 shots, 45° apart, every 3.2 seconds                                         |
+| Projectile            | 7 damage, 225 px/s, radius 5 px, lifetime 4.2 seconds                         |
+| Movement              | Drift at 105–145 px/s, change heading every 2.2–4.2 s, bounce at screen edges |
+| Player collision      | Player takes 14 damage before armor; Spiker takes no ram damage               |
+| Natural population    | One from wave 11; 25% chance of a second on waves 20–25                       |
+| Wave-15 escort        | One Spiker starts beside MK3                                                  |
+| MK6 reinforcements    | Each escort call adds one if none is alive; never stacks live Spikers         |
+| Defeat rewards        | Warden-equivalent score, XP, and credit drops                                 |
 
 Developer spawning supports Spiker count and size selection. As with Sentinel
 and Warden developer batches, these explicit spawns can exceed natural caps.
@@ -246,7 +267,7 @@ an optional bonus boss.
 | MK1 · Kometenhülle           |     5 | Plain              | `(1800 + 10×140) × 1.2`   |     3,840 |    104 |          1.2× |                   1.00× |                 1.00× |         0.70 |                0 |               1 |
 | MK2 · Jagdzell               |    10 | Homing             | `(1800 + 20×140) × 1.495` |     6,877 |    104 |        1.495× |                   0.92× |                 1.10× |         0.70 |               +6 |               1 |
 | MK3 · Richtzell              |    15 | Bounce             | `(1800 + 30×140) × 1.89`  |    11,340 |    104 |         1.89× |                   1.05× |                 1.05× |         0.90 |              +10 |               2 |
-| MK4 · Brandzell              |    20 | Boom               | `(1800 + 40×140) × 2.4`     |    17,760 |    104 |          2.4× |                   0.70× |                 1.10× |         0.70 |               −4 |               2 |
+| MK4 · Brandzell              |    20 | Boom               | `(1800 + 40×140) × 2.4`   |    17,760 |    104 |          2.4× |                   0.70× |                 1.10× |         0.70 |               −4 |               2 |
 | MK5 · Sturmzell / The Core   |    25 | Fast               | `14,000 × 1`              |    14,000 |    135 |          1.0× |                   1.15× |                 1.35× |         0.55 |                0 |               2 |
 | MK6 · Omegazell / The Meteor | Bonus | Meteorite          | Fixed                     |    30,000 |    151 |          1.0× |                    1.0× |                  1.0× |            0 |                0 |               4 |
 
@@ -268,25 +289,25 @@ core radius (12–18 px depending on boss); leaving that core resets partial exp
 
 ### Boss attack values
 
-| Attack                          | Values in source                                                                                                                          |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| Phase thresholds                | 66% and 33% boss HP for MK1–MK5                                                                                                           |
-| MK1 barrage                     | `9 + 3 × phase` rocks                                                                                                                     |
-| MK2 convergence                 | `6 + 2 × phase` homing rocks                                                                                                              |
-| MK3 pinball cascade             | `4 + phase` bounce rocks; 0.85 s charge; 0.55 s launch cadence                                                                            |
-| MK3 ricochet ring               | Up to `4 + phase` rocks, limited by 10-rock cap                                                                                           |
-| MK4 ignition strikes | Phase changes: 3 strikes, or 4 at phase 2. Regular ignition/proximity casts: 2, or 3 below half HP. Warning 1.35 s, then +0.3 s per strike; 62 damage to hostiles and 16 player damage within 125 px (no additional generic blast damage). |
-| MK4 boom launch | Up to 3 drops, reserving live and pending capacity against the six-boom cap; 1.1 s warning; 30 s lifetime. |
-| MK5 meteor wall                 | `9 + 3 × phase` streaks over 3.6 s                                                                                                        |
-| MK6 shower / barrage duration   | 6.2 s each; meteors spawn every 0.34 s                                                                                                    |
-| MK6 meteor beam                 | 4 arms, 8 while enraged; sweep 0.24 rad/s; 9 player damage per 0.6 s contact tick                                                         |
-| MK6 strikes                     | 5; warnings 2.4 s then +0.5 s each; blast damage 74 and an additional 30 player damage in strike radius 150–215                           |
-| MK6 asteroid field              | 12 rocks at 60% of normal health; lasts 7.5 s                                                                                             |
-| MK6 singularity                 | Pull 420; lasts 7.5 s; radius `1.5 × larger playfield dimension`                                                                          |
-| MK6 singularity health          | MK3 90; MK4 160; MK5 240; MK6 330                                                                                                         |
-| MK6 singularity radius          | MK3 24; MK4 28; MK5 32; MK6 36                                                                                                            |
-| MK6 Regenesis blasts            | 3 at 1.1, 2.1, and 4.4 s; each can damage player for 28 within 390 px                                                                     |
-| MK6 beam sweep / player contact | 9 damage, then 0.6 s contact cooldown                                                                                                     |
+| Attack                          | Values in source                                                                                                                                                                                                                           |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Phase thresholds                | 66% and 33% boss HP for MK1–MK5                                                                                                                                                                                                            |
+| MK1 barrage                     | `9 + 3 × phase` rocks                                                                                                                                                                                                                      |
+| MK2 convergence                 | `6 + 2 × phase` homing rocks                                                                                                                                                                                                               |
+| MK3 pinball cascade             | `4 + phase` bounce rocks; 0.85 s charge; 0.55 s launch cadence                                                                                                                                                                             |
+| MK3 ricochet ring               | Up to `4 + phase` rocks, limited by 10-rock cap                                                                                                                                                                                            |
+| MK4 ignition strikes            | Phase changes: 3 strikes, or 4 at phase 2. Regular ignition/proximity casts: 2, or 3 below half HP. Warning 1.35 s, then +0.3 s per strike; 62 damage to hostiles and 16 player damage within 125 px (no additional generic blast damage). |
+| MK4 boom launch                 | Up to 3 drops, reserving live and pending capacity against the six-boom cap; 1.1 s warning; 30 s lifetime.                                                                                                                                 |
+| MK5 meteor wall                 | `9 + 3 × phase` streaks over 3.6 s                                                                                                                                                                                                         |
+| MK6 shower / barrage duration   | 6.2 s each; meteors spawn every 0.34 s                                                                                                                                                                                                     |
+| MK6 meteor beam                 | 4 arms, 8 while enraged; sweep 0.24 rad/s; 9 player damage per 0.6 s contact tick                                                                                                                                                          |
+| MK6 strikes                     | 5; warnings 2.4 s then +0.5 s each; blast damage 74 and an additional 30 player damage in strike radius 150–215                                                                                                                            |
+| MK6 asteroid field              | 12 rocks at 60% of normal health; lasts 7.5 s                                                                                                                                                                                              |
+| MK6 singularity                 | Pull 420; lasts 7.5 s; radius `1.5 × larger playfield dimension`                                                                                                                                                                           |
+| MK6 singularity health          | MK3 90; MK4 160; MK5 240; MK6 330                                                                                                                                                                                                          |
+| MK6 singularity radius          | MK3 24; MK4 28; MK5 32; MK6 36                                                                                                                                                                                                             |
+| MK6 Regenesis blasts            | 3 at 1.1, 2.1, and 4.4 s; each can damage player for 28 within 390 px                                                                                                                                                                      |
+| MK6 beam sweep / player contact | 9 damage, then 0.6 s contact cooldown                                                                                                                                                                                                      |
 
 ## Stat upgrades
 
@@ -300,6 +321,7 @@ core radius (12–18 px depending on boss); leaving that core resets partial exp
 | Twin-Linked Feeder     |          1 | Rare / 0.7           | +1 projectile per projectile volley                            |
 | Sabot Rounds           |          3 | Rare / 0.7           | +1 projectile pierce                                           |
 | Targeting Optics       |          5 | Common / 1.0         | +7 percentage points critical chance; critical multiplier 2.2× |
+| Missile Rack           |          2 | Common / 1.0         | +1 rack slot and +1 lock per salvo; maximum rack 6             |
 
 ## Salvage drone
 

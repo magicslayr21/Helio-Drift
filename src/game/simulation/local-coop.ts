@@ -108,6 +108,19 @@ export class LocalCoopSimulation {
       p.supportQuietTimer ??= 0;
       p.lastCommandSequence ??= -1;
       p.reviveLockout ??= 0;
+      // Rooms checkpointed before Salvo Lock (0.7.0) adopt the new rack and blast values.
+      if (!Array.isArray(p.ship.missileLocks)) {
+        p.ship.missileLocks = [];
+        p.ship.missileHoldT = -1;
+        p.ship.missileLockT = 0;
+        p.ship.fullLockAt = -1;
+        p.ship.maxMissiles = Math.max(p.ship.maxMissiles, GAME_CONFIG.player.maxMissiles);
+        p.ship.missiles = p.ship.maxMissiles;
+        p.ship.missileRegen = GAME_CONFIG.player.missileRegen;
+        p.ship.blastDmg = GAME_CONFIG.player.blastDamage;
+        p.ship.blastR = GAME_CONFIG.player.blastRadius;
+        p.ship.missileCharge = 0;
+      }
     }
     sim.game = sim.createGame();
     if (snapshot.campaign) restoreCampaignWorld(sim.game, snapshot.campaign);

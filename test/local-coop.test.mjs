@@ -370,6 +370,9 @@ test("both pilots fire their own missiles and maintain independent drone repair 
   g.damageSalvageDrone(1);
   g.releasePilot();
   sim.stepTicks();
+  // Salvo Lock fires on release: a quick press-and-release is a tap (one missile).
+  for (const id of ["p1", "p2"]) sim.submit(input(id, 2, { missile: false }));
+  sim.stepTicks();
   for (const id of ["p1", "p2"]) {
     assert.equal(sim.state.players[id].ship.missiles, sim.state.players[id].ship.maxMissiles - 1);
     assert.ok(g.bullets.some((b) => b.kind === "missile" && b.ownerId === id));

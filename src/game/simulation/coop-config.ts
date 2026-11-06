@@ -1,3 +1,6 @@
+/** Pilot accent colours: callsigns, rings, Salvo Lock reticles and missile trails. */
+export const PILOT_ACCENTS = { p1: "#ffb03a", p2: "#6fe7ff" } as const;
+
 export const COOP_CONFIG = {
   tickRate: 30,
   snapshotRate: 15,
