@@ -57,6 +57,14 @@ export interface Player {
   missileTimer: number;
   missileRegen: number;
   missileCharge: number;
+  /** Salvo Lock: painted target ids (a target appears once per lock it holds). */
+  missileLocks: number[];
+  /** Seconds E has been held while painting; -1 when not painting. */
+  missileHoldT: number;
+  /** Countdown to the next lock while painting. */
+  missileLockT: number;
+  /** missileHoldT at the moment locks reached the rack size; -1 when not at Full Lock. */
+  fullLockAt: number;
   magnet: number;
   creditChance: number;
   creditValue: number;
@@ -207,6 +215,16 @@ export interface Bullet {
   damageCause?: string;
   /** enemy shells that detonate when they expire without hitting anything */
   blast?: number;
+  /** Salvo Lock missile payload: per-missile blast damage and radius at launch. */
+  missileDmg?: number;
+  missileR?: number;
+  /** Corkscrew flight: phase offset, normalised flight time, age and current offset. */
+  spiral?: { phase: number; flight: number; age: number; offset: number };
+  /** Released inside the Full Lock window. */
+  fullLock?: boolean;
+  /** Graze bookkeeping (bit per pilot): armed while inside the band, spent once awarded. */
+  grazeArm?: number;
+  grazed?: number;
   /** Smart turret nest fields (persistent warden nest) */
   hpNow?: number;
   spawnT?: number;
@@ -248,6 +266,9 @@ export interface Rock {
   /** boom creeper timer when player is close */
   fuse?: number;
   bounces?: number;
+  /** Graze bookkeeping (bit per pilot): armed while inside the band, spent once awarded. */
+  grazeArm?: number;
+  grazed?: number;
 }
 
 /* Sentinels hunt, wardens snipe, and spikers drift while firing radial volleys. */

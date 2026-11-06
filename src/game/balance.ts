@@ -255,6 +255,21 @@ export const STAT_UPGRADES: StatUpgrade[] = [
       );
     },
   },
+  {
+    id: "missileRack",
+    name: "Missile Rack",
+    tag: "Missiles",
+    rarity: GAME_CONFIG.statUpgrades.missileRack.rarity,
+    weight: GAME_CONFIG.statUpgrades.missileRack.weight,
+    max: GAME_CONFIG.statUpgrades.missileRack.max,
+    desc: "+1 missile rack slot and +1 lock per salvo. Loads the new slot now. Max 6.",
+    apply: (g) => {
+      const add = GAME_CONFIG.statUpgrades.missileRack.rackPerStack;
+      const before = g.p.maxMissiles;
+      g.p.maxMissiles = Math.min(GAME_CONFIG.salvo.maxRack, g.p.maxMissiles + add);
+      g.p.missiles = Math.min(g.p.maxMissiles, g.p.missiles + (g.p.maxMissiles - before));
+    },
+  },
 ];
 
 /* ------------------------------------------------------------ salvage drone */
@@ -513,6 +528,10 @@ export function freshPlayer(): Player {
     missileRegen: GAME_CONFIG.player.missileRegen,
     missileCharge: 0,
     missileHeld: false,
+    missileLocks: [],
+    missileHoldT: -1,
+    missileLockT: 0,
+    fullLockAt: -1,
     magnet: GAME_CONFIG.player.magnet,
     creditChance: GAME_CONFIG.player.creditChance,
     creditValue: GAME_CONFIG.player.creditValue,

@@ -503,7 +503,9 @@ export function MultiplayerExperience({
           onSelect={(weapon) => sendCommand({ type: "selectWeapon", weapon })}
         />
         <div className="coop-game-actions">
-          <span>WASD move · Pointer aim/fire · E missile · F hold to revive</span>
+          <span>
+            WASD move · Pointer aim/fire · E tap / hold to lock missiles · F hold to revive
+          </span>
           {teammate?.disabled && !me.disabled && (
             <strong className={reviveDistance <= 92 ? "is-close" : ""}>
               {reviveDistance <= 92

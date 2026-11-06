@@ -50,6 +50,12 @@ const MARKS: Record<string, { path: string; color: string; benefit: string }> = 
     color: "#ff7d9b",
     benefit: "+20% CRIT CHANCE",
   },
+  missileRack: {
+    // three missiles nested in a launch cradle
+    path: "M8 20V10l2-4 2 4v10M14 20V8l2-4 2 4v12M20 20V10l2-4 2 4v10M5 20h22l-2 6H7zM11 26v3M21 26v3",
+    color: "#ff5ad8",
+    benefit: "+1 MISSILE RACK",
+  },
 };
 
 export function UpgradeIcon({ id }: { id: string }) {

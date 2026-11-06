@@ -49,8 +49,8 @@ const EMPTY_HUD: Hud = {
   primary: "pulse",
   weaponLevel: 1,
   owned: [{ id: "pulse", level: 1 }],
-  missiles: 3,
-  maxMissiles: 3,
+  missiles: 4,
+  maxMissiles: 4,
   missileCharge: 1,
   heat: 0,
   comboTime: 0,
@@ -1064,17 +1064,25 @@ export default function GameShell({
             >
               Weapon
             </button>
+            {/* press-and-hold paints Salvo Lock targets; pointer capture keeps the
+                hold alive when the thumb slides off the button while steering */}
             <button
-              onPointerDown={() => {
+              onPointerDown={(event) => {
+                event.currentTarget.setPointerCapture(event.pointerId);
                 if (gameRef.current) gameRef.current.keys["e"] = true;
               }}
               onPointerUp={() => {
                 if (gameRef.current) gameRef.current.keys["e"] = false;
               }}
-              onPointerLeave={() => {
+              onPointerCancel={() => {
                 if (gameRef.current) gameRef.current.keys["e"] = false;
               }}
-              className="flex-1 border border-magenta/50 py-4 text-[10px] uppercase tracking-[0.22em] text-magenta active:bg-magenta/20"
+              onLostPointerCapture={() => {
+                if (gameRef.current) gameRef.current.keys["e"] = false;
+              }}
+              onContextMenu={(event) => event.preventDefault()}
+              aria-label="Missile: tap to fire, hold to paint locks and release to fire a salvo"
+              className="flex-1 touch-none select-none border border-magenta/50 py-4 text-[10px] uppercase tracking-[0.22em] text-magenta active:bg-magenta/20"
             >
               Missile
             </button>

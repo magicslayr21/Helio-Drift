@@ -73,11 +73,13 @@ export const GAME_CONFIG = {
     crit: 0.06,
     critMult: 2.2,
     inaccuracy: 0.045,
-    missiles: 3,
-    maxMissiles: 3,
-    missileRegen: 6.5,
-    blastDamage: 68,
-    blastRadius: 96,
+    missiles: 4,
+    maxMissiles: 4,
+    /** Passive regen: seconds per missile. Graze, kills and boss hits add the rest. */
+    missileRegen: 12,
+    /** Per-missile blast. A 4-lock salvo deals 4 × 42 = 168 in total. */
+    blastDamage: 42,
+    blastRadius: 72,
     magnet: 150,
     creditChance: 0.72,
     creditChancePerRockSize: 0.07,
@@ -87,6 +89,37 @@ export const GAME_CONFIG = {
     shipRadius: 14,
     movementDragPerFrame: 0.986,
     maxHullUpgrade: { perStack: 18, maxStacks: 3 },
+  },
+
+  /** Salvo Lock: hold E to paint targets in a nose cone, release to fire one missile per lock. */
+  salvo: {
+    coneHalfAngle: (35 * Math.PI) / 180,
+    coneRange: 700,
+    lockInterval: 0.11,
+    /** Large rocks (size 3) take up to this many locks; bosses take any number. */
+    largeRockLocks: 2,
+    tapWindow: 0.15,
+    releaseCooldown: 0.35,
+    launchSpeed: 380,
+    turn: 6.5,
+    spiralAmplitude: 38,
+    spiralFrequency: 4 * Math.PI,
+    /** Shortest flight the corkscrew is normalised against, in seconds. */
+    spiralMinFlight: 0.35,
+    fullLockWindow: 0.3,
+    fullLockDamageMultiplier: 1.25,
+    fullLockSpeedMultiplier: 1.2,
+    /** Graze band beyond the obstacle radius: ship radius 14 + 26 px. */
+    grazeShipRadius: 14,
+    grazeMargin: 26,
+    grazeCharge: 0.12,
+    killCharge: 0.03,
+    bossHitCharge: 0.005,
+    maxRack: 6,
+    crossfireWindow: 1,
+    crossfireDamageMultiplier: 1.4,
+    /** Flat shared Overdrive added per Crossfire detonation (meter maximum is 100). */
+    crossfireOverdrive: 6,
   },
 
   weaponProgression: {
@@ -266,6 +299,7 @@ export const GAME_CONFIG = {
     twin: { max: 1, rarity: "rare", weight: 0.7, extraShotsPerStack: 1 },
     pierce: { max: 4, rarity: "rare", weight: 0.7, extraPiercePerStack: 1 },
     crit: { max: 3, rarity: "rare", weight: 0.7, critPerStack: 0.2, critMultiplierPerStack: 0.1 },
+    missileRack: { max: 2, rarity: "common", weight: 1, rackPerStack: 1 },
   },
 
   salvageUpgradePrices: {

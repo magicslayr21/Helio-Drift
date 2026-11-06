@@ -1003,6 +1003,18 @@
   .coop-touch-fire {
     border-radius: 50%;
   }
+  /* Missile sits above Fire; press-and-hold paints Salvo Lock targets. */
+  .coop-touch-controls .coop-touch-missile {
+    position: absolute;
+    right: 12px;
+    bottom: 66px;
+    border-color: rgba(255, 90, 216, 0.6);
+    color: #ff5ad8;
+    font-size: 9px;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
 }
 @media (max-width: 520px) {
   .coop-room-columns {

@@ -745,7 +745,9 @@ test("critical optics caps at three rare upgrades and rebuilds without stacking 
   assert.equal(g.p.missiles, 1);
   g.devSetStack("crit", 0);
   assert.equal(g.p.critMult, 2.2);
-  for (const u of STAT_UPGRADES.filter((u) => u.rarity === "common")) assert.equal(u.max, 3);
+  // Missile Rack is the one common upgrade with two stacks (rack 4 → 6).
+  for (const u of STAT_UPGRADES.filter((u) => u.rarity === "common" && u.id !== "missileRack"))
+    assert.equal(u.max, 3);
 });
 
 function companion(g) {

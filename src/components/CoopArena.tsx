@@ -35,6 +35,7 @@ export function CoopArena({
   const aim = useRef(snapshot.state.players[playerId].ship.angle);
   const firing = useRef(false);
   const missile = useRef(false);
+  const missileTouch = useRef(false);
   const touchMove = useRef({ x: 0, y: 0 });
   const sampledAt = useRef(performance.now());
   const handlers = useRef({ send, onOverdrive, active, settings });
@@ -44,6 +45,7 @@ export function CoopArena({
     keys.current.clear();
     firing.current = false;
     missile.current = false;
+    missileTouch.current = false;
     touchMove.current = { x: 0, y: 0 };
     if (active) canvasRef.current?.focus({ preventScroll: true });
     else
@@ -90,6 +92,7 @@ export function CoopArena({
       keys.current.clear();
       firing.current = false;
       missile.current = false;
+      missileTouch.current = false;
       touchMove.current = { x: 0, y: 0 };
     };
     // Deploy's modal stops bubbling keys to protect the underlying campaign.
@@ -136,7 +139,8 @@ export function CoopArena({
           preferences.trackpad ||
           (!preferences.mouseControl && firing.current) ||
           pressed.has("Space"),
-        missile: missile.current,
+        // Held E paints Salvo Lock targets; the latch keeps a tap shorter than one sample.
+        missile: missile.current || missileTouch.current || pressed.has("KeyE"),
         interact: pressed.has("KeyF") || pressed.has("KeyR"),
       });
       sampledAt.current = performance.now();
@@ -286,6 +290,22 @@ export function CoopArena({
           onPointerCancel={() => (firing.current = false)}
         >
           Fire
+        </button>
+        <button
+          className="coop-touch-fire coop-touch-missile"
+          aria-label="Missile: tap to fire, hold to paint locks and release to fire a salvo"
+          onPointerDown={(event) => {
+            if (!handlers.current.active) return;
+            event.currentTarget.setPointerCapture(event.pointerId);
+            missileTouch.current = true;
+            missile.current = true;
+          }}
+          onPointerUp={() => (missileTouch.current = false)}
+          onPointerCancel={() => (missileTouch.current = false)}
+          onLostPointerCapture={() => (missileTouch.current = false)}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          Missile
         </button>
       </div>
     </div>

@@ -1,6 +1,6 @@
 import { Game } from "./engine";
 import { coopCamera } from "./coop-camera";
-import { COOP_CONFIG } from "./simulation/coop-config";
+import { COOP_CONFIG, PILOT_ACCENTS } from "./simulation/coop-config";
 import { THEMES } from "./balance";
 import type { CoopWireState } from "./network/wire-state";
 import type { CoopPlayerId } from "./simulation/coop-types";
@@ -150,11 +150,22 @@ export class CoopRenderer extends Game {
     this.bindView(this.localId);
   }
 
+  private viewedPilot() {
+    return Object.values(this.room!.players).find((p) => p.ship === this.p);
+  }
+  override pilotAccent() {
+    return PILOT_ACCENTS[this.viewedPilot()?.id ?? "p1"];
+  }
+  /** Only your own lock cone is drawn; your teammate's reticles still show for Crossfire. */
+  override isLocalPilot() {
+    return this.viewedPilot()?.id === this.localId;
+  }
+
   override renderPilot(ctx: CanvasRenderingContext2D) {
     super.renderPilot(ctx);
-    const pilot = Object.values(this.room!.players).find((p) => p.ship === this.p)!;
+    const pilot = this.viewedPilot()!;
     ctx.save();
-    ctx.strokeStyle = pilot.disabled ? "#ff3d6e" : pilot.id === "p1" ? "#ffb03a" : "#6fe7ff";
+    ctx.strokeStyle = pilot.disabled ? "#ff3d6e" : PILOT_ACCENTS[pilot.id];
     ctx.fillStyle = ctx.strokeStyle;
     ctx.font = "11px monospace";
     ctx.textAlign = "center";

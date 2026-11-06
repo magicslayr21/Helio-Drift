@@ -1,5 +1,48 @@
 export const UPDATE_LOG = [
   {
+    version: "0.7.0-alpha.1",
+    date: "2026-11-06",
+    title: "Salvo lock",
+    sections: [
+      {
+        title: "MISSILES",
+        items: [
+          "Hold E to open a 70° lock cone from the nose and paint targets, one lock every 0.11 s; release to fire one missile per lock.",
+          "Large rocks take up to 2 locks, bosses take any number, and locks never exceed the missiles in your rack. Locks stay on targets that leave the cone and drop when a target dies.",
+          "Salvo missiles launch broadside, alternating sides, and corkscrew into their targets. A quick tap still fires one missile at the nearest target.",
+          "Full Lock: when every loaded missile is locked the reticles turn white. Release within 0.3 s for ×1.25 damage, +20% missile speed and a white flash.",
+          "Each missile now deals 42 damage in a 72 radius, so a full 4-missile salvo deals 168.",
+        ],
+      },
+      {
+        title: "CHARGE",
+        items: [
+          "The rack starts at 4 missiles. Passive regen is now one missile every 12 s.",
+          "Graze: a rock or enemy shot that passes within 26 px of your hull without hitting adds 12% of a missile. Each object grazes once.",
+          "Kills add 3% charge and main-weapon hits on bosses add 0.5%.",
+          "New common upgrade, Missile Rack: +1 rack slot and +1 lock per stack, 2 stacks, up to 6.",
+        ],
+      },
+      {
+        title: "VISUALS",
+        items: [
+          "New Heliodart missile: swept fins, canards, a pulsing lock beacon, a white-hot seeker cap, a flickering two-stage plume and a tapered ribbon trail that shows the corkscrew.",
+          "Lock cone with a sweeping scan line, rotating lock reticles with one pip per lock, and a white arc that drains through the Full Lock window.",
+          "A segmented charge ring around the ship shows each rack slot loading.",
+          "Missile blasts have a white-hot core, a coloured shockwave, a trailing pressure ring and streaking sparks.",
+        ],
+      },
+      {
+        title: "CO-OP",
+        items: [
+          "Locks, missiles and trails use each pilot's accent colour. Only your own lock cone is drawn; your teammate's reticles stay visible.",
+          "Crossfire: when both pilots' missiles hit the same target within 1 s, the second blast deals ×1.4 damage and adds to shared Overdrive.",
+          "Holding E or the on-screen Missile button now paints locks in online co-op.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.6.7-alpha.1",
     date: "2026-11-04",
     title: "Specialist refit",

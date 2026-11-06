@@ -165,6 +165,13 @@ export class RunSave {
       if (state?.p && state.p.rangeMul === undefined)
         state.p.rangeMul = 1 + Math.min(3, Math.max(0, state.stacks?.range ?? 0)) * (0.4 / 3);
       if (state && state.campaignTethers === undefined) state.campaignTethers = [];
+      // Salvo Lock (0.7.0) painting state is transient: older saves start with no locks.
+      if (state?.p) {
+        state.p.missileLocks = Array.isArray(state.p.missileLocks) ? state.p.missileLocks : [];
+        state.p.missileHoldT ??= -1;
+        state.p.missileLockT ??= 0;
+        state.p.fullLockAt ??= -1;
+      }
       // New modules default to unpurchased in saves from earlier alpha releases.
       if (state?.salvageDrone?.upgrades && state.salvageDrone.upgrades.shield === undefined)
         state.salvageDrone.upgrades.shield = 0;
@@ -221,8 +228,14 @@ export class RunSave {
           0,
           Math.min(SALVAGE_UPGRADES[id].max, Math.floor(game.salvageDrone.upgrades[id])),
         );
-      if (!saved.balanceVersion) {
+      if ((saved.balanceVersion ?? 0) < 2) {
+        // 0.7.0 Salvo Lock: a 4-missile rack, 12 s regen and 42 / 72 per-missile blasts.
+        // Rebuilding from stacks applies the new base values; the rack is topped up.
         game.rebuildStatUpgrades();
+        game.p.missiles = game.p.maxMissiles;
+        game.p.missileCharge = 0;
+      }
+      if (!saved.balanceVersion) {
         for (const rock of game.rocks) {
           if (rock.trait === "fast") {
             rock.hp *= 1.2;
@@ -266,6 +279,7 @@ export class RunSave {
           };
       game.p.beamOn = false;
       game.p.missileHeld = false;
+      game.clearMissileLock();
       game.p.thrusting = false;
       game.salvageDrone.devCount = 1;
       game.salvageDrone.beamOn = false;
@@ -309,7 +323,7 @@ export class RunSave {
         KEY,
         JSON.stringify({
           version: 1,
-          balanceVersion: 1,
+          balanceVersion: 2,
           id: this.id,
           state,
           leaderboard: game.leaderboardRun,

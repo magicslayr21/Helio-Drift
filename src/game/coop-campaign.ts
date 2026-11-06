@@ -1,5 +1,5 @@
 import { Game, SILENT_GAME_SOUND } from "./engine";
-import { COOP_CONFIG } from "./simulation/coop-config";
+import { COOP_CONFIG, PILOT_ACCENTS } from "./simulation/coop-config";
 import { RUN_PACING } from "./simulation/campaign";
 import { GAME_CONFIG } from "./game-config";
 import type { CoopEvent, CoopMatchState, CoopPlayerId } from "./simulation/coop-types";
@@ -407,6 +407,17 @@ export class CoopCampaign extends Game {
   }
   override specialPilotId() {
     return this.activeId;
+  }
+  override pilotAccent() {
+    return PILOT_ACCENTS[this.activeId];
+  }
+  /** Crossfire: both pilots' missiles on one target within the window feed shared Overdrive. */
+  override crossfireBonus() {
+    if (this.match.team.overdriveRemaining > 0) return;
+    this.match.team.overdrive = Math.min(
+      COOP_CONFIG.overdrive.maximum,
+      this.match.team.overdrive + GAME_CONFIG.salvo.crossfireOverdrive,
+    );
   }
   override specialTethers() {
     return this.match.tethers;

@@ -133,6 +133,16 @@ export class Game {
   }
   selectTarget(_x: number, _y: number) {}
   selectBulletPilot(_bullet: Bullet) {}
+  /** Salvo Lock colour for the bound pilot: magenta solo, the pilot's accent in co-op. */
+  pilotAccent(): string {
+    return MAGENTA;
+  }
+  /** Whether the bound pilot is the one this screen belongs to (draws the lock cone). */
+  isLocalPilot(): boolean {
+    return true;
+  }
+  /** Co-op adds Crossfire charge to shared Overdrive; the solo campaign has no meter. */
+  crossfireBonus() {}
   campaignTethers: CoopTetherState[] = [];
   specialPilots() {
     return [{ id: "p1" as CoopPlayerId, ship: this.p, disabled: false }];
@@ -395,6 +405,14 @@ export class Game {
   }
   timeScale = 1;
   flashAlpha = 0;
+  /** Full Lock salvo: a short white screen flash, separate from the warm damage flash. */
+  salvoFlash = 0;
+  /** Simulation seconds; times Crossfire windows. */
+  missileClock = 0;
+  /** Last missile detonation per target id (Crossfire bookkeeping). */
+  missileMarks: Record<number, { owner: string; at: number }> = {};
+  /** Presentation-only missile trails keyed by bullet id (or object offline). */
+  missileTrails = new Map<unknown, { x: number; y: number }[]>();
   banner = "";
   bannerSub = "";
   bannerT = 0;
@@ -1302,26 +1320,10 @@ export class Game {
       this.fire();
     }
 
-    // missiles: edge-triggered, regenerating
-    const missileKey = !!k["e"];
-    if (
-      missileKey &&
-      !p.missileHeld &&
-      p.missiles > 0 &&
-      p.missileTimer <= 0 &&
-      this.mode === "playing"
-    )
-      this.fireMissile();
-    p.missileHeld = missileKey;
-    if (p.missiles < p.maxMissiles) {
-      p.missileCharge += dt;
-      if (p.missileCharge >= p.missileRegen) {
-        p.missileCharge = 0;
-        p.missiles++;
-        this.sound.play("pickup");
-        this.floatText(p.x, p.y - 34, "MISSILE READY", MAGENTA, 12);
-      }
-    } else p.missileCharge = 0;
+    // missiles: hold E to paint locks, release to fire the salvo; tap for one missile
+    this.updateMissileLock(dt, !!k["e"]);
+    if (p.missiles < p.maxMissiles) this.addMissileCharge(dt / p.missileRegen);
+    else p.missileCharge = 0;
 
     this.comboTimer -= dt;
     if (this.comboTimer <= 0) this.combo = 0;
@@ -1329,6 +1331,8 @@ export class Game {
 
   update(dt: number) {
     if (this.bannerT > 0) this.bannerT -= dt;
+    this.missileClock += dt;
+    this.salvoFlash = Math.max(0, this.salvoFlash - dt * 4);
     this.forEachPilot(() => this.updatePilot(dt));
     // ---- meteor shower event ----
     this.updateShower(dt);
@@ -2595,7 +2599,11 @@ export class Game {
         const f = (s - 1) / steps;
         if (Math.hypot(p.x - p.vx * dt * f - r.x, p.y - p.vy * dt * f - r.y) < hitR) hit = true;
       }
-      if (!hit) continue;
+      if (!hit) {
+        this.checkGraze(r, Math.hypot(p.x - r.x, p.y - r.y), r.r);
+        continue;
+      }
+      this.spendGraze(r);
 
       const d = Math.hypot(p.x - r.x, p.y - r.y) || 1;
       const nx = (p.x - r.x) / d,
@@ -2792,14 +2800,17 @@ export class Game {
   impact(b: Bullet, kind: "rock" | "drone" | "boss", idx: number, id: number): boolean {
     const p = this.p;
     if (b.kind === "missile") {
-      this.explode(b.x, b.y, p.blastR, p.blastDmg);
+      this.detonateMissile(b);
       return true;
     }
     const crit = this.random() < p.crit;
     const dmg = b.dmg * (crit ? p.critMult : 1);
     if (kind === "rock") this.hitRock(idx, dmg, b.vx, b.vy, crit);
     else if (kind === "drone") this.damageDrone(idx, dmg, crit);
-    else this.damageBoss(dmg, crit);
+    else {
+      this.damageBoss(dmg, crit);
+      this.addMissileCharge(GAME_CONFIG.salvo.bossHitCharge);
+    }
     if (p.leech > 0) p.hull = Math.min(p.maxHull, p.hull + dmg * p.leech);
     if (b.kind === "flak") {
       this.detonateFlak(b);
@@ -2930,6 +2941,7 @@ export class Game {
       }
       b.x += b.vx * dt;
       b.y += b.vy * dt;
+      if (b.kind === "missile") this.spiralMissile(b, dt);
       b.life -= dt;
 
       if (b.kind === "ricochet") {
@@ -2969,13 +2981,13 @@ export class Game {
       } else {
         const m = 60;
         if (b.x < -m || b.x > w + m || b.y < -m || b.y > h + m) {
-          if (b.kind === "missile") this.explode(b.x, b.y, p.blastR, p.blastDmg);
+          if (b.kind === "missile") this.detonateMissile(b);
           this.bullets.splice(i, 1);
           continue;
         }
       }
       if (b.life <= 0) {
-        if (b.kind === "missile") this.explode(b.x, b.y, p.blastR, p.blastDmg);
+        if (b.kind === "missile") this.detonateMissile(b);
         if (b.kind === "flak") this.detonateFlak(b);
         // a warden shell that found nothing still goes off where it died
         if (b.blast) this.enemyBlast(b.x, b.y, b.blast, b.dmg * 0.6, b.damageCause);
@@ -3010,7 +3022,9 @@ export class Game {
           this.bullets.splice(i, 1);
           continue;
         }
-        if (Math.hypot(b.x - p.x, b.y - p.y) < b.r + 15) {
+        const shotDistance = Math.hypot(b.x - p.x, b.y - p.y);
+        if (shotDistance >= b.r + 15) this.checkGraze(b, shotDistance, b.r);
+        else {
           this.damagePlayer(
             b.dmg,
             b.damageCause ??
@@ -3047,7 +3061,7 @@ export class Game {
             const dmg = b.dmg * (crit ? p.critMult : 1);
             this.damageHole(dmg, crit);
             if (b.kind === "missile") {
-              this.explode(b.x, b.y, p.blastR, p.blastDmg);
+              this.detonateMissile(b);
               this.bullets.splice(i, 1);
               continue;
             }
@@ -3425,6 +3439,7 @@ export class Game {
     if (this.boss) {
       if (this.boss.id === id) {
         this.damageBoss(real, crit);
+        this.addMissileCharge(GAME_CONFIG.salvo.bossHitCharge);
         return;
       }
       if (this.boss.hole && this.boss.hole.id === id) {
@@ -3442,35 +3457,283 @@ export class Game {
     if (this.p.leech > 0) this.p.hull = Math.min(this.p.maxHull, this.p.hull + real * this.p.leech);
   }
 
-  fireMissile() {
+  /* ------------------------------------------------------------ salvo lock */
+
+  /** How many locks one target can carry: big rocks 2, bosses unlimited, everything else 1. */
+  lockCapacity(t: Hostile): number {
+    if (this.boss && (t.id === this.boss.id || t.id === this.boss.hole?.id)) return Infinity;
+    const rock = this.rocks.find((r) => r.id === t.id);
+    if (rock) return rock.size === 3 ? GAME_CONFIG.salvo.largeRockLocks : 1;
+    return 1;
+  }
+
+  /** Is the target inside the bound pilot's lock cone? */
+  inLockCone(t: Hostile): boolean {
     const p = this.p;
-    p.missiles--;
-    p.missileTimer = 0.35;
-    const lock = this.nearestTarget(p.x, p.y, 900 * (p.rangeMul ?? 1));
-    const a = lock ? Math.atan2(lock.y - p.y, lock.x - p.x) : this.assistAngle(p.angle);
-    // launch along the ship's nose but bend hard toward the lock straight away
-    const la = p.angle + clamp(wrapAngle(a - p.angle), -0.6, 0.6);
-    this.addBullet({
-      x: p.x,
-      y: p.y,
-      vx: Math.cos(la) * 380,
-      vy: Math.sin(la) * 380,
+    const cfg = GAME_CONFIG.salvo;
+    const d = Math.hypot(t.x - p.x, t.y - p.y);
+    if (d - t.r > cfg.coneRange * (p.rangeMul ?? 1)) return false;
+    // A big target counts once its rim crosses the cone edge, not only its centre.
+    const rim = d > t.r ? Math.asin(clamp(t.r / d, 0, 1)) * 0.5 : Math.PI;
+    return (
+      Math.abs(wrapAngle(Math.atan2(t.y - p.y, t.x - p.x) - p.angle)) <= cfg.coneHalfAngle + rim
+    );
+  }
+
+  /** The next target to paint: fewest existing locks first, then the closest. */
+  pickLockTarget(): Hostile | undefined {
+    const p = this.p;
+    let best: Hostile | undefined;
+    let bestScore = Infinity;
+    for (const t of this.hostiles()) {
+      const held = p.missileLocks.filter((id) => id === t.id).length;
+      if (held >= this.lockCapacity(t) || !this.inLockCone(t)) continue;
+      const score = held * 10000 + Math.hypot(t.x - p.x, t.y - p.y) - t.r;
+      if (score < bestScore) {
+        bestScore = score;
+        best = t;
+      }
+    }
+    return best;
+  }
+
+  /** Called every pilot update with whether E is currently down. */
+  updateMissileLock(dt: number, key: boolean) {
+    const p = this.p;
+    const cfg = GAME_CONFIG.salvo;
+    const playing = this.mode === "playing";
+    if (key && !p.missileHeld && playing) {
+      p.missileHoldT = 0;
+      p.missileLocks = [];
+      p.missileLockT = cfg.lockInterval;
+      p.fullLockAt = -1;
+    }
+    p.missileHeld = key;
+    if (p.missileHoldT < 0) return;
+    if (!playing) {
+      this.clearMissileLock();
+      return;
+    }
+    // Locks on dead targets drop; the rack is the hard ceiling on locks.
+    p.missileLocks = p.missileLocks.filter((id) => this.findTarget(id)).slice(0, p.missiles);
+    if (key) {
+      p.missileHoldT += dt;
+      p.missileLockT -= dt;
+      if (p.missileLockT <= 0 && p.missileLocks.length < p.missiles) {
+        const t = this.pickLockTarget();
+        if (t) {
+          p.missileLocks.push(t.id);
+          p.missileLockT += cfg.lockInterval;
+          if (p.missileLockT <= 0) p.missileLockT = cfg.lockInterval;
+          this.sound.play("lock");
+        } else p.missileLockT = 0;
+      }
+      const full = p.missiles > 0 && p.missileLocks.length >= p.missiles;
+      if (full && p.fullLockAt < 0) {
+        p.fullLockAt = p.missileHoldT;
+        this.sound.play("fullLock");
+      } else if (!full) p.fullLockAt = -1;
+      return;
+    }
+    // released
+    const held = p.missileHoldT;
+    const locks = p.missileLocks.slice();
+    const fullLock =
+      locks.length > 0 && p.fullLockAt >= 0 && held - p.fullLockAt <= cfg.fullLockWindow;
+    this.clearMissileLock();
+    if (p.missiles <= 0 || p.missileTimer > 0) return;
+    const tap = held < cfg.tapWindow && locks.length <= 1;
+    if (tap || locks.length === 0) this.fireMissile();
+    else this.releaseSalvo(locks, fullLock);
+  }
+
+  clearMissileLock() {
+    const p = this.p;
+    p.missileHoldT = -1;
+    p.missileLocks = [];
+    p.missileLockT = 0;
+    p.fullLockAt = -1;
+  }
+
+  /** Add a fraction of one missile's charge; overflow carries into the next slot. */
+  addMissileCharge(fraction: number) {
+    const p = this.p;
+    if (p.missiles >= p.maxMissiles || !(fraction > 0)) return;
+    p.missileCharge += fraction * p.missileRegen;
+    while (p.missileCharge >= p.missileRegen && p.missiles < p.maxMissiles) {
+      p.missileCharge -= p.missileRegen;
+      p.missiles++;
+      this.sound.play("pickup");
+      this.floatText(p.x, p.y - 34, "MISSILE READY", this.pilotAccent(), 12);
+    }
+    if (p.missiles >= p.maxMissiles) p.missileCharge = 0;
+  }
+
+  /** Graze: an obstacle that enters the band around the ship and leaves without a hit. */
+  checkGraze(obj: { grazeArm?: number; grazed?: number }, distance: number, radius: number) {
+    const bit = this.specialPilotId() === "p2" ? 2 : 1;
+    if ((obj.grazed ?? 0) & bit) return;
+    const cfg = GAME_CONFIG.salvo;
+    if (distance < radius + cfg.grazeShipRadius + cfg.grazeMargin) {
+      obj.grazeArm = (obj.grazeArm ?? 0) | bit;
+      return;
+    }
+    if (!((obj.grazeArm ?? 0) & bit)) return;
+    obj.grazed = (obj.grazed ?? 0) | bit;
+    if (this.p.hull <= 0) return;
+    this.addMissileCharge(cfg.grazeCharge);
+    this.sound.play("graze");
+    this.floatText(this.p.x, this.p.y + 30, "GRAZE", this.pilotAccent(), 10);
+  }
+
+  /** A collision spends the graze: the obstacle hit the pilot, so it never pays out. */
+  spendGraze(obj: { grazed?: number }) {
+    obj.grazed = (obj.grazed ?? 0) | (this.specialPilotId() === "p2" ? 2 : 1);
+  }
+
+  /** Spawn one Salvo Lock missile. */
+  launchMissile(opts: {
+    angle: number;
+    target?: number;
+    phase?: number;
+    flight?: number;
+    fullLock?: boolean;
+    speedMul?: number;
+    dmgMul?: number;
+    offset?: number;
+  }) {
+    const p = this.p;
+    const cfg = GAME_CONFIG.salvo;
+    const speed = cfg.launchSpeed * (opts.speedMul ?? 1);
+    const o = opts.offset ?? 0;
+    const missile: Bullet = {
+      x: p.x + Math.cos(opts.angle) * o,
+      y: p.y + Math.sin(opts.angle) * o,
+      vx: Math.cos(opts.angle) * speed,
+      vy: Math.sin(opts.angle) * speed,
       r: 7,
       life: 4.5 * (p.rangeMul ?? 1),
       dmg: 0,
       kind: "missile",
       pierce: 0,
-      color: MAGENTA,
+      color: this.pilotAccent(),
       hitIds: new Set(),
-      target: lock?.id,
-      turn: 6.5,
+      target: opts.target,
+      turn: cfg.turn,
       bounces: 0,
       fuse: 0,
       extra: 0,
       extraDmg: 0,
-    });
+      missileDmg: p.blastDmg * (opts.dmgMul ?? 1),
+      missileR: p.blastR,
+    };
+    if (opts.phase !== undefined) {
+      const flight = Math.max(cfg.spiralMinFlight, opts.flight ?? cfg.spiralMinFlight);
+      missile.spiral = {
+        phase: opts.phase,
+        flight,
+        age: 0,
+        offset: Math.sin(opts.phase) * cfg.spiralAmplitude,
+      };
+    }
+    if (opts.fullLock) missile.fullLock = true;
+    this.addBullet(missile);
+    return missile;
+  }
+
+  /** Release: one missile per lock, launched broadside and alternating sides. */
+  releaseSalvo(locks: number[], fullLock: boolean) {
+    const p = this.p;
+    const cfg = GAME_CONFIG.salvo;
+    const n = Math.min(locks.length, p.missiles);
+    const speedMul = fullLock ? cfg.fullLockSpeedMultiplier : 1;
+    for (let i = 0; i < n; i++) {
+      const side = i % 2 === 0 ? 1 : -1;
+      const t = this.findTarget(locks[i]);
+      const speed = cfg.launchSpeed * speedMul;
+      const flight = t ? Math.hypot(t.x - p.x, t.y - p.y) / speed + 0.25 : 1;
+      this.launchMissile({
+        angle: p.angle + (side * Math.PI) / 2,
+        target: locks[i],
+        // pairs leave together; each pair's corkscrew is a quarter turn behind the last
+        phase: (side > 0 ? 0 : Math.PI) + Math.floor(i / 2) * (Math.PI / 2),
+        flight,
+        fullLock,
+        speedMul,
+        dmgMul: fullLock ? cfg.fullLockDamageMultiplier : 1,
+        // later pairs launch a little further out so they never stack on the first pair
+        offset: 10 + Math.floor(i / 2) * 9,
+      });
+    }
+    p.missiles -= n;
+    p.missileTimer = cfg.releaseCooldown;
+    this.shake += 3 + n * 1.5;
+    this.sound.play("missile");
+    if (fullLock) {
+      this.salvoFlash = Math.max(this.salvoFlash, 0.55);
+      this.floatText(p.x, p.y - 40, "FULL LOCK", "#ffffff", 14);
+      this.rings.push({ x: p.x, y: p.y, r: 18, max: 90, life: 0.35, color: "#ffffff", w: 2 });
+    }
+  }
+
+  /** Tap: one missile at the nearest target, launched along the nose as before. */
+  fireMissile() {
+    const p = this.p;
+    p.missiles--;
+    p.missileTimer = GAME_CONFIG.salvo.releaseCooldown;
+    const lock = this.nearestTarget(p.x, p.y, 900 * (p.rangeMul ?? 1));
+    const a = lock ? Math.atan2(lock.y - p.y, lock.x - p.x) : this.assistAngle(p.angle);
+    // launch along the ship's nose but bend hard toward the lock straight away
+    const la = p.angle + clamp(wrapAngle(a - p.angle), -0.6, 0.6);
+    this.launchMissile({ angle: la, target: lock?.id });
     this.shake += 4;
     this.sound.play("missile");
+  }
+
+  /** Corkscrew: a decaying sine offset perpendicular to the guided velocity. */
+  spiralMissile(b: Bullet, dt: number) {
+    const s = b.spiral;
+    if (!s) return;
+    const cfg = GAME_CONFIG.salvo;
+    s.age += dt;
+    const t = clamp(s.age / s.flight, 0, 1);
+    const offset = Math.sin(t * cfg.spiralFrequency + s.phase) * cfg.spiralAmplitude * (1 - t);
+    const delta = offset - s.offset;
+    s.offset = offset;
+    const spd = Math.hypot(b.vx, b.vy) || 1;
+    b.x += (-b.vy / spd) * delta;
+    b.y += (b.vx / spd) * delta;
+  }
+
+  /** Every missile detonation goes through here: Crossfire, then the blast. */
+  detonateMissile(b: Bullet) {
+    const p = this.p;
+    const cfg = GAME_CONFIG.salvo;
+    let dmg = b.missileDmg ?? p.blastDmg;
+    const radius = b.missileR ?? p.blastR;
+    let crossfire = false;
+    if (this.cooperative && b.target != null) {
+      const owner = b.ownerId ?? this.specialPilotId();
+      const t = this.findTarget(b.target);
+      if (t && Math.hypot(t.x - b.x, t.y - b.y) < radius + t.r) {
+        const mark = this.missileMarks[b.target];
+        if (mark && mark.owner !== owner && this.missileClock - mark.at <= cfg.crossfireWindow) {
+          crossfire = true;
+          dmg *= cfg.crossfireDamageMultiplier;
+          this.crossfireBonus();
+          this.floatText(b.x, b.y - 24, "CROSSFIRE", "#ffffff", 14);
+        }
+        this.missileMarks[b.target] = { owner, at: this.missileClock };
+      }
+      for (const id of Object.keys(this.missileMarks))
+        if (this.missileClock - this.missileMarks[+id].at > cfg.crossfireWindow)
+          delete this.missileMarks[+id];
+    }
+    this.explode(b.x, b.y, radius, dmg, "Missile blast", undefined, {
+      color: b.color,
+      fullLock: b.fullLock,
+      crossfire,
+    });
   }
 
   hitRock(index: number, dmg: number, vx: number, vy: number, crit: boolean) {
@@ -3571,6 +3834,7 @@ export class Game {
     this.rocks.splice(index, 1);
     this.combo++;
     this.comboTimer = 4;
+    this.addMissileCharge(GAME_CONFIG.salvo.killCharge);
 
     // meteorites: cheap to kill, rich to salvage, never split
     if (r.trait === "meteorite") {
@@ -3766,6 +4030,7 @@ export class Game {
     this.gainXp((heavy ? 120 : 60) * this.xpScale());
     this.combo++;
     this.comboTimer = 4;
+    this.addMissileCharge(GAME_CONFIG.salvo.killCharge);
   }
 
   /**
@@ -3960,11 +4225,15 @@ export class Game {
     dmg: number,
     cause = "Missile blast",
     playerDamage: number = GAME_CONFIG.asteroids.genericExplosionPlayerDamage,
+    style?: { color?: string; fullLock?: boolean; crossfire?: boolean },
   ) {
-    this.rings.push({ x, y, r: 8, max: radius * 1.6, life: 0.55, color: MAGENTA, w: 3 });
-    this.burst(x, y, 26, MAGENTA);
+    if (style) this.missileBlastFx(x, y, radius, style);
+    else {
+      this.rings.push({ x, y, r: 8, max: radius * 1.6, life: 0.55, color: MAGENTA, w: 3 });
+      this.burst(x, y, 26, MAGENTA);
+      this.shake += 10;
+    }
     this.sound.play("explodeBig");
-    this.shake += 10;
     const rockIds = this.rocks
       .filter((r) => Math.hypot(r.x - x, r.y - y) < radius + r.r)
       .map((r) => r.id);
@@ -4005,6 +4274,47 @@ export class Game {
         this.damagePlayer(playerDamage, cause);
       this.timeScale = GAME_CONFIG.simulation.explosionTimeScale;
     });
+  }
+
+  /**
+   * Salvo Lock detonation: a white-hot core flash, the pilot-coloured shockwave,
+   * a thin trailing pressure ring and a spray of streaking sparks. Full Lock
+   * blasts add a white halo; Crossfire adds a second, counter-coloured ring.
+   */
+  missileBlastFx(
+    x: number,
+    y: number,
+    radius: number,
+    style: { color?: string; fullLock?: boolean; crossfire?: boolean },
+  ) {
+    const color = style.color ?? MAGENTA;
+    this.rings.push({ x, y, r: 2, max: radius * 0.55, life: 0.16, color: "#ffffff", w: 6 });
+    this.rings.push({ x, y, r: 6, max: radius * 1.35, life: 0.42, color, w: 3.5 });
+    this.rings.push({ x, y, r: 4, max: radius * 1.85, life: 0.6, color, w: 1 });
+    if (style.fullLock)
+      this.rings.push({ x, y, r: 10, max: radius * 1.15, life: 0.3, color: "#ffffff", w: 1.2 });
+    if (style.crossfire) {
+      this.rings.push({ x, y, r: 10, max: radius * 2.2, life: 0.7, color: "#ffffff", w: 2.5 });
+      this.rings.push({ x, y, r: 6, max: radius * 1.9, life: 0.6, color: AMBER_HOT, w: 2 });
+    }
+    // streaking sparks: fast, low-drag, flung radially
+    for (let i = 0; i < 14 && this.particles.length < 700; i++) {
+      const a = this.random() * TAU;
+      const v = this.rnd(220, 480);
+      this.particles.push({
+        x,
+        y,
+        vx: Math.cos(a) * v,
+        vy: Math.sin(a) * v,
+        life: this.rnd(0.22, 0.4),
+        max: 0.4,
+        size: this.rnd(1.6, 2.6),
+        color: i % 3 === 0 ? "#ffffff" : color,
+        drag: 0.9,
+      });
+    }
+    this.burst(x, y, 12, color);
+    this.shake += 6;
   }
 
   /* ------------------------------------------------------------ waves */
@@ -6257,6 +6567,7 @@ export class Game {
     else this.gainXp(xpGain);
     this.combo++;
     this.comboTimer = 4;
+    this.addMissileCharge(GAME_CONFIG.salvo.killCharge);
     for (let i = 0; i < 5; i++) {
       this.rings.push({
         x: b.x + this.rnd(-b.r * 0.4, b.r * 0.4),
@@ -6715,6 +7026,344 @@ export class Game {
     ctx.restore();
   }
 
+  /* ------------------------------------------------------------ salvo lock render */
+
+  /**
+   * Segmented charge ring around the ship: one arc per rack slot. Loaded slots
+   * glow in the pilot's accent, the charging slot fills clockwise, empty slots
+   * are ghosted. The ring brightens while painting so the lock budget is legible.
+   */
+  renderMissileRing(ctx: CanvasRenderingContext2D, color: string) {
+    const p = this.p;
+    const slots = Math.max(1, p.maxMissiles);
+    const painting = p.missileHoldT >= 0;
+    const full = p.missiles >= p.maxMissiles;
+    const radius = 31;
+    const gap = 0.16;
+    const span = TAU / slots;
+    const charge = full ? 0 : clamp(p.missileCharge / p.missileRegen, 0, 1);
+    // the ring starts at the stern and runs clockwise so it never hides the nose
+    const base = p.angle + Math.PI - span * slots * 0.5;
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.globalAlpha = painting ? 1 : full ? 0.32 : 0.6;
+    for (let i = 0; i < slots; i++) {
+      const a0 = base + i * span + gap * 0.5;
+      const a1 = base + (i + 1) * span - gap * 0.5;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, radius, a0, a1);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "rgba(255,255,255,0.12)";
+      ctx.stroke();
+      const fill = i < p.missiles ? 1 : i === p.missiles ? charge : 0;
+      if (fill <= 0) continue;
+      const locked = painting && i < p.missileLocks.length;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, radius, a0, a0 + (a1 - a0) * fill);
+      ctx.lineWidth = locked ? 3.4 : 2.4;
+      ctx.strokeStyle = locked ? "#ffffff" : color;
+      ctx.shadowBlur = fill >= 1 ? 10 : 0;
+      ctx.shadowColor = color;
+      ctx.globalAlpha = (painting ? 1 : full ? 0.32 : 0.6) * (fill >= 1 ? 1 : 0.55);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = painting ? 1 : full ? 0.32 : 0.6;
+    }
+    ctx.restore();
+  }
+
+  /**
+   * The lock cone: a soft fan from the nose with a scan line sweeping across it,
+   * range ticks, and, at Full Lock, a white arc that drains over the release window.
+   */
+  renderLockCone(ctx: CanvasRenderingContext2D, color: string) {
+    const p = this.p;
+    const cfg = GAME_CONFIG.salvo;
+    const range = cfg.coneRange * (p.rangeMul ?? 1);
+    const half = cfg.coneHalfAngle;
+    const grow = clamp(p.missileHoldT / 0.12, 0, 1);
+    const r = range * (0.35 + 0.65 * grow);
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.angle);
+    const fan = ctx.createRadialGradient(0, 0, 18, 0, 0, r);
+    fan.addColorStop(0, `${color}00`);
+    fan.addColorStop(0.25, `${color}22`);
+    fan.addColorStop(1, `${color}05`);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.arc(0, 0, r, -half, half);
+    ctx.closePath();
+    ctx.fillStyle = fan;
+    ctx.fill();
+    // edges
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = 0.5;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 7]);
+    for (const s of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(half * s) * 26, Math.sin(half * s) * 26);
+      ctx.lineTo(Math.cos(half * s) * r, Math.sin(half * s) * r);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    // range ticks every third of the cone
+    ctx.globalAlpha = 0.28;
+    for (let k = 1; k <= 3; k++) {
+      ctx.beginPath();
+      ctx.arc(0, 0, (r * k) / 3, -half, half);
+      ctx.stroke();
+    }
+    // sweeping scan line, ping-ponging across the cone
+    const sweep = Math.sin(p.missileHoldT * 7) * half;
+    const scan = ctx.createLinearGradient(0, 0, Math.cos(sweep) * r, Math.sin(sweep) * r);
+    scan.addColorStop(0, `${color}00`);
+    scan.addColorStop(1, color);
+    ctx.globalAlpha = 0.75;
+    ctx.strokeStyle = scan;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(Math.cos(sweep) * r, Math.sin(sweep) * r);
+    ctx.stroke();
+    ctx.restore();
+
+    // Full Lock window: a bright arc around the ship that drains as the bonus expires
+    if (p.fullLockAt >= 0) {
+      const left = 1 - clamp((p.missileHoldT - p.fullLockAt) / cfg.fullLockWindow, 0, 1);
+      ctx.save();
+      ctx.lineCap = "round";
+      if (left > 0) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 40, p.angle - Math.PI * left, p.angle + Math.PI * left);
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2.5;
+        ctx.shadowBlur = 16;
+        ctx.shadowColor = "#ffffff";
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+
+  /**
+   * Lock reticles: four rotating chevrons that close in on the target, one pip
+   * per lock it holds, and (for your own ship) a faint tether back to the nose.
+   * Full Lock turns every reticle white and makes it pulse.
+   */
+  renderLockReticles(ctx: CanvasRenderingContext2D, color: string, own: boolean) {
+    const p = this.p;
+    if (!p.missileLocks.length) return;
+    const counts = new Map<number, number>();
+    for (const id of p.missileLocks) counts.set(id, (counts.get(id) ?? 0) + 1);
+    const full = p.fullLockAt >= 0;
+    const tint = full ? "#ffffff" : color;
+    const pulse = full ? 1 + Math.sin(this.frame * 0.6) * 0.12 : 1;
+    ctx.save();
+    for (const [id, n] of counts) {
+      const t = this.findTarget(id);
+      if (!t) continue;
+      const rr = (Math.min(t.r, 90) + 12) * pulse;
+      ctx.save();
+      if (own) {
+        ctx.globalAlpha = 0.22;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 6]);
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(t.x, t.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      ctx.globalAlpha = 0.95;
+      ctx.translate(t.x, t.y);
+      ctx.rotate(this.frame * 0.05 + id);
+      ctx.strokeStyle = tint;
+      ctx.lineWidth = 2;
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = tint;
+      for (let q = 0; q < 4; q++) {
+        ctx.rotate(Math.PI / 2);
+        ctx.beginPath();
+        ctx.moveTo(rr - 7, -6);
+        ctx.lineTo(rr, 0);
+        ctx.lineTo(rr - 7, 6);
+        ctx.stroke();
+      }
+      ctx.restore();
+      // lock pips under the reticle
+      ctx.fillStyle = tint;
+      ctx.shadowBlur = 6;
+      ctx.shadowColor = tint;
+      const shown = Math.min(n, 8);
+      for (let k = 0; k < shown; k++) {
+        const px = t.x + (k - (shown - 1) / 2) * 7;
+        ctx.beginPath();
+        ctx.moveTo(px, t.y + rr + 4);
+        ctx.lineTo(px + 2.6, t.y + rr + 8);
+        ctx.lineTo(px, t.y + rr + 12);
+        ctx.lineTo(px - 2.6, t.y + rr + 8);
+        ctx.closePath();
+        ctx.fill();
+      }
+      if (n > 8) {
+        ctx.font = "10px monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(`×${n}`, t.x, t.y + rr + 24);
+      }
+    }
+    ctx.restore();
+  }
+
+  /** Remember recent missile positions so the corkscrew draws as a ribbon. */
+  trackMissileTrails() {
+    const live = new Set<unknown>();
+    for (const b of this.bullets) {
+      if (b.kind !== "missile") continue;
+      const key = b.id ?? b;
+      live.add(key);
+      let trail = this.missileTrails.get(key);
+      if (!trail) {
+        trail = [];
+        this.missileTrails.set(key, trail);
+      }
+      const last = trail[trail.length - 1];
+      if (!last || Math.hypot(last.x - b.x, last.y - b.y) > 4) trail.push({ x: b.x, y: b.y });
+      if (trail.length > 22) trail.shift();
+    }
+    for (const key of this.missileTrails.keys()) if (!live.has(key)) this.missileTrails.delete(key);
+  }
+
+  /**
+   * Salvo Lock missile, nicknamed the "Heliodart": a ribbon trail that shows the
+   * corkscrew, a flickering two-stage plume, a gunmetal fuselage with swept tail
+   * fins and canards, a pulsing accent band and a white-hot seeker cap.
+   */
+  renderMissile(ctx: CanvasRenderingContext2D, b: Bullet) {
+    const color = b.color || MAGENTA;
+    const hot = b.fullLock ? "#ffffff" : color;
+    const trail = this.missileTrails.get(b.id ?? b);
+    ctx.save();
+    if (trail && trail.length > 1) {
+      // tapered ribbon: a filled strip that widens toward the missile, then a hot core line
+      const pts = [...trail, { x: b.x, y: b.y }];
+      const n = pts.length;
+      const left: { x: number; y: number }[] = [];
+      const right: { x: number; y: number }[] = [];
+      for (let i = 0; i < n; i++) {
+        const a = pts[Math.max(0, i - 1)],
+          c = pts[Math.min(n - 1, i + 1)];
+        const len = Math.hypot(c.x - a.x, c.y - a.y) || 1;
+        const nx = -(c.y - a.y) / len,
+          ny = (c.x - a.x) / len;
+        const w = 0.4 + (i / (n - 1)) * 3.6;
+        left.push({ x: pts[i].x + nx * w, y: pts[i].y + ny * w });
+        right.push({ x: pts[i].x - nx * w, y: pts[i].y - ny * w });
+      }
+      ctx.globalCompositeOperation = "lighter";
+      const fade = ctx.createLinearGradient(pts[0].x, pts[0].y, b.x, b.y);
+      fade.addColorStop(0, `${color}00`);
+      fade.addColorStop(1, `${color}99`);
+      ctx.beginPath();
+      ctx.moveTo(left[0].x, left[0].y);
+      for (const q of left) ctx.lineTo(q.x, q.y);
+      for (let i = right.length - 1; i >= 0; i--) ctx.lineTo(right[i].x, right[i].y);
+      ctx.closePath();
+      ctx.fillStyle = fade;
+      ctx.fill();
+      const core = ctx.createLinearGradient(pts[0].x, pts[0].y, b.x, b.y);
+      core.addColorStop(0, "rgba(255,255,255,0)");
+      core.addColorStop(1, "rgba(255,255,255,0.7)");
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < n; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.strokeStyle = core;
+      ctx.lineWidth = 1;
+      ctx.lineJoin = "round";
+      ctx.stroke();
+      ctx.globalCompositeOperation = "source-over";
+    }
+    ctx.globalAlpha = 1;
+    ctx.translate(b.x, b.y);
+    ctx.rotate(Math.atan2(b.vy, b.vx));
+    ctx.scale(1.35, 1.35);
+    const seed = (b.id ?? 0) * 1.7;
+    const flick =
+      1 + Math.sin(this.frame * 0.9 + seed) * 0.18 + Math.sin(this.frame * 2.3 + seed) * 0.1;
+    // plume: outer accent flame, inner white core
+    ctx.globalCompositeOperation = "lighter";
+    ctx.beginPath();
+    ctx.moveTo(-8, -3.4);
+    ctx.quadraticCurveTo(-16 - 10 * flick, 0, -8, 3.4);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.shadowBlur = 16;
+    ctx.shadowColor = color;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(-8, -1.6);
+    ctx.quadraticCurveTo(-12 - 5 * flick, 0, -8, 1.6);
+    ctx.closePath();
+    ctx.fillStyle = "#ffffff";
+    ctx.fill();
+    ctx.globalCompositeOperation = "source-over";
+    ctx.shadowBlur = 0;
+    // swept tail fins
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.9;
+    for (const s of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(-3, 2.2 * s);
+      ctx.lineTo(-9.5, 7 * s);
+      ctx.lineTo(-7.5, 2 * s);
+      ctx.closePath();
+      ctx.fill();
+      // canards
+      ctx.beginPath();
+      ctx.moveTo(5, 2 * s);
+      ctx.lineTo(2, 4.6 * s);
+      ctx.lineTo(1.5, 2 * s);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    // fuselage: elongated hexagon, dark core with a lit edge
+    ctx.beginPath();
+    ctx.moveTo(9, 0);
+    ctx.lineTo(6, -2.6);
+    ctx.lineTo(-8, -2.6);
+    ctx.lineTo(-9, 0);
+    ctx.lineTo(-8, 2.6);
+    ctx.lineTo(6, 2.6);
+    ctx.closePath();
+    ctx.fillStyle = "#15121f";
+    ctx.fill();
+    ctx.strokeStyle = hot;
+    ctx.lineWidth = 1.2;
+    ctx.shadowBlur = 10;
+    ctx.shadowColor = color;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    // pulsing accent band: the lock beacon
+    const beacon = 0.55 + 0.45 * Math.sin(this.frame * 0.5 + seed);
+    ctx.fillStyle = hot;
+    ctx.globalAlpha = beacon;
+    ctx.fillRect(-2.5, -2.6, 2.2, 5.2);
+    ctx.globalAlpha = 1;
+    // seeker cap
+    const cap = ctx.createRadialGradient(8, 0, 0, 8, 0, 4.5);
+    cap.addColorStop(0, "#ffffff");
+    cap.addColorStop(0.5, hot);
+    cap.addColorStop(1, `${color}00`);
+    ctx.beginPath();
+    ctx.arc(8, 0, 4.5, 0, TAU);
+    ctx.fillStyle = cap;
+    ctx.fill();
+    ctx.restore();
+  }
+
   renderPilot(ctx: CanvasRenderingContext2D) {
     // salvage companion sits between the hostile field and the player
     this.renderSalvageDrone(ctx);
@@ -6741,6 +7390,12 @@ export class Game {
     // player
     if (this.mode !== "gameover" && this.p.hull > 0) {
       const p = this.p;
+      // Salvo Lock: your cone and charge ring; every pilot's reticles (Crossfire reads)
+      const accent = this.pilotAccent();
+      const own = this.isLocalPilot();
+      if (own && p.missileHoldT >= 0) this.renderLockCone(ctx, accent);
+      this.renderLockReticles(ctx, accent, own);
+      if (own) this.renderMissileRing(ctx, accent);
       ctx.save();
       ctx.translate(p.x, p.y);
       ctx.rotate(p.angle);
@@ -7763,23 +8418,11 @@ export class Game {
     this.forEachPilot(() => this.renderPilot(ctx));
 
     // bullets
+    this.trackMissileTrails();
     for (const b of this.bullets) {
       const a = Math.atan2(b.vy, b.vx);
       if (b.kind === "missile") {
-        ctx.save();
-        ctx.translate(b.x, b.y);
-        ctx.rotate(a);
-        ctx.beginPath();
-        ctx.moveTo(10, 0);
-        ctx.lineTo(-8, -5);
-        ctx.lineTo(-4, 0);
-        ctx.lineTo(-8, 5);
-        ctx.closePath();
-        ctx.fillStyle = MAGENTA;
-        ctx.shadowBlur = 14;
-        ctx.shadowColor = MAGENTA;
-        ctx.fill();
-        ctx.restore();
+        this.renderMissile(ctx, b);
         continue;
       }
       if (b.kind === "flak") {
@@ -7953,6 +8596,10 @@ export class Game {
     }
     if (this.flashAlpha > 0) {
       ctx.fillStyle = `rgba(255,224,163,${this.flashAlpha * 0.28})`;
+      ctx.fillRect(-40, -40, w + 80, h + 80);
+    }
+    if (this.salvoFlash > 0) {
+      ctx.fillStyle = `rgba(255,255,255,${this.salvoFlash * 0.32})`;
       ctx.fillRect(-40, -40, w + 80, h + 80);
     }
 

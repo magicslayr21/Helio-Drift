@@ -112,7 +112,10 @@ export default function SpecSection({
                         ["Move / aim", "WASD / arrows · Pointer aim · On-screen movement buttons"],
                         ["Fire", "Space / click · Auto-fire or Trackpad in Settings"],
                         ["Weapon slots", "1 / 2 · Choose weapons in the weapon bar"],
-                        ["Missiles", "E · On-screen MISSILE button"],
+                        [
+                          "Missiles",
+                          "Tap E for one · Hold E to lock, release for a salvo · MISSILE button",
+                        ],
                         ["Revive", "Hold F near a disabled teammate"],
                         ["Overdrive", "Q · Shared Overdrive button"],
                         ["Pause", "Esc · Both pilots pause for up to 30 seconds"],
@@ -126,7 +129,10 @@ export default function SpecSection({
                         ],
                         ["Fire", "Space · Ctrl · Hold right half of screen · Auto (setting)"],
                         ["Cycle weapon", "Tab / Q · 1 / 2 quick slots · On-screen WEAPON button"],
-                        ["Missiles", "E · On-screen MISSILE button"],
+                        [
+                          "Missiles",
+                          "Tap E for one · Hold E to lock, release for a salvo · MISSILE button",
+                        ],
                         ["Pause", "P or Esc"],
                         ["Instant restart", "R (pause & game over)"],
                         ["Mute audio", "♪ toggle, top-right of the bezel"],
