@@ -5,15 +5,29 @@
 
 import type {
   BossSpec,
+  MissileBuild,
+  Player,
   Rarity,
   RockTrait,
   SalvageDrone,
   SalvageUpgradeId,
   SectorTheme,
   StatUpgrade,
+  WarheadPartId,
+  WarheadRarity,
+  WarheadSlot,
   WeaponId,
 } from "./types";
 import { GAME_CONFIG } from "./game-config";
+export {
+  RUN_PACING,
+  bossMkForWave,
+  isBossWave,
+  maxSentinels,
+  scaledWave,
+  sectorForWave,
+  sentinelWaveCount,
+} from "./simulation/campaign";
 
 /* ------------------------------------------------------------ palette */
 
@@ -44,6 +58,11 @@ export const WEAPON_ORDER: WeaponId[] = [
 ];
 export const MAX_WEAPON_LEVEL = GAME_CONFIG.weaponProgression.maxLevel;
 
+export function weaponMaxLevel(id: WeaponId): number {
+  const rarity = GAME_CONFIG.weaponProgression.weapons[id].rarity;
+  return rarity === "common" ? 3 : rarity === "rare" ? 4 : MAX_WEAPON_LEVEL;
+}
+
 export const WEAPON_DEFS: Record<
   WeaponId,
   { name: string; short: string; desc: string; perLevel: string; rarity: Rarity; weight: number }
@@ -52,7 +71,7 @@ export const WEAPON_DEFS: Record<
     name: "Pulse Cannon",
     short: "PULSE",
     desc: "Reliable twin-fed plasma. The baseline everything is measured against.",
-    perLevel: "+15% damage · +7% rate · +1 shot every 2 levels",
+    perLevel: "+4% damage · +2.5% rate",
     rarity: GAME_CONFIG.weaponProgression.weapons.pulse.rarity,
     weight: GAME_CONFIG.weaponProgression.weapons.pulse.weight,
   },
@@ -60,7 +79,7 @@ export const WEAPON_DEFS: Record<
     name: "Scattershot Array",
     short: "SCATTER",
     desc: "A cone of pellets. Devastating up close, forgiving of bad aim.",
-    perLevel: "+1 pellet · +12% damage",
+    perLevel: "+12% damage · extra pellets as levels rise",
     rarity: GAME_CONFIG.weaponProgression.weapons.spread.rarity,
     weight: GAME_CONFIG.weaponProgression.weapons.spread.weight,
   },
@@ -68,15 +87,15 @@ export const WEAPON_DEFS: Record<
     name: "Seeker Pulse",
     short: "SEEKER",
     desc: "Rapid low-damage darts that hunt the nearest target on their own.",
-    perLevel: "+15% damage · +8% rate · +1 dart every 3 levels",
+    perLevel: "+15% damage · +6.5% rate · +1 dart every 3 levels",
     rarity: GAME_CONFIG.weaponProgression.weapons.seeker.rarity,
     weight: GAME_CONFIG.weaponProgression.weapons.seeker.weight,
   },
   ricochet: {
     name: "Ricochet Blaster",
     short: "RICOCHET",
-    desc: "Heavy slugs that bounce off the sector edges instead of leaving.",
-    perLevel: "+15% damage · +1 bounce every 2 levels",
+    desc: "Wall-bouncing slugs: 2× damage after one bounce, 3.5× after two, 5× after three.",
+    perLevel: "+15% damage · +1 bounce per level",
     rarity: GAME_CONFIG.weaponProgression.weapons.ricochet.rarity,
     weight: GAME_CONFIG.weaponProgression.weapons.ricochet.weight,
   },
@@ -84,7 +103,7 @@ export const WEAPON_DEFS: Record<
     name: "Flak Cannon",
     short: "FLAK",
     desc: "Timed shells that burst into a ring of shrapnel. Crowd control.",
-    perLevel: "+2 shrapnel · +15% damage",
+    perLevel: "+2 shrapnel · +13% shrapnel damage · +5% rate",
     rarity: GAME_CONFIG.weaponProgression.weapons.flak.rarity,
     weight: GAME_CONFIG.weaponProgression.weapons.flak.weight,
   },
@@ -92,7 +111,7 @@ export const WEAPON_DEFS: Record<
     name: "Arc Coil",
     short: "ARC",
     desc: "Short-range lightning that chains between nearby targets.",
-    perLevel: "+18% damage · +range · +1 chain every 2 levels",
+    perLevel: "+21% damage · +range · +1 chain every 2 levels",
     rarity: GAME_CONFIG.weaponProgression.weapons.arc.rarity,
     weight: GAME_CONFIG.weaponProgression.weapons.arc.weight,
   },
@@ -100,7 +119,7 @@ export const WEAPON_DEFS: Record<
     name: "Beam Emitter",
     short: "BEAM",
     desc: "A continuous cutting beam with an overheat gauge.",
-    perLevel: "+20% dps · −6% heat build-up",
+    perLevel: "+28% dps · wider beam · −6% heat · +35% damage in the red zone",
     rarity: GAME_CONFIG.weaponProgression.weapons.laser.rarity,
     weight: GAME_CONFIG.weaponProgression.weapons.laser.weight,
   },
@@ -122,13 +141,25 @@ export const WEAPON_BASE_PRICE: Record<Rarity, number> = {
 
 export const STAT_UPGRADES: StatUpgrade[] = [
   {
+    id: "range",
+    name: "Range",
+    tag: "Reach",
+    rarity: "common",
+    weight: GAME_CONFIG.statUpgrades.range.weight,
+    max: GAME_CONFIG.statUpgrades.range.max,
+    desc: "+13.3% weapon and drone range. Max +40%.",
+    apply: (g) => {
+      g.p.rangeMul = (g.p.rangeMul ?? 1) + GAME_CONFIG.statUpgrades.range.rangePerStack;
+    },
+  },
+  {
     id: "overclock",
     name: "Overclocked Barrels",
     tag: "Fire rate",
     rarity: GAME_CONFIG.statUpgrades.overclock.rarity,
     weight: GAME_CONFIG.statUpgrades.overclock.weight,
     max: GAME_CONFIG.statUpgrades.overclock.max,
-    desc: "Cyclic rate +9% on every weapon.",
+    desc: "+9% attack speed for all weapons.",
     apply: (g) => {
       g.p.fireRateMul *= GAME_CONFIG.statUpgrades.overclock.fireRateMultiplier;
     },
@@ -140,7 +171,7 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     rarity: GAME_CONFIG.statUpgrades.hollow.rarity,
     weight: GAME_CONFIG.statUpgrades.hollow.weight,
     max: GAME_CONFIG.statUpgrades.hollow.max,
-    desc: "All weapon damage +12%.",
+    desc: "+12% damage for all weapons.",
     apply: (g) => {
       g.p.damageMul *= GAME_CONFIG.statUpgrades.hollow.damageMultiplier;
     },
@@ -152,7 +183,7 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     rarity: GAME_CONFIG.statUpgrades.thruster.rarity,
     weight: GAME_CONFIG.statUpgrades.thruster.weight,
     max: GAME_CONFIG.statUpgrades.thruster.max,
-    desc: "Thrust +9%, top speed +6%, turn rate +4%.",
+    desc: "+9% thrust, +6% speed, +4% turning.",
     apply: (g) => {
       g.p.thrust *= GAME_CONFIG.statUpgrades.thruster.thrustMultiplier;
       g.p.maxSpeed *= GAME_CONFIG.statUpgrades.thruster.speedMultiplier;
@@ -161,12 +192,12 @@ export const STAT_UPGRADES: StatUpgrade[] = [
   },
   {
     id: "hull",
-    name: "Reinforced Hull",
+    name: "Reinforced Health",
     tag: "Survival",
     rarity: GAME_CONFIG.statUpgrades.hull.rarity,
     weight: GAME_CONFIG.statUpgrades.hull.weight,
     max: GAME_CONFIG.statUpgrades.hull.max,
-    desc: "Max hull +18 and immediately repair 18 hull.",
+    desc: "+18 max health. Repair 18 health now.",
     apply: (g) => {
       const hull = GAME_CONFIG.statUpgrades.hull.hullPerStack;
       g.p.maxHull += hull;
@@ -180,7 +211,7 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     rarity: GAME_CONFIG.statUpgrades.armor.rarity,
     weight: GAME_CONFIG.statUpgrades.armor.weight,
     max: GAME_CONFIG.statUpgrades.armor.max,
-    desc: "All incoming damage −12%. Stacks to −36%.",
+    desc: "Take 12% less damage. Max 36% reduction.",
     apply: (g) => {
       g.p.armor = Math.min(
         GAME_CONFIG.statUpgrades.armor.maxDamageReduction,
@@ -195,7 +226,7 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     rarity: GAME_CONFIG.statUpgrades.twin.rarity,
     weight: GAME_CONFIG.statUpgrades.twin.weight,
     max: GAME_CONFIG.statUpgrades.twin.max,
-    desc: "+1 projectile per volley on every projectile weapon.",
+    desc: "+1 shot per volley; Beam also fires behind the ship.",
     apply: (g) => {
       g.p.extraShots += GAME_CONFIG.statUpgrades.twin.extraShotsPerStack;
     },
@@ -207,7 +238,7 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     rarity: GAME_CONFIG.statUpgrades.pierce.rarity,
     weight: GAME_CONFIG.statUpgrades.pierce.weight,
     max: GAME_CONFIG.statUpgrades.pierce.max,
-    desc: "Projectiles pierce one extra target.",
+    desc: "Shots pass through 1 extra target.",
     apply: (g) => {
       g.p.pierce += GAME_CONFIG.statUpgrades.pierce.extraPiercePerStack;
     },
@@ -219,12 +250,162 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     rarity: GAME_CONFIG.statUpgrades.crit.rarity,
     weight: GAME_CONFIG.statUpgrades.crit.weight,
     max: GAME_CONFIG.statUpgrades.crit.max,
-    desc: "Critical chance +7% (crits deal 2.2×).",
+    desc: "+20% crit chance and +0.1× crit damage. Max 2.5× damage.",
     apply: (g) => {
       g.p.crit += GAME_CONFIG.statUpgrades.crit.critPerStack;
+      g.p.critMult = Math.min(
+        2.5,
+        g.p.critMult + GAME_CONFIG.statUpgrades.crit.critMultiplierPerStack,
+      );
+    },
+  },
+  {
+    id: "missileRack",
+    name: "Missile Rack",
+    tag: "Missiles",
+    rarity: GAME_CONFIG.statUpgrades.missileRack.rarity,
+    weight: GAME_CONFIG.statUpgrades.missileRack.weight,
+    max: GAME_CONFIG.statUpgrades.missileRack.max,
+    desc: "+1 missile rack slot and +1 lock per salvo. Loads the new slot now. Max 6.",
+    apply: (g) => {
+      const add = GAME_CONFIG.statUpgrades.missileRack.rackPerStack;
+      const before = g.p.maxMissiles;
+      g.p.maxMissiles = Math.min(GAME_CONFIG.salvo.maxRack, g.p.maxMissiles + add);
+      g.p.missiles = Math.min(g.p.maxMissiles, g.p.missiles + (g.p.maxMissiles - before));
     },
   },
 ];
+
+/* ------------------------------------------------------------ warhead workshop */
+
+export const DEFAULT_MISSILE_BUILD: MissileBuild = {
+  payload: "blast",
+  guidance: "direct",
+  trigger: "impact",
+};
+
+export interface WarheadPartDef {
+  slot: WarheadSlot;
+  name: string;
+  rarity: WarheadRarity;
+  /** Tier I effect, as shown in the Workshop. */
+  effect: string;
+  /** Warhead tint: seeker cap, plume core and blast highlights. */
+  color: string;
+}
+
+const W = GAME_CONFIG.warheads;
+export const WARHEAD_SLOTS: WarheadSlot[] = ["payload", "guidance", "trigger"];
+export const WARHEAD_PARTS: Record<WarheadPartId, WarheadPartDef> = {
+  blast: {
+    slot: "payload",
+    name: "Blast",
+    rarity: "default",
+    effect: `${GAME_CONFIG.player.blastDamage} damage in a ${GAME_CONFIG.player.blastRadius} radius.`,
+    color: "#ff3d6e",
+  },
+  cluster: {
+    slot: "payload",
+    name: "Cluster",
+    rarity: "rare",
+    effect: `Bursts into ${W.cluster.bomblets} bomblets × ${W.cluster.bombletDamage} damage that scatter and detonate.`,
+    color: "#ffb03a",
+  },
+  gravity: {
+    slot: "payload",
+    name: "Gravity",
+    rarity: "rare",
+    effect: `Opens a ${W.gravity.duration} s well that pulls small and medium rocks within ${W.gravity.radius}.`,
+    color: "#a98bff",
+  },
+  emp: {
+    slot: "payload",
+    name: "EMP",
+    rarity: "epic",
+    effect: `Disables specialists for ${W.emp.duration} s and drops Tether Sentinel shields.`,
+    color: "#8ff7ff",
+  },
+  incendiary: {
+    slot: "payload",
+    name: "Incendiary",
+    rarity: "common",
+    effect: `Leaves a burning patch for ${W.incendiary.duration} s, ${W.incendiary.dps} damage per second.`,
+    color: "#ff7a2e",
+  },
+  direct: {
+    slot: "guidance",
+    name: "Direct",
+    rarity: "default",
+    effect: `Pure pursuit with a ${GAME_CONFIG.salvo.turn} turn rate.`,
+    color: "#ffe0a3",
+  },
+  corkscrew: {
+    slot: "guidance",
+    name: "Corkscrew",
+    rarity: "common",
+    effect: `+${Math.round((W.corkscrew.speedMultiplier - 1) * 100)}% speed and a wider spiral.`,
+    color: "#ffd166",
+  },
+  relay: {
+    slot: "guidance",
+    name: "Relay",
+    rarity: "epic",
+    effect: `On a kill, flies on to another lock at ${W.relay.damageMultiplier * 100}% damage, up to ${W.relay.hops} hops.`,
+    color: "#7dffb2",
+  },
+  orbit: {
+    slot: "guidance",
+    name: "Orbit",
+    rarity: "rare",
+    effect: `Circles the ship for ${W.orbit.duration} s blocking ${W.orbit.blocks} enemy shot each, then strikes.`,
+    color: "#6fe7ff",
+  },
+  impact: {
+    slot: "trigger",
+    name: "Impact",
+    rarity: "default",
+    effect: "Detonates on contact.",
+    color: "#ffe0a3",
+  },
+  proximity: {
+    slot: "trigger",
+    name: "Proximity",
+    rarity: "common",
+    effect: `Detonates ${W.proximity.distance} px early with +${Math.round((W.proximity.radiusMultiplier - 1) * 100)}% radius.`,
+    color: "#ffd166",
+  },
+  chain: {
+    slot: "trigger",
+    name: "Chain",
+    rarity: "epic",
+    effect: `Each blast launches a mini missile at ${W.chain.damageMultiplier * 100}% damage.`,
+    color: "#ff5ad8",
+  },
+  delayed: {
+    slot: "trigger",
+    name: "Delayed",
+    rarity: "rare",
+    effect: `Sticks to the target and detonates after ${W.delayed.fuse} s for ${W.delayed.damageMultiplier}× damage.`,
+    color: "#ff9168",
+  },
+};
+
+export const isWarheadPart = (id: unknown): id is WarheadPartId =>
+  typeof id === "string" && Object.prototype.hasOwnProperty.call(WARHEAD_PARTS, id);
+
+/** Replace a missing or invalid build (old saves, tampered rooms) with valid parts. */
+export function normalizeMissileBuild(build: unknown): MissileBuild {
+  const raw = (build && typeof build === "object" ? build : {}) as Record<string, unknown>;
+  const pick = <T extends WarheadPartId>(slot: WarheadSlot, fallback: T): T =>
+    isWarheadPart(raw[slot]) && WARHEAD_PARTS[raw[slot] as WarheadPartId].slot === slot
+      ? (raw[slot] as T)
+      : fallback;
+  return {
+    payload: pick("payload", DEFAULT_MISSILE_BUILD.payload),
+    guidance: pick("guidance", DEFAULT_MISSILE_BUILD.guidance),
+    trigger: pick("trigger", DEFAULT_MISSILE_BUILD.trigger),
+  };
+}
 
 /* ------------------------------------------------------------ salvage drone */
 
@@ -241,52 +422,59 @@ export const SALVAGE_UPGRADES: Record<
   }
 > = {
   twinCannons: {
-    name: "Twin Cannons",
+    name: "Arsenal",
     path: "offense",
-    desc: "Adds weak support cannons. The final level converts the mounts into a visible minigun.",
+    desc: "+1 shot or Arc chain per level; Beam gains +20% damage. Works with any mount.",
     ...GAME_CONFIG.salvageUpgradePrices.twinCannons,
   },
   overcharge: {
-    name: "Overcharge Core",
+    name: "Overcharge",
     path: "offense",
-    desc: "Raises drone shot damage and fire cadence, with a major final-stage capacitor.",
+    desc: "More drone damage and faster fire. Max: a powerful damage surge.",
     ...GAME_CONFIG.salvageUpgradePrices.overcharge,
   },
   piercing: {
-    name: "Piercing Rounds",
+    name: "Sync Feed",
     path: "offense",
-    desc: "Drone shots pierce additional targets and gain a little range.",
+    desc: "+5% pilot / +10% drone attack speed per level. Boosts Beam DPS too.",
     ...GAME_CONFIG.salvageUpgradePrices.piercing,
   },
   armor: {
-    name: "Armor Plating",
+    name: "Armor",
     path: "support",
-    desc: "Visible hull plates increase drone max health and reduce collision damage.",
+    desc: "+12 drone HP per level. Max: 60% damage reduction; Shield Link bypasses armor.",
     ...GAME_CONFIG.salvageUpgradePrices.armor,
   },
   repairPulse: {
     name: "Repair Pulse",
     path: "support",
-    desc: "A slow support pulse repairs the player's hull when the drone is nearby.",
+    desc: "Both unharmed for 5s nearby: heal 1 HP/s. Max: 2 HP every 0.5s.",
     ...GAME_CONFIG.salvageUpgradePrices.repairPulse,
+  },
+
+  shield: {
+    name: "Shield Link",
+    path: "support",
+    desc: "Nearby drone absorbs 20% / 35% / 50% of hull damage using its HP. Ends if destroyed.",
+    ...GAME_CONFIG.salvageUpgradePrices.shield,
   },
 
   magnet: {
     name: "Magnet Coil",
     path: "utility",
-    desc: "A visible ring expands the drone's credit collection field.",
+    desc: "+90 pickup range per level; pulls credits and repair kits harder. Max: +90 extra range.",
     ...GAME_CONFIG.salvageUpgradePrices.magnet,
   },
   scan: {
     name: "Wide Scan",
     path: "utility",
-    desc: "Longer scan range lets the drone find salvage and targets earlier.",
+    desc: "+150 target, +60 pickup and +50 support range per level. Max: +150 extra target range.",
     ...GAME_CONFIG.salvageUpgradePrices.scan,
   },
   speed: {
-    name: "Follow Thrusters",
+    name: "Thrusters",
     path: "utility",
-    desc: "The drone orbits further and catches up faster instead of feeling glued on.",
+    desc: "Faster catch-up and a wider orbit.",
     ...GAME_CONFIG.salvageUpgradePrices.speed,
   },
 };
@@ -297,6 +485,7 @@ export const SALVAGE_UPGRADE_ORDER: SalvageUpgradeId[] = [
   "piercing",
   "armor",
   "repairPulse",
+  "shield",
   "magnet",
   "scan",
   "speed",
@@ -333,7 +522,7 @@ export const BOSS_ROCK_CAP = GAME_CONFIG.asteroids.bossFieldCap;
 /** how long boom-launch and MK3 rocks live (seconds) before they quietly burn out */
 export const BOSS_ROCK_LIFESPAN = GAME_CONFIG.asteroids.bossRockLifetime;
 
-/** MK1–MK3 health may never reach the MK5 / MK6 figures, whatever wave they are summoned on */
+/** MK1–MK2 retain their original ceiling; later bosses have explicit campaign HP. */
 export const EARLY_BOSS_HP_CEILING = GAME_CONFIG.bosses.earlyHpCeiling;
 
 /**
@@ -356,75 +545,6 @@ export const BOOM = {
   /** fixed cruise speed per size (px/s), well under a plain rock */
   speed: { 3: 24, 2: 30, 1: 36 } as Record<1 | 2 | 3, number>,
 } as const;
-
-/* ------------------------------------------------------------ run pacing */
-
-/**
- * The complete 25-wave campaign schedule. Every sector contains four combat
- * waves followed by its boss on the fifth. `legacyScale` preserves the old
- * 50-wave difficulty ramp while delivering it in half as many waves.
- */
-export const RUN_PACING = {
-  finalWave: GAME_CONFIG.waves.wavesPerBoss * 5,
-  sectorLength: 5,
-  legacyScale: GAME_CONFIG.asteroids.scaledWaveMultiplier,
-  /** random showers never roll while a dreadnought is on the field */
-  meteorShowersAfterWave: GAME_CONFIG.waves.showerAfterWave,
-  sentinelBurstsFromWave: 8,
-  lateWardenFromWave: 21,
-  lateWardenToWave: 24,
-  traitWaves: {
-    /** no homing rocks at all until the MK1 boss fight is cleared */
-    homing: 6,
-    bounce: 11,
-    boom: 16,
-    fast: 21,
-  },
-  /** wave-completion credit payout: 80 + wave * this */
-  creditsPerWaveBase: GAME_CONFIG.waves.waveCreditsBase,
-  creditsPerWaveStep: GAME_CONFIG.waves.waveCreditsPerWave,
-} as const;
-
-/**
- * Concurrent sentinel cap. The opening sector stays sparse (1–2 at most) and
- * pressure builds gradually sector by sector.
- */
-export function maxSentinels(wave: number) {
-  const thresholds = GAME_CONFIG.enemies.sentinels.countWaveThresholds;
-  const caps = GAME_CONFIG.enemies.sentinels.waveCaps;
-  const index = thresholds.filter((threshold) => wave > threshold).length;
-  return caps[index] ?? caps[caps.length - 1];
-}
-
-/** How many sentinels this wave should introduce, before the cap is applied. */
-export function sentinelWaveCount(wave: number) {
-  const thresholds = GAME_CONFIG.enemies.sentinels.countWaveThresholds;
-  const counts = GAME_CONFIG.enemies.sentinels.countPerBand;
-  const index = thresholds.filter((threshold) => wave > threshold).length;
-  return counts[index] ?? counts[counts.length - 1];
-}
-
-/** Main-run sector index. The separate bonus boss uses sector/theme index 6. */
-export function sectorForWave(wave: number) {
-  if (wave >= 21) return 4;
-  if (wave >= 16) return 3;
-  if (wave >= 11) return 2;
-  if (wave >= 6) return 1;
-  return 0;
-}
-
-export function isBossWave(wave: number) {
-  return wave > 0 && wave <= RUN_PACING.finalWave && wave % RUN_PACING.sectorLength === 0;
-}
-
-export function bossMkForWave(wave: number) {
-  return Math.max(1, Math.min(5, Math.ceil(wave / RUN_PACING.sectorLength)));
-}
-
-/** Equivalent point on the former 50-wave tuning curve. */
-export function scaledWave(wave: number) {
-  return wave * RUN_PACING.legacyScale;
-}
 
 export const BOSS_SPECS: Record<number, BossSpec> = {
   1: {
@@ -504,7 +624,7 @@ export const BOSS_SPECS: Record<number, BossSpec> = {
 /* ------------------------------------------------------------ factories */
 
 /** base ship stats — also the reset target when dev edits rebuild upgrades */
-export function freshPlayer() {
+export function freshPlayer(): Player {
   const weapons = {} as Record<WeaponId, number>;
   for (const w of WEAPON_ORDER) weapons[w] = 0;
   weapons.pulse = 1;
@@ -523,7 +643,8 @@ export function freshPlayer() {
     fireRateMul: GAME_CONFIG.player.fireRateMul,
     damageMul: GAME_CONFIG.player.damageMul,
     bulletSpeed: GAME_CONFIG.player.bulletSpeed,
-    primary: "pulse" as WeaponId,
+    rangeMul: 1,
+    primary: "pulse",
     weapons,
     extraShots: 0,
     pierce: 0,
@@ -542,6 +663,11 @@ export function freshPlayer() {
     missileRegen: GAME_CONFIG.player.missileRegen,
     missileCharge: 0,
     missileHeld: false,
+    missileLocks: [],
+    missileHoldT: -1,
+    missileLockT: 0,
+    fullLockAt: -1,
+    missileBuild: { ...DEFAULT_MISSILE_BUILD },
     magnet: GAME_CONFIG.player.magnet,
     creditChance: GAME_CONFIG.player.creditChance,
     creditValue: GAME_CONFIG.player.creditValue,

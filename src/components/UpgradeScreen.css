@@ -1,0 +1,297 @@
+.upgrade-screen {
+  isolation: isolate;
+  background: radial-gradient(ellipse at 50% 12%, #ffb03a13, transparent 60%), #070911ef;
+}
+.upgrade-screen::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    linear-gradient(#ffb03a06 1px, transparent 1px),
+    linear-gradient(90deg, #ffb03a06 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse, black, transparent 85%);
+}
+.upgrade-screen-inner {
+  width: min(100%, 1040px);
+  margin: auto;
+}
+.upgrade-heading {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 25px;
+}
+.upgrade-heading h2 {
+  margin: 6px 0;
+}
+.upgrade-heading p {
+  margin: 0;
+}
+.upgrade-heading .upgrade-credit {
+  margin-left: auto;
+  text-align: right;
+}
+.upgrade-reward-mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: 0 0 66px;
+  height: 66px;
+  color: #ffb03a;
+  border: 1px solid #ffb03a70;
+  background: #ffb03a0a;
+  box-shadow:
+    0 0 32px #ffb03a15,
+    inset 0 0 20px #ffb03a0a;
+  animation: upgrade-award 0.7s ease-out both;
+}
+.upgrade-reward-mark::after {
+  content: "";
+  position: absolute;
+  inset: -7px;
+  border: 1px solid #ffb03a30;
+  transform: rotate(45deg);
+}
+.upgrade-reward-mark svg {
+  width: 38px;
+  height: 38px;
+}
+.upgrade-reward-note {
+  color: #91e7b0;
+  font: 9px var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.upgrade-choices {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+.upgrade-option {
+  --rarity-color: #ffb03a;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--rarity-color) 38%, #242a38);
+  padding: 18px;
+  text-align: left;
+  color: #ffe0a3;
+  cursor: pointer;
+  background:
+    radial-gradient(
+      ellipse at 50% 20%,
+      color-mix(in srgb, var(--upgrade-color) 8%, transparent),
+      transparent 70%
+    ),
+    #0d111b;
+  box-shadow: inset 0 3px var(--rarity-color);
+  transition:
+    border-color 180ms,
+    background-color 180ms,
+    box-shadow 180ms,
+    transform 180ms;
+  animation: upgrade-reveal 480ms ease-out var(--upgrade-delay) both;
+}
+.upgrade-option--rare {
+  --rarity-color: #6fe7ff;
+}
+.upgrade-option--epic {
+  --rarity-color: #ff3d6e;
+}
+.upgrade-option::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(110deg, transparent 30%, #ffffff09 49%, transparent 67%);
+  transform: translateX(-120%);
+  animation: upgrade-sweep 850ms ease-out calc(var(--upgrade-delay) + 180ms) both;
+}
+.upgrade-option::after {
+  content: "";
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  right: 5px;
+  bottom: 5px;
+  border-right: 2px solid var(--rarity-color);
+  border-bottom: 2px solid var(--rarity-color);
+  opacity: 0.55;
+}
+.upgrade-option:hover,
+.upgrade-option:focus-visible {
+  outline: none;
+  border-color: var(--rarity-color);
+  transform: translateY(-3px);
+  box-shadow:
+    inset 0 3px var(--rarity-color),
+    0 0 24px color-mix(in srgb, var(--rarity-color) 12%, transparent);
+}
+.upgrade-option:focus-visible {
+  outline: 2px solid var(--rarity-color);
+  outline-offset: 3px;
+}
+.upgrade-option-top,
+.upgrade-option-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font: 9px var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.upgrade-option-top {
+  color: #bcb3a1;
+}
+.upgrade-rarity {
+  color: var(--rarity-color);
+  border: 1px solid color-mix(in srgb, var(--rarity-color) 35%, transparent);
+  padding: 3px 5px;
+}
+.upgrade-icon {
+  display: grid;
+  place-items: center;
+  width: 66px;
+  height: 66px;
+  margin: 24px 0 18px;
+  color: var(--upgrade-color);
+  background: color-mix(in srgb, var(--upgrade-color) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--upgrade-color) 35%, transparent);
+  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--upgrade-color) 16%, transparent));
+}
+.upgrade-icon svg {
+  width: 42px;
+  height: 42px;
+}
+.upgrade-benefit {
+  font: 700 15px var(--font-mono);
+  color: var(--upgrade-color);
+  line-height: 1.4;
+}
+.upgrade-name {
+  margin-top: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+}
+.upgrade-description {
+  display: block;
+  color: #c5bda9;
+  font-size: 11px;
+  line-height: 1.65;
+  margin: 10px 0 22px;
+}
+.upgrade-option-foot {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid #3a3f5560;
+  color: #b2a48b;
+}
+.upgrade-pips {
+  display: flex;
+  gap: 4px;
+}
+.upgrade-pips i {
+  width: 8px;
+  height: 5px;
+  background: #303545;
+}
+.upgrade-pips .is-owned {
+  background: var(--rarity-color);
+}
+.upgrade-pips .is-next {
+  background: var(--rarity-color);
+  opacity: 0.4;
+  outline: 1px solid var(--rarity-color);
+  outline-offset: 2px;
+}
+.upgrade-install {
+  margin-top: 15px;
+  display: flex;
+  justify-content: space-between;
+  color: var(--rarity-color);
+  font: 9px var(--font-mono);
+  letter-spacing: 0.15em;
+}
+.coop-shop .upgrade-choices {
+  margin-bottom: 14px;
+}
+.coop-shop button.upgrade-option {
+  padding: 18px;
+}
+@keyframes upgrade-reveal {
+  from {
+    opacity: 0;
+    translate: 0 14px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+@keyframes upgrade-sweep {
+  to {
+    transform: translateX(120%);
+  }
+}
+@keyframes upgrade-award {
+  from {
+    opacity: 0;
+    scale: 0.7;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+@media (max-width: 640px) {
+  .upgrade-choices {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .upgrade-option {
+    padding: 14px;
+  }
+  .upgrade-icon {
+    width: 44px;
+    height: 44px;
+    margin: 12px 0;
+  }
+  .upgrade-icon svg {
+    width: 30px;
+    height: 30px;
+  }
+  .upgrade-description {
+    margin-bottom: 12px;
+  }
+  .upgrade-reward-mark {
+    flex-basis: 46px;
+    height: 46px;
+  }
+  .upgrade-heading {
+    gap: 14px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .upgrade-option,
+  .upgrade-option::before,
+  .upgrade-reward-mark {
+    animation: none;
+    transition: none;
+  }
+  .upgrade-option:hover,
+  .upgrade-option:focus-visible {
+    transform: none;
+  }
+  .upgrade-option::before {
+    display: none;
+  }
+}

@@ -1,0 +1,295 @@
+import { clamp, wrapAngle } from "../math";
+import { COOP_FIXED_DT } from "../simulation/coop-config";
+import type { CoopPlayerId } from "../simulation/coop-types";
+import { stepPlayerMovement } from "../simulation/movement";
+import type { Player } from "../types";
+import type { AuthoritativeSnapshot, ClientInputMessage } from "./protocol";
+import type { CoopWireState } from "./wire-state";
+
+export interface ClientFlightSample {
+  moveX: number;
+  moveY: number;
+  aimAngle: number;
+  fire?: boolean;
+  missile?: boolean;
+  interact?: boolean;
+}
+
+interface PendingInput {
+  message: ClientInputMessage;
+  dt: number;
+}
+
+const replayInput = (
+  ship: Player,
+  message: ClientInputMessage,
+  dt: number,
+  width: number,
+  height: number,
+  timeScale = 1,
+) => {
+  for (let step = 0; step < 2; step++) {
+    timeScale += (1 - timeScale) * Math.min(1, (dt / 2) * 7);
+    stepPlayerMovement(
+      ship,
+      {
+        moveX: message.moveX,
+        moveY: message.moveY,
+        aimAngle: message.aimAngle,
+        aimTurnMultiplier: 3.2,
+      },
+      (dt / 2) * timeScale,
+      { width, height },
+    );
+  }
+};
+
+/** Client-only movement prediction. Combat always remains authoritative. */
+export class ClientPrediction {
+  readonly playerId: CoopPlayerId;
+  private width: number;
+  private height: number;
+  private sequence = 0;
+  private pending: PendingInput[] = [];
+  private predictedShip: Player | null = null;
+  private timeScale = 1;
+  private disabled = false;
+
+  constructor(playerId: CoopPlayerId, width: number, height: number) {
+    this.playerId = playerId;
+    this.width = width;
+    this.height = height;
+  }
+
+  get ship(): Player | null {
+    return this.predictedShip ? { ...this.predictedShip } : null;
+  }
+
+  renderShip(elapsedSinceInput: number): Player | null {
+    const ship = this.ship;
+    const input = this.pending.at(-1)?.message;
+    if (ship && input && !this.disabled)
+      replayInput(
+        ship,
+        input,
+        clamp(elapsedSinceInput, 0, COOP_FIXED_DT),
+        this.width,
+        this.height,
+        this.timeScale,
+      );
+    return ship;
+  }
+
+  get pendingCount() {
+    return this.pending.length;
+  }
+
+  sample(input: ClientFlightSample, dt = COOP_FIXED_DT): ClientInputMessage {
+    const message: ClientInputMessage = {
+      type: "input",
+      sequence: ++this.sequence,
+      moveX: clamp(Number.isFinite(input.moveX) ? input.moveX : 0, -1, 1),
+      moveY: clamp(Number.isFinite(input.moveY) ? input.moveY : 0, -1, 1),
+      aimAngle: wrapAngle(Number.isFinite(input.aimAngle) ? input.aimAngle : 0),
+      fire: Boolean(input.fire),
+      missile: Boolean(input.missile),
+      interact: Boolean(input.interact),
+    };
+    const safeDt = clamp(Number.isFinite(dt) ? dt : COOP_FIXED_DT, 0, 0.1);
+    this.pending.push({ message, dt: safeDt });
+    if (this.predictedShip && !this.disabled)
+      replayInput(this.predictedShip, message, safeDt, this.width, this.height, this.timeScale);
+    return message;
+  }
+
+  reconcile(snapshot: AuthoritativeSnapshot) {
+    this.width = snapshot.state.campaign?.w ?? 1000;
+    this.height = snapshot.state.campaign?.h ?? 700;
+    const authoritative = snapshot.state.players[this.playerId].ship;
+    this.predictedShip = structuredClone(authoritative);
+    this.timeScale = snapshot.state.campaign?.timeScale ?? 1;
+    this.disabled = snapshot.state.players[this.playerId].disabled || Boolean(snapshot.pause);
+    const acknowledgement = snapshot.acknowledgements[this.playerId];
+    this.sequence = Math.max(this.sequence, acknowledgement);
+    this.pending = this.pending.filter((entry) => entry.message.sequence > acknowledgement);
+    if (snapshot.pause) this.pending = [];
+    for (const entry of this.pending) {
+      if (!this.disabled)
+        replayInput(
+          this.predictedShip,
+          entry.message,
+          entry.dt,
+          this.width,
+          this.height,
+          this.timeScale,
+        );
+    }
+    return this.ship;
+  }
+}
+
+const interpolateAngle = (from: number, to: number, alpha: number) =>
+  from + wrapAngle(to - from) * alpha;
+
+// Copy only mutable presentation fields, not weapon inventories, boss scripts or upgrades.
+function presentationCopy(from: CoopWireState): CoopWireState {
+  const state = { ...from, players: { ...from.players } };
+  for (const id of ["p1", "p2"] as const)
+    state.players[id] = {
+      ...from.players[id],
+      ship: { ...from.players[id].ship },
+      drone: { ...from.players[id].drone },
+    };
+  for (const key of [
+    "rocks",
+    "enemies",
+    "projectiles",
+    "hostileProjectiles",
+    "hazards",
+    "mines",
+    "pickups",
+  ] as const)
+    Object.assign(state, { [key]: from[key].map((entity) => ({ ...entity })) });
+  state.boss = from.boss ? { ...from.boss } : null;
+  if (from.campaign) {
+    state.campaign = {
+      ...from.campaign,
+      boss: from.campaign.boss ? { ...from.campaign.boss } : null,
+    };
+    for (const key of [
+      "rocks",
+      "drones",
+      "bullets",
+      "pickups",
+      "particles",
+      "texts",
+      "rings",
+      "arcs",
+    ] as const)
+      Object.assign(state.campaign, { [key]: from.campaign[key].map((entity) => ({ ...entity })) });
+  }
+  return state;
+}
+
+function interpolatePositions(from: CoopWireState, to: CoopWireState, alpha: number) {
+  const width = to.campaign?.w ?? 1000,
+    height = to.campaign?.h ?? 700;
+  // Wrapping and scripted teleports are discontinuities, never paths across the arena.
+  const position = (left: { x: number; y: number }, right: { x: number; y: number }) => {
+    const wrapped =
+      Math.abs(right.x - left.x) > width / 2 || Math.abs(right.y - left.y) > height / 2;
+    const t = wrapped ? 1 : alpha;
+    left.x += (right.x - left.x) * t;
+    left.y += (right.y - left.y) * t;
+  };
+  const state = presentationCopy(from);
+  for (const id of ["p1", "p2"] as const) {
+    const left = from.players[id].ship;
+    const right = to.players[id].ship;
+    position(state.players[id].ship, right);
+    state.players[id].ship.angle = interpolateAngle(left.angle, right.angle, alpha);
+  }
+  for (const key of [
+    "rocks",
+    "enemies",
+    "projectiles",
+    "hostileProjectiles",
+    "hazards",
+    "mines",
+    "pickups",
+  ] as const) {
+    const rightById = new Map(to[key].map((entity) => [entity.id, entity]));
+    for (const entity of state[key]) {
+      const right = rightById.get(entity.id);
+      if (!right) continue;
+      position(entity, right);
+    }
+  }
+  if (state.boss && to.boss && state.boss.id === to.boss.id) {
+    position(state.boss, to.boss);
+  }
+  state.tick = Math.round(from.tick + (to.tick - from.tick) * alpha);
+  if (state.campaign && to.campaign) {
+    for (const key of ["rocks", "drones", "bullets", "pickups"] as const) {
+      const targets = new Map(to.campaign[key].map((entity) => [entity.id, entity]));
+      for (const entity of state.campaign[key]) {
+        const target = targets.get(entity.id);
+        if (!target) continue;
+        position(entity, target);
+        if ("rot" in entity && "rot" in target)
+          entity.rot = interpolateAngle(entity.rot, target.rot, alpha);
+        if ("angle" in entity && "angle" in target)
+          entity.angle = interpolateAngle(entity.angle, target.angle, alpha);
+      }
+    }
+    const boss = state.campaign.boss,
+      target = to.campaign.boss;
+    if (boss && target && boss.id === target.id) {
+      position(boss, target);
+      boss.rot = interpolateAngle(boss.rot, target.rot, alpha);
+    }
+    const world = state.campaign;
+    const dt = ((to.campaign.frame - world.frame) / 60) * alpha * world.timeScale;
+    world.frame += (to.campaign.frame - world.frame) * alpha;
+    for (const p of world.particles) {
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.life -= dt;
+    }
+    for (const text of world.texts) {
+      text.y += text.vy * dt;
+      text.life -= dt;
+    }
+    for (const ring of world.rings) {
+      ring.r += (ring.max - ring.r) * Math.min(1, dt * 8);
+      ring.life -= dt;
+    }
+    for (const arc of world.arcs) arc.life -= dt;
+    world.particles = world.particles.filter((p) => p.life > 0);
+    world.texts = world.texts.filter((p) => p.life > 0);
+    world.rings = world.rings.filter((p) => p.life > 0);
+    world.arcs = world.arcs.filter((p) => p.life > 0);
+    for (const id of ["p1", "p2"] as const) {
+      const drone = state.players[id].drone,
+        target = to.players[id].drone;
+      position(drone, target);
+      drone.angle = interpolateAngle(drone.angle, target.angle, alpha);
+    }
+  }
+  return state;
+}
+
+/** Small ordered snapshot buffer used by the future renderer at serverTick - interpolationDelay. */
+export class SnapshotInterpolator {
+  private snapshots: AuthoritativeSnapshot[] = [];
+
+  constructor(private readonly capacity = 30) {}
+
+  get size() {
+    return this.snapshots.length;
+  }
+
+  push(snapshot: AuthoritativeSnapshot) {
+    const existing = this.snapshots.findIndex((entry) => entry.serverTick === snapshot.serverTick);
+    if (existing >= 0) this.snapshots.splice(existing, 1);
+    this.snapshots.push(snapshot);
+    this.snapshots.sort((left, right) => left.serverTick - right.serverTick);
+    if (this.snapshots.length > this.capacity) {
+      this.snapshots.splice(0, this.snapshots.length - this.capacity);
+    }
+  }
+
+  sample(renderTick: number): CoopWireState | null {
+    if (this.snapshots.length === 0) return null;
+    const rightIndex = this.snapshots.findIndex((snapshot) => snapshot.serverTick >= renderTick);
+    if (rightIndex <= 0) {
+      const snapshot = rightIndex === 0 ? this.snapshots[0] : this.snapshots.at(-1)!;
+      return presentationCopy(snapshot.state);
+    }
+    const left = this.snapshots[rightIndex - 1];
+    const right = this.snapshots[rightIndex];
+    const span = Math.max(1, right.serverTick - left.serverTick);
+    const alpha = clamp((renderTick - left.serverTick) / span, 0, 1);
+    return interpolatePositions(left.state, right.state, alpha);
+  }
+}

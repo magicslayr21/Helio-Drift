@@ -1,8 +1,6 @@
 /* Shared types for HELIOS DRIFT. Pure type definitions — no runtime code.
    New entities and HUD fields are declared here first. */
 
-import type { Game } from "./engine";
-
 /* ------------------------------------------------------------ core unions */
 
 export type Mode = "menu" | "playing" | "paused" | "levelup" | "gameover" | "victory";
@@ -21,11 +19,82 @@ export type SalvageUpgradeId =
   | "overcharge"
   | "piercing"
   | "armor"
+  | "shield"
   | "repairPulse"
   | "magnet"
   | "scan"
   | "speed";
 export type Rarity = "common" | "rare" | "epic";
+
+/* ------------------------------------------------------------ warheads */
+
+export type WarheadSlot = "payload" | "guidance" | "trigger";
+export type PayloadId = "blast" | "cluster" | "gravity" | "emp" | "incendiary";
+export type GuidanceId = "direct" | "corkscrew" | "relay" | "orbit";
+export type TriggerId = "impact" | "proximity" | "chain" | "delayed";
+export type WarheadPartId = PayloadId | GuidanceId | TriggerId;
+export interface MissileBuild {
+  payload: PayloadId;
+  guidance: GuidanceId;
+  trigger: TriggerId;
+}
+/** Default parts are fitted to every new ship; the rest are found in the Workshop. */
+export type WarheadRarity = Rarity | "default";
+
+/** Mutable run state; numeric tuning literals must widen to numbers here. */
+export interface Player {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  angle: number;
+  hull: number;
+  maxHull: number;
+  armor: number;
+  thrust: number;
+  maxSpeed: number;
+  turn: number;
+  fireRateMul: number;
+  damageMul: number;
+  bulletSpeed: number;
+  rangeMul: number;
+  extraShots: number;
+  pierce: number;
+  crit: number;
+  critMult: number;
+  inaccuracy: number;
+  heat: number;
+  arcTimer: number;
+  missiles: number;
+  maxMissiles: number;
+  blastDmg: number;
+  blastR: number;
+  missileTimer: number;
+  missileRegen: number;
+  missileCharge: number;
+  /** Salvo Lock: painted target ids (a target appears once per lock it holds). */
+  missileLocks: number[];
+  /** Seconds E has been held while painting; -1 when not painting. */
+  missileHoldT: number;
+  /** Countdown to the next lock while painting. */
+  missileLockT: number;
+  /** missileHoldT at the moment locks reached the rack size; -1 when not at Full Lock. */
+  fullLockAt: number;
+  /** Warhead Workshop: the payload, guidance and trigger fitted to every missile. */
+  missileBuild: MissileBuild;
+  magnet: number;
+  creditChance: number;
+  creditValue: number;
+  leech: number;
+  fireTimer: number;
+  invuln: number;
+  primary: WeaponId;
+  weapons: Record<WeaponId, number>;
+  overheated: boolean;
+  beamOn: boolean;
+  missileHeld: boolean;
+  thrusting: boolean;
+}
 
 /* ------------------------------------------------------------ HUD & shop */
 
@@ -45,6 +114,7 @@ export interface Hud {
   owned: { id: WeaponId; level: number }[];
   missiles: number;
   maxMissiles: number;
+  missileBuild: MissileBuild;
   missileCharge: number;
   heat: number;
   comboTime: number;
@@ -125,6 +195,11 @@ export interface SalvageShopInfo {
 /* ------------------------------------------------------------ entities */
 
 export interface Bullet {
+  guidanceOrigin?: number;
+  /** Room-owned identity; absent for offline campaign shots. */
+  id?: number;
+  ownerId?: "p1" | "p2";
+  weapon?: WeaponId;
   x: number;
   y: number;
   vx: number;
@@ -143,18 +218,45 @@ export interface Bullet {
     | "flak"
     | "shrap"
     | "wardenOrb"
-    | "wardenShard";
+    | "wardenShard"
+    | "bomblet";
   pierce: number;
   color: string;
   hitIds: Set<number>;
   target?: number;
   turn: number;
   bounces: number;
+  wallBounces?: number;
   fuse: number;
   extra: number; // flak: shrapnel count
   extraDmg: number; // flak: shrapnel damage
+  /** Human-readable source for the fatal-hit report; has no combat effect. */
+  damageCause?: string;
   /** enemy shells that detonate when they expire without hitting anything */
   blast?: number;
+  /** Salvo Lock missile payload: per-missile blast damage and radius at launch. */
+  missileDmg?: number;
+  missileR?: number;
+  /** Corkscrew flight: phase offset, normalised flight time, age and current offset. */
+  spiral?: { phase: number; flight: number; age: number; offset: number; amp?: number };
+  /** Released inside the Full Lock window. */
+  fullLock?: boolean;
+  /** Warhead parts this missile launched with. */
+  warhead?: MissileBuild;
+  /** Chain mini missile: smaller, and never chains again. */
+  mini?: boolean;
+  /** Relay: hops taken so far and the salvo's other locks to fly on to. */
+  hops?: number;
+  relayTargets?: number[];
+  /** Orbit guidance: circling the owner's ship before it strikes. */
+  orbit?: { t: number; angle: number; blocks: number };
+  /** Delayed trigger: stuck to a target, counting down. */
+  stuck?: { id: number; dx: number; dy: number; t: number };
+  /** Bomblet (Cluster payload) blast radius. */
+  blastR?: number;
+  /** Graze bookkeeping (bit per pilot): armed while inside the band, spent once awarded. */
+  grazeArm?: number;
+  grazed?: number;
   /** Smart turret nest fields (persistent warden nest) */
   hpNow?: number;
   spawnT?: number;
@@ -166,12 +268,31 @@ export interface Bullet {
   volleyCharge?: number;
 }
 
+/** Lingering missile effects: Gravity wells and Incendiary burning patches. */
+export interface MissileZone {
+  kind: "gravity" | "fire";
+  x: number;
+  y: number;
+  r: number;
+  life: number;
+  max: number;
+  /** fire: damage per second; gravity: unused */
+  dps: number;
+  /** fire: countdown to the next damage tick, and damage ticks still to land */
+  tick: number;
+  ticksLeft?: number;
+  ownerId?: "p1" | "p2";
+  seed: number;
+}
+
 export interface Crack {
   pts: { x: number; y: number }[];
   at: number;
 }
 
 export interface Rock {
+  supportShield?: SupportShield;
+  coopMine?: { ownerId: number; armTimer: number; triggerTimer: number; life: number };
   id: number;
   x: number;
   y: number;
@@ -194,13 +315,28 @@ export interface Rock {
   /** boom creeper timer when player is close */
   fuse?: number;
   bounces?: number;
+  /** Graze bookkeeping (bit per pilot): armed while inside the band, spent once awarded. */
+  grazeArm?: number;
+  grazed?: number;
 }
 
-/* sentinels: small single-shot hunters · wardens: larger heavies —
-   more HP, heavier bolts, a much longer cooldown */
+/* Sentinels hunt, wardens snipe, and spikers drift while firing radial volleys. */
+export interface SupportShield {
+  hp: number;
+  maxHp: number;
+  sourceId: number;
+}
+
 export interface Drone {
+  supportShield?: SupportShield;
+  coop?: {
+    kind: "tetherSentinel" | "mineWarden" | "riftSpiker";
+    timer: number;
+    warning: number;
+    target: "p1" | "p2" | null;
+  };
   id: number;
-  kind: "sentinel" | "warden";
+  kind: "sentinel" | "warden" | "spiker";
   x: number;
   y: number;
   vx: number;
@@ -222,6 +358,8 @@ export interface Drone {
   /** Locked sniper aim point (player position captured when the warden locks on) */
   sniperAimX: number;
   sniperAimY: number;
+  /** EMP payload: seconds this specialist stays offline. */
+  emp?: number;
 }
 
 export interface Boss {
@@ -361,6 +499,8 @@ export interface Hostile {
 }
 
 export interface Singularity {
+  /** Continuous time spent inside the core; optional for older saves. */
+  damageTimer?: number;
   id: number;
   x: number;
   y: number;
@@ -410,6 +550,7 @@ export interface Text {
   size: number;
 }
 export interface Pickup {
+  id?: number;
   x: number;
   y: number;
   vx: number;
@@ -504,7 +645,12 @@ export interface StatUpgrade {
   rarity: Rarity;
   weight: number;
   max: number;
-  apply: (g: Game) => void;
+  apply: (state: StatUpgradeTarget) => void;
+}
+
+/** Small structural contract keeps upgrade rules independent of the browser Game class. */
+export interface StatUpgradeTarget {
+  p: Player;
 }
 
 /* ------------------------------------------------------------ persistence */

@@ -2,6 +2,8 @@
    Everything is synthesised with WebAudio oscillators and noise buffers,
    so there are no asset downloads and no decode hitches mid-run.        */
 
+import { MusicScore, type MusicTheme } from "./music";
+
 export type Sfx =
   | "pulse"
   | "rail"
@@ -14,6 +16,9 @@ export type Sfx =
   | "beamStop"
   | "overheat"
   | "missile"
+  | "lock"
+  | "fullLock"
+  | "graze"
   | "explodeBig"
   | "explodeSmall"
   | "hit"
@@ -34,6 +39,7 @@ export type Sfx =
   | "bossDeath";
 
 const MASTER_KEY = "helios-drift-muted-v1";
+const MUSIC_KEY = "helios-drift-music-v1";
 
 class AudioEngine {
   ctx: AudioContext | null = null;
@@ -49,10 +55,14 @@ class AudioEngine {
   } | null = null;
   private voices = 0;
   private lastAt: Record<string, number> = {};
+  musicEnabled = true;
+  private music: MusicScore | null = null;
+  private musicOverride: MusicTheme | null = null;
 
   constructor() {
     try {
       this.muted = localStorage.getItem(MASTER_KEY) === "1";
+      this.musicEnabled = localStorage.getItem(MUSIC_KEY) !== "0";
     } catch {
       /* ignore */
     }
@@ -101,7 +111,40 @@ class AudioEngine {
       this.master.gain.cancelScheduledValues(this.ctx.currentTime);
       this.master.gain.setTargetAtTime(m ? 0 : 0.42, this.ctx.currentTime, 0.02);
     }
-    if (m) this.stopBeam();
+    if (m) this.silence();
+  }
+
+  setMusicEnabled(enabled: boolean) {
+    this.musicEnabled = enabled;
+    try {
+      localStorage.setItem(MUSIC_KEY, enabled ? "1" : "0");
+    } catch {
+      /* private storage */
+    }
+    if (!enabled) this.stopMusic();
+  }
+
+  setMusic(mode: MusicTheme) {
+    if (!this.musicEnabled || !this.ready()) return;
+    if (this.music?.theme === mode) return;
+    if (this.music?.retune(mode)) return;
+    this.stopMusic();
+    this.music = new MusicScore(this.ctx!, this.comp!, mode);
+  }
+
+  setMusicOverride(mode: MusicTheme | null) {
+    this.musicOverride = mode;
+    if (mode) this.setMusic(mode);
+    else this.stopMusic();
+  }
+
+  get hasMusicOverride() {
+    return this.musicOverride !== null;
+  }
+
+  stopMusic() {
+    this.music?.stop();
+    this.music = null;
   }
 
   private ready(): this is { ctx: AudioContext; comp: DynamicsCompressorNode; noise: AudioBuffer } {
@@ -203,6 +246,20 @@ class AudioEngine {
       case "missile":
         this.tone("sawtooth", 300, 900, 0.26, 0.16, { filter: 2200 });
         this.burst(0.3, 0.14, 1600, 300);
+        break;
+      case "lock":
+        // seeker-head chirp: each lock climbs a little so a full salvo reads as a rising scale
+        if (!this.gate("lock", 60)) return;
+        this.tone("square", 1180 + Math.random() * 120, 1480, 0.05, 0.07, { filter: 4200 });
+        break;
+      case "fullLock":
+        this.tone("triangle", 1320, 1320, 0.09, 0.1, { filter: 6000 });
+        this.tone("triangle", 1980, 1980, 0.14, 0.09, { filter: 6000, delay: 0.06 });
+        break;
+      case "graze":
+        if (!this.gate("graze", 90)) return;
+        this.burst(0.08, 0.05, 7000, 2400, 3);
+        this.tone("sine", 2200, 2600, 0.05, 0.04);
         break;
       case "seeker":
         if (!this.gate("seeker", 40)) return;
@@ -371,6 +428,7 @@ class AudioEngine {
   /** hard stop for pause / game over */
   silence() {
     this.stopBeam();
+    this.stopMusic();
   }
 }
 

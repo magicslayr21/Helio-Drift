@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "helio-drift-leaderboard",
+  "main": "worker/index.mjs",
+  "compatibility_date": "2026-10-09",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {
+    "LEADERBOARD_ORIGINS": "https://magicslayr21.github.io",
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "helio-drift-leaderboard",
+      "database_id": "c561c15b-1901-41d7-aac6-cc2628ad9b97",
+      "migrations_dir": "worker/migrations",
+    },
+  ],
+  "triggers": {
+    "crons": ["17 3 * * *"],
+  },
+}

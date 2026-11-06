@@ -1,0 +1,494 @@
+export const UPDATE_LOG = [
+  {
+    version: "0.7.1-alpha.1",
+    date: "2026-11-06",
+    title: "Warhead workshop",
+    sections: [
+      {
+        title: "SHOP",
+        items: [
+          "The Missiles tab is open: the Warhead Workshop fits one payload, one guidance and one trigger part to every missile in your rack.",
+          "13 parts across three slots, each with its rarity shown. Fitting a part is free, and missiles already in flight keep the warhead they launched with.",
+          "A live schematic of the assembled missile updates as you fit each part.",
+        ],
+      },
+      {
+        title: "PAYLOADS",
+        items: [
+          "Blast: 42 damage in a 72 radius (the default).",
+          "Cluster: bursts into 6 bomblets that scatter and deal 16 damage each. Bomblets never hurt you.",
+          "Gravity: a 1.5 s well that pulls small and medium rocks within 160.",
+          "EMP: specialists in the blast go offline for 3 s and Tether Sentinel shields drop.",
+          "Incendiary: a burning patch for 2 s at 20 damage per second.",
+        ],
+      },
+      {
+        title: "GUIDANCE",
+        items: [
+          "Direct: pure pursuit at a 6.5 turn rate (the default).",
+          "Corkscrew: +15% speed and a wider spiral, even on a single tapped missile.",
+          "Relay: when its blast kills the target, the missile flies on to another lock at 60% damage, up to 2 hops.",
+          "Orbit: missiles circle your ship for 1.5 s, each blocking 1 enemy shot, then strike.",
+        ],
+      },
+      {
+        title: "TRIGGERS",
+        items: [
+          "Impact: detonates on contact (the default).",
+          "Proximity: detonates 40 px early with +20% radius.",
+          "Chain: each blast launches a mini missile at 30% damage. Mini missiles do not chain.",
+          "Delayed: sticks to the target and detonates after 1 s for 1.6× damage.",
+          "Bosses take the full effect of damage parts; Gravity and EMP never move or disable a boss.",
+        ],
+      },
+      {
+        title: "VISUALS",
+        items: [
+          "Each part changes the missile: the payload tints the warhead, plume and blast; guidance changes the fins (raked fins, forward-swept relay prongs or an orbit ring-wing); triggers add a proximity sensor ring, a docked mini missile or grapple barbs.",
+          "Gravity wells draw a dark core with spiral arms, fire patches burn with flame tongues and embers, offline specialists crackle with arcs, and stuck Delayed charges show a countdown ring.",
+        ],
+      },
+      {
+        title: "CO-OP",
+        items: ["Each pilot fits their own warhead from the shared shop."],
+      },
+    ],
+  },
+  {
+    version: "0.7.0-alpha.1",
+    date: "2026-11-06",
+    title: "Salvo lock",
+    sections: [
+      {
+        title: "MISSILES",
+        items: [
+          "Hold E to open a 70° lock cone from the nose and paint targets, one lock every 0.11 s; release to fire one missile per lock.",
+          "Large rocks take up to 2 locks, bosses take any number, and locks never exceed the missiles in your rack. Locks stay on targets that leave the cone and drop when a target dies.",
+          "Salvo missiles launch broadside, alternating sides, and corkscrew into their targets. A quick tap still fires one missile at the nearest target.",
+          "Full Lock: when every loaded missile is locked the reticles turn white. Release within 0.3 s for ×1.25 damage, +20% missile speed and a white flash.",
+          "Each missile now deals 42 damage in a 72 radius, so a full 4-missile salvo deals 168.",
+        ],
+      },
+      {
+        title: "CHARGE",
+        items: [
+          "The rack starts at 4 missiles. Passive regen is now one missile every 12 s.",
+          "Graze: a rock or enemy shot that passes within 26 px of your hull without hitting adds 12% of a missile. Each object grazes once.",
+          "Kills add 3% charge and main-weapon hits on bosses add 0.5%.",
+          "New common upgrade, Missile Rack: +1 rack slot and +1 lock per stack, 2 stacks, up to 6.",
+        ],
+      },
+      {
+        title: "VISUALS",
+        items: [
+          "New Heliodart missile: swept fins, canards, a pulsing lock beacon, a white-hot seeker cap, a flickering two-stage plume and a tapered ribbon trail that shows the corkscrew.",
+          "Lock cone with a sweeping scan line, rotating lock reticles with one pip per lock, and a white arc that drains through the Full Lock window.",
+          "A segmented charge ring around the ship shows each rack slot loading.",
+          "Missile blasts have a white-hot core, a coloured shockwave, a trailing pressure ring and streaking sparks.",
+        ],
+      },
+      {
+        title: "CO-OP",
+        items: [
+          "Locks, missiles and trails use each pilot's accent colour. Only your own lock cone is drawn; your teammate's reticles stay visible.",
+          "Crossfire: when both pilots' missiles hit the same target within 1 s, the second blast deals ×1.4 damage and adds to shared Overdrive.",
+          "Holding E or the on-screen Missile button now paints locks in online co-op.",
+        ],
+      },
+    ],
+  },
+  {
+    version: "0.6.7-alpha.1",
+    date: "2026-11-04",
+    title: "Specialist refit",
+    sections: [
+      {
+        title: "VISUALS",
+        items: [
+          "Tether Sentinels are now forked shield emitters with a spinning segmented halo and a crackling arc between their prongs.",
+          "Mine Wardens are heavier armored layers with a rear mine drum whose pods light up as the next mine is about to drop.",
+          "Rift Spikers are now void cores ringed by floating crystal shards that flare outward and pull in streaks of matter while the gravity pulse charges.",
+        ],
+      },
+    ],
+  },
+  {
+    version: "0.6.6-alpha.1",
+    date: "2026-10-16",
+    title: "Crossfire tuning",
+    sections: [
+      {
+        title: "COMBAT",
+        items: [
+          "Rift Spikers no longer spawn naturally in campaign; developer spawning now works.",
+          "Pulse upgrades offer small damage and fire-rate boosts without adding a projectile.",
+          "Twin-Linked Feeder adds a rear-facing beam alongside the forward beam.",
+          "Flak fires faster and hits harder; Arc lightning deals more damage.",
+          "Ricochet damage rises to 2×, 3.5× and 5× after one, two and three wall bounces.",
+          "Railgun fires much slower with heavier damage; Scatter hits harder across a wider spread.",
+        ],
+      },
+    ],
+  },
+  {
+    version: "0.6.5-alpha.1",
+    date: "2026-10-16",
+    title: "Reliable boarding",
+    sections: [
+      {
+        title: "MULTIPLAYER",
+        items: [
+          "Joining and room browsing recover from temporary connection failures.",
+          "Lost join replies recover the same pilot slot instead of leaving a full room.",
+          "Quick Join and room updates no longer block each other.",
+          "Unfinished join attempts can recover after refreshing.",
+        ],
+      },
+    ],
+  },
+  {
+    version: "0.6.4-alpha.1",
+    date: "2026-10-15",
+    title: "The equipment exchange",
+    sections: [
+      {
+        title: "SHOP",
+        items: [
+          "New weapon gallery with HUD icons, rarity colours and upgrade comparisons.",
+          "Separate Weapons and Salvage Drone tabs; Missiles marked in development.",
+          "Fresh drone chassis, mounts and upgrade cards with shorter descriptions.",
+          "Confirmed upgrades light up with installation effects and purchase receipts.",
+          "Shared shop design in campaign and co-op.",
+          "Corrected weapon upgrade summaries and range readouts.",
+          "Fixed warning-ring rendering and a pause/resume timing error.",
+        ],
+      },
+    ],
+  },
+  {
+    version: "0.6.3-alpha.1",
+    date: "2026-10-15",
+    title: "Systems ascending",
+    sections: [
+      {
+        title: "UPGRADES",
+        items: [
+          "New level-up screen with illuminated icons, rarity colours and reward effects.",
+          "Shorter upgrade descriptions and clearer stack progress in campaign and co-op.",
+        ],
+      },
+      {
+        title: "CAMPAIGN",
+        items: [
+          "Rift Spikers now appear from wave 16, with occasional pairs from wave 21.",
+          "Late boss waves and the MK6 encounter include Rift Spikers.",
+        ],
+      },
+    ],
+  },
+  {
+    version: "0.6.2-alpha.1",
+    date: "2026-10-15",
+    title: "Mine warning",
+    sections: [
+      {
+        title: "VISIBILITY",
+        items: [
+          "Mine Warden mines now have large red spiked shells, pulsing rings and danger markers.",
+        ],
+      },
+    ],
+  },
+  {
+    version: "0.6.1-alpha.1",
+    date: "2026-10-15",
+    title: "Fixed flight view",
+    sections: [
+      {
+        title: "CO-OP",
+        items: [
+          "Fixed camera shows the whole arena without panning.",
+          "New patrols use a wider 1920×1080 arena.",
+          "Specialist hulls retain the original Sentinel and Warden shapes.",
+        ],
+      },
+      {
+        title: "RIFT SPIKER",
+        items: [
+          "Available in the campaign developer console.",
+          "Four-shot stage becomes eight shots at wave 20, with additional spikes.",
+        ],
+      },
+    ],
+  },
+  {
+    version: "0.6.0-alpha.1",
+    date: "2026-10-15",
+    title: "A wider frontier",
+    sections: [
+      {
+        title: "CO-OP FLIGHT",
+        items: [
+          "Full-screen playfield with a wider view and teammate edge markers.",
+          "Fixed asteroids streaking across the map when wrapping at edges.",
+          "Redesigned flight deck, rooms, records, settings and end-of-run screens.",
+        ],
+      },
+      {
+        title: "SPECIALIST ENEMIES",
+        items: [
+          "Tether Sentinels now shield nearby asteroids and enemies; bosses stay unshielded.",
+          "Distinct new hulls for Tether Sentinels and Mine Wardens.",
+          "Co-op-only Rift Spiker: spiral volleys and a warned gravity pulse.",
+          "Rift Spiker added to the co-op developer console.",
+        ],
+      },
+      {
+        title: "ARSENAL & VISIBILITY",
+        items: [
+          "Ship visibility slider adds glow and hull fill.",
+          "Reduced Railgun aim assist while retaining gentle correction.",
+          "Beam width scales with level; redline heat adds red beams and 35% damage.",
+          "New common Range upgrade: up to 40% more weapon and drone reach.",
+        ],
+      },
+    ],
+  },
+  {
+    version: "0.5.6-alpha.1",
+    date: "2026-10-15",
+    title: "Shared flight controls and co-op records",
+    sections: [
+      {
+        title: "MULTIPLAYER",
+        items: [
+          "Campaign pause layout, arsenal and boost ledger in co-op.",
+          "Weapon selection and shop purchases work during shared pause.",
+          "Full draggable developer console with field and loadout controls.",
+          "Inspect both pilots’ stats, edit team records and delete co-op runs.",
+        ],
+      },
+      { title: "CAMPAIGN", items: ["Tether Sentinel and Mine Warden added to developer spawns."] },
+    ],
+  },
+  {
+    version: "0.5.5-alpha.1",
+    date: "2026-10-14",
+    title: "A unified Helios flight deck",
+    sections: [
+      {
+        title: "MULTIPLAYER",
+        items: [
+          "Amber controls, charcoal panels and illuminated corners across multiplayer.",
+          "Restyled pause menu with a clear resume action and countdown.",
+          "Developer console styled as the Helios service bay.",
+          "Room browser refreshed with patrol rows and a signal-search display.",
+        ],
+      },
+    ],
+  },
+  {
+    version: "0.5.4-alpha.1",
+    date: "2026-10-14",
+    title: "Co-op flight deck and reliability",
+    sections: [
+      {
+        title: "MULTIPLAYER",
+        items: [
+          "Stalled connections now time out and retry automatically.",
+          "Fixed sockets getting stuck while closing.",
+          "Reconnects recover after network changes and returning to the game.",
+          "Fixed competing tabs repeatedly disconnecting each other.",
+          "Slow reconnect requests no longer invalidate newer connection tickets.",
+          "Added clearer connection status and a Reconnect button.",
+          "Released multiplayer styling and callsign editing in the lobby.",
+          "Dismissible warning about possible multiplayer progress wipes.",
+          "Escape opens shared pause without leaving the match.",
+          "Pause includes settings, leaderboards, game details and update notes.",
+          "Authorized developer console; assisted runs stay off the leaderboard.",
+        ],
+      },
+      {
+        title: "FLIGHT & LOADOUT",
+        items: [
+          "Weapon bar restored with two customizable quick slots.",
+          "Press 1 or 2 to equip your chosen primary or secondary weapon.",
+          "Green salvage drone chassis.",
+          "Slower early meteor showers; full speed from wave 21.",
+        ],
+      },
+    ],
+  },
+  {
+    version: "0.5.3-alpha.1",
+    date: "2026-10-14",
+    title: "Co-op controls and clarity",
+    sections: [
+      {
+        title: "MULTIPLAYER",
+        items: [
+          "Fixed the Deploy dialog blocking movement and Escape-to-pause.",
+          "Movement keys work after clicking HUD buttons.",
+          "Flight controls regain focus when entering or resuming a match.",
+          "Touch movement releases correctly outside its button.",
+          "Sharper canvas on high-density displays and smaller windows.",
+          "Resolution updates when switching displays or zooming.",
+        ],
+      },
+    ],
+  },
+  {
+    version: "0.5.2-alpha.1",
+    date: "2026-10-13",
+    title: "Co-op flight improvements",
+    sections: [
+      {
+        title: "MULTIPLAYER",
+        items: [
+          "Smoother rendering and controls with less snapshot processing.",
+          "Sharper display resolution and a larger flight area.",
+          "More campaign particle effects visible in co-op.",
+          "Either pilot can pause both players for up to 30 seconds.",
+          "Resume or leave from the shared pause menu.",
+        ],
+      },
+    ],
+  },
+  {
+    version: "0.5.1-alpha.1",
+    date: "2026-10-13",
+    title: "Campaign gameplay in co-op",
+    sections: [
+      {
+        title: "SHARED GAMEPLAY",
+        items: [
+          "Co-op now uses the original campaign combat and artwork.",
+          "Campaign weapons, enemy AI, boss phases, and meteor showers restored in co-op.",
+          "Campaign upgrade choices and paid rerolls added to the co-op shop.",
+          "Revives, Overdrive, separate equipment, and co-op escorts retained.",
+        ],
+      },
+      {
+        title: "SMOOTHER FLIGHT",
+        items: [
+          "Campaign effects, weapon sounds, and boss music now follow the shared battle.",
+          "Movement prediction follows campaign slow motion.",
+          "Larger room saves preserve boss attacks and individual pilot timers.",
+        ],
+      },
+    ],
+  },
+  {
+    version: "0.5.0-alpha.1",
+    date: "2026-10-13",
+    title: "Online Co-op Expansion",
+    sections: [
+      {
+        title: "ONLINE DEPLOYMENT",
+        items: [
+          "Private rooms, room-code joining, public patrols, browsing, and Quick Join added.",
+          "Ready-up, secure reconnects, individual callsigns, and two-player flight added.",
+          "Developer authorization is required to host during closed alpha; anyone can join.",
+        ],
+      },
+      {
+        title: "CO-OP CAMPAIGN",
+        items: [
+          "The full 25-wave campaign and optional MK6 challenge support two pilots.",
+          "Each pilot has separate hull, credits, weapons, upgrades, missiles, and drone.",
+          "Shared Overdrive, proximity revives, sector directives, and co-op scaling added.",
+        ],
+      },
+      {
+        title: "ENEMIES & BOSSES",
+        items: [
+          "Sentinels, Wardens, Spikers, asteroid mutations, and MK1–MK6 target either pilot.",
+          "Tether Sentinels and Mine Wardens add new team-focused hazards to later waves.",
+          "Boss defeats clear the battlefield and co-op victory or failure is synchronized.",
+        ],
+      },
+      {
+        title: "FLIGHT DECK & RECORDS",
+        items: [
+          "The co-op HUD shows teammate hull, directives, Overdrive, shops, and results.",
+          "Distinct pilot accents and keyboard, pointer, and touch controls support shared flight.",
+          "Server-authored co-op results use a separate global leaderboard.",
+        ],
+      },
+    ],
+  },
+  {
+    version: "0.4.2-alpha.1",
+    date: "2026-10-12",
+    title: "Run saving & callsigns",
+    items: [
+      "Failed first saves now retry; Save & Return warns if storage fails.",
+      "Older tabs cannot overwrite newer run progress.",
+      "Latest progress syncs on menu return and checkpoint recovery.",
+      "Rejected leaderboard reports stay queued for retry.",
+      "Guardian Link reports work with older leaderboard servers.",
+      "Campaign requires a saved callsign beside the launch buttons.",
+    ],
+  },
+  {
+    version: "0.4.1-alpha.1",
+    date: "2026-10-11",
+    title: "Update log refresh",
+    items: [
+      "Cleaner release layout with a fixed header and latest-release badge.",
+      "Shorter bullet points across all release notes.",
+    ],
+  },
+  {
+    version: "0.4.0-alpha.1",
+    date: "2026-10-11",
+    title: "Deploy menu & music",
+    items: [
+      "New Deploy button and full-screen mode selector.",
+      "Custom mode icons, hover highlights, and mobile layout.",
+      "Campaign offers Continue Run and confirmed New Run.",
+      "Back and Escape work throughout deployment.",
+      "Multiplayer, Extras, and Unlimited marked as unreleased.",
+      "New exploration and MK6 soundtracks; all music slightly louder.",
+      "MK6’s second phase adds louder, distorted music.",
+    ],
+  },
+  {
+    version: "0.3.0-alpha.1",
+    date: "2026-10-10",
+    title: "Drone upgrades & balance",
+    items: [
+      "Save & Return replaces Restart Run; leaderboard moved to Pause.",
+      "Update log added to the menu and Settings.",
+      "Release checks and Guardian Link leaderboard support added.",
+      "Original flight and boss music with a separate Settings toggle.",
+      "Pulse Cannon upgrade damage reduced; rare and epic weapons buffed.",
+      "Weapon level caps: common 3, rare 4, epic 6. Common stat caps: 3.",
+      "Targeting Optics: rare, 3 levels, up to 66% crit chance and 2.5× damage.",
+      "Small homing asteroids move 50% faster.",
+      "Fast asteroids gain 20% HP and speed up as health drops.",
+      "MK3–6 HP increased to 14k / 22k / 28k / 37k.",
+      "Boss defeats clear enemies, hostile shots, and meteor showers.",
+      "MK6’s mid-fight raid sends medium meteors across the screen at 300 px/s.",
+      "Adaptive Arsenal replaces Twin Cannons and boosts any drone weapon.",
+      "Synchronized Feeders replaces piercing: +5% pilot / +10% drone attack speed per level.",
+      "Magnet Coil improves collection; Wide Scan extends targeting and support range.",
+      "Repair Pulse heals nearby after 5 seconds without damage; up to 2 HP every 0.5 seconds.",
+      "Guardian Link redirects 20–50% of damage to a nearby drone.",
+      "Existing saves updated; repair timing, stat rebuilds, and menu input fixed.",
+    ],
+  },
+  {
+    version: "0.2.0-alpha.1",
+    date: "Previous release",
+    title: "Flight deck",
+    items: [
+      "New menu with saved runs, callsign editing, and leaderboard preview.",
+      "Reopening the game returns to the menu.",
+      "Bottom status bar removed; sector progress moved to the top.",
+      "Alpha version numbering added.",
+      "Sentinel aiming fixed.",
+      "Spiker attack rate increased 1.2×; shot speed increased 1.5×.",
+    ],
+  },
+] as const;

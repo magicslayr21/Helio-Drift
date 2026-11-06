@@ -1,0 +1,246 @@
+.warhead-workshop {
+  display: grid;
+  gap: 22px;
+}
+.warhead-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 20px;
+  align-items: center;
+  padding: 18px 20px;
+  border: 1px solid #ff5ad830;
+  background:
+    radial-gradient(ellipse at 80% 50%, #ff5ad80d, transparent 65%),
+    repeating-linear-gradient(90deg, #ffffff03 0 1px, transparent 1px 40px), #0c0f18;
+  box-shadow: inset 0 2px #ff5ad860;
+}
+.warhead-hero-copy h3 {
+  margin: 6px 0 8px;
+  font-family: var(--font-display, "Archivo Black", sans-serif);
+  font-size: 22px;
+  letter-spacing: 0.02em;
+  color: #ffe0a3;
+}
+.warhead-hero-copy h3 span {
+  color: #ff5ad8;
+}
+.warhead-hero-copy p:last-child {
+  color: #9e9b93;
+  font-size: 10px;
+  line-height: 1.6;
+}
+.warhead-schematic {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+.warhead-schematic .wh-grid line {
+  stroke: #6fe7ff0d;
+}
+.warhead-schematic text {
+  font-family: var(--font-mono);
+  font-size: 7.5px;
+  letter-spacing: 0.14em;
+}
+.warhead-schematic .wh-callout-name {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+}
+.warhead-schematic .wh-plume {
+  transform-origin: 118px 85px;
+  animation: wh-plume 140ms ease-in-out infinite alternate;
+}
+.warhead-schematic .wh-plume-core {
+  transform-origin: 118px 85px;
+  animation: wh-plume 90ms ease-in-out infinite alternate-reverse;
+}
+.warhead-schematic .wh-payload,
+.warhead-schematic .wh-guidance,
+.warhead-schematic .wh-trigger {
+  animation: wh-fit 260ms ease-out;
+}
+.warhead-schematic .wh-bomblet {
+  animation: wh-blink 900ms ease-in-out infinite;
+}
+.warhead-schematic .wh-spin {
+  animation: wh-spin 2.4s linear infinite;
+}
+.warhead-schematic .wh-crackle {
+  animation: wh-crackle 180ms steps(2) infinite;
+}
+.warhead-schematic .wh-flame {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: wh-flame 420ms ease-in-out infinite alternate;
+}
+.warhead-schematic .wh-ping {
+  animation: wh-blink 1.1s ease-in-out infinite;
+}
+.warhead-schematic .wh-sense {
+  animation: wh-sense 1.2s ease-out infinite;
+}
+.warhead-schematic .wh-dial {
+  transform-origin: 318px 85px;
+  animation: wh-spin 1s linear infinite;
+}
+.warhead-slot-index {
+  color: #ff5ad8;
+  margin-right: 4px;
+}
+.warhead-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 10px;
+}
+.helio-shop .warhead-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px;
+  text-align: left;
+  color: #e8d7bb;
+  border: 1px solid color-mix(in srgb, var(--rarity-color) 24%, #272d3c);
+  background:
+    radial-gradient(
+      ellipse at 75% 15%,
+      color-mix(in srgb, var(--part-color) 8%, transparent),
+      transparent 75%
+    ),
+    #10141e;
+  box-shadow: inset 0 2px color-mix(in srgb, var(--rarity-color) 55%, transparent);
+}
+.helio-shop .warhead-card:not(:disabled):hover {
+  border-color: var(--part-color);
+}
+.helio-shop .warhead-card.is-fitted {
+  border-color: var(--part-color);
+  background-color: color-mix(in srgb, var(--part-color) 7%, #10141e);
+  box-shadow:
+    inset 0 2px var(--part-color),
+    0 0 18px color-mix(in srgb, var(--part-color) 12%, transparent);
+}
+.warhead-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+}
+.warhead-rarity {
+  color: var(--rarity-color);
+  font-size: 8px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.warhead-card-top small {
+  color: #9b9da7;
+  font-size: 7px;
+  letter-spacing: 0.07em;
+}
+.warhead-card.is-fitted .warhead-card-top small {
+  color: var(--part-color);
+}
+.warhead-mark {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  margin: 4px 0;
+  color: var(--part-color);
+  border: 1px solid color-mix(in srgb, var(--part-color) 25%, transparent);
+  background: color-mix(in srgb, var(--part-color) 5%, transparent);
+}
+.warhead-mark svg {
+  width: 28px;
+  height: 28px;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--part-color) 35%, transparent));
+}
+.warhead-card > strong {
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.warhead-effect {
+  flex: 1;
+  color: #a5a29a;
+  font-size: 9px;
+  line-height: 1.55;
+}
+.warhead-fit {
+  margin-top: 4px;
+  padding-top: 7px;
+  border-top: 1px solid #ffffff10;
+  color: #c3944c;
+  font-size: 8px;
+  letter-spacing: 0.1em;
+}
+.warhead-card.is-fitted .warhead-fit {
+  color: var(--part-color);
+}
+@keyframes wh-plume {
+  from {
+    transform: scaleX(0.86);
+  }
+  to {
+    transform: scaleX(1.06);
+  }
+}
+@keyframes wh-fit {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes wh-blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+@keyframes wh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes wh-crackle {
+  50% {
+    transform: translateY(1px);
+    opacity: 0.6;
+  }
+}
+@keyframes wh-flame {
+  to {
+    transform: scaleY(1.25) scaleX(0.85);
+  }
+}
+@keyframes wh-sense {
+  from {
+    opacity: 0.9;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@media (max-width: 900px) {
+  .warhead-hero {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 620px) {
+  .warhead-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .warhead-hero {
+    padding: 14px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .warhead-schematic * {
+    animation: none !important;
+  }
+}
