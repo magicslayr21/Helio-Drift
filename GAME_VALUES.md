@@ -86,6 +86,30 @@ Hold E (or the on-screen Missile button) to paint locks; release to fire. Values
 | Kill / boss main-weapon hit charge |                                                   +3% / +0.5% each |
 | Co-op Crossfire                    | Both pilots' missiles on one target within 1 s: ×1.4, +6 Overdrive |
 
+## Warhead Workshop parts (Tier I)
+
+Values live in `GAME_CONFIG.warheads`; the part table is `WARHEAD_PARTS` in `balance.ts`.
+New ships fit Blast, Direct and Impact. Fitting is free in this release.
+
+| Slot     | Part       | Rarity  | Tier I effect                                                                |
+| -------- | ---------- | ------- | ---------------------------------------------------------------------------- |
+| Payload  | Blast      | Default | 42 damage, 72 radius                                                         |
+| Payload  | Cluster    | Rare    | 6 bomblets × 16 damage, 30 radius, 0.35–0.6 s fuses; no damage to the pilot  |
+| Payload  | Gravity    | Rare    | 1.5 s well, 160 radius, pull 620 on size 1–2 rocks (not meteors or bosses)   |
+| Payload  | EMP        | Epic    | Specialists within 110 offline for 3 s; Tether Sentinel shields drop         |
+| Payload  | Incendiary | Common  | Patch of blast radius for 2 s, 20 damage/s in 0.25 s ticks (bosses included) |
+| Guidance | Direct     | Default | Turn rate 6.5                                                                |
+| Guidance | Corkscrew  | Common  | +15% speed, spiral amplitude ×1.6 (tap missiles spiral too)                  |
+| Guidance | Relay      | Epic    | A killing blast flies on to another salvo lock at 60% damage, up to 2 hops   |
+| Guidance | Orbit      | Rare    | Orbits the ship at 48 px for 1.5 s, blocks 1 enemy shot each, then strikes   |
+| Trigger  | Impact     | Default | Detonates on contact                                                         |
+| Trigger  | Proximity  | Common  | Detonates within 40 px of a hostile's hull; radius ×1.2                      |
+| Trigger  | Chain      | Epic    | Each full-size blast launches 1 mini missile at 30% damage and 70% radius    |
+| Trigger  | Delayed    | Rare    | Sticks on contact, detonates after 1 s for ×1.6 damage                       |
+
+Payload damage and control scale with the shot: Full Lock, Relay hops, Chain minis and Delayed
+all multiply the payload. Chain minis carry Gravity and EMP at 50% duration.
+
 ## Player weapons
 
 All weapons cap at level 6. `n = level − 1`. Damage is multiplied by the

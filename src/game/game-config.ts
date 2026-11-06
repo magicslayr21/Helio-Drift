@@ -122,6 +122,29 @@ export const GAME_CONFIG = {
     crossfireOverdrive: 6,
   },
 
+  /** Warhead Workshop (0.7.1): Tier I values for every payload, guidance and trigger part. */
+  warheads: {
+    cluster: {
+      bomblets: 6,
+      bombletDamage: 16,
+      bombletRadius: 30,
+      scatterSpeed: 170,
+      fuseMin: 0.35,
+      fuseMax: 0.6,
+    },
+    gravity: { duration: 1.5, radius: 160, pull: 620, maxRockSize: 2 },
+    emp: { duration: 3, radius: 110 },
+    incendiary: { duration: 2, dps: 20, tick: 0.25 },
+    corkscrew: { speedMultiplier: 1.15, spiralMultiplier: 1.6 },
+    relay: { hops: 2, damageMultiplier: 0.6, searchRange: 700 },
+    orbit: { duration: 1.5, blocks: 1, radius: 48, angularSpeed: 4.2 },
+    proximity: { distance: 40, radiusMultiplier: 1.2 },
+    chain: { damageMultiplier: 0.3, radiusMultiplier: 0.7, speed: 420 },
+    delayed: { fuse: 1, damageMultiplier: 1.6 },
+    /** Mini missiles (Chain) carry the payload's control effects at this duration. */
+    miniControlDuration: 0.5,
+  },
+
   weaponProgression: {
     maxLevel: 6,
     priceMultiplier: 1.55,

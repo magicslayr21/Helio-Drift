@@ -26,6 +26,21 @@ export type SalvageUpgradeId =
   | "speed";
 export type Rarity = "common" | "rare" | "epic";
 
+/* ------------------------------------------------------------ warheads */
+
+export type WarheadSlot = "payload" | "guidance" | "trigger";
+export type PayloadId = "blast" | "cluster" | "gravity" | "emp" | "incendiary";
+export type GuidanceId = "direct" | "corkscrew" | "relay" | "orbit";
+export type TriggerId = "impact" | "proximity" | "chain" | "delayed";
+export type WarheadPartId = PayloadId | GuidanceId | TriggerId;
+export interface MissileBuild {
+  payload: PayloadId;
+  guidance: GuidanceId;
+  trigger: TriggerId;
+}
+/** Default parts are fitted to every new ship; the rest are found in the Workshop. */
+export type WarheadRarity = Rarity | "default";
+
 /** Mutable run state; numeric tuning literals must widen to numbers here. */
 export interface Player {
   x: number;
@@ -65,6 +80,8 @@ export interface Player {
   missileLockT: number;
   /** missileHoldT at the moment locks reached the rack size; -1 when not at Full Lock. */
   fullLockAt: number;
+  /** Warhead Workshop: the payload, guidance and trigger fitted to every missile. */
+  missileBuild: MissileBuild;
   magnet: number;
   creditChance: number;
   creditValue: number;
@@ -97,6 +114,7 @@ export interface Hud {
   owned: { id: WeaponId; level: number }[];
   missiles: number;
   maxMissiles: number;
+  missileBuild: MissileBuild;
   missileCharge: number;
   heat: number;
   comboTime: number;
@@ -200,7 +218,8 @@ export interface Bullet {
     | "flak"
     | "shrap"
     | "wardenOrb"
-    | "wardenShard";
+    | "wardenShard"
+    | "bomblet";
   pierce: number;
   color: string;
   hitIds: Set<number>;
@@ -219,9 +238,22 @@ export interface Bullet {
   missileDmg?: number;
   missileR?: number;
   /** Corkscrew flight: phase offset, normalised flight time, age and current offset. */
-  spiral?: { phase: number; flight: number; age: number; offset: number };
+  spiral?: { phase: number; flight: number; age: number; offset: number; amp?: number };
   /** Released inside the Full Lock window. */
   fullLock?: boolean;
+  /** Warhead parts this missile launched with. */
+  warhead?: MissileBuild;
+  /** Chain mini missile: smaller, and never chains again. */
+  mini?: boolean;
+  /** Relay: hops taken so far and the salvo's other locks to fly on to. */
+  hops?: number;
+  relayTargets?: number[];
+  /** Orbit guidance: circling the owner's ship before it strikes. */
+  orbit?: { t: number; angle: number; blocks: number };
+  /** Delayed trigger: stuck to a target, counting down. */
+  stuck?: { id: number; dx: number; dy: number; t: number };
+  /** Bomblet (Cluster payload) blast radius. */
+  blastR?: number;
   /** Graze bookkeeping (bit per pilot): armed while inside the band, spent once awarded. */
   grazeArm?: number;
   grazed?: number;
@@ -234,6 +266,23 @@ export interface Bullet {
   pulseCharge?: number;
   volleyCd?: number;
   volleyCharge?: number;
+}
+
+/** Lingering missile effects: Gravity wells and Incendiary burning patches. */
+export interface MissileZone {
+  kind: "gravity" | "fire";
+  x: number;
+  y: number;
+  r: number;
+  life: number;
+  max: number;
+  /** fire: damage per second; gravity: unused */
+  dps: number;
+  /** fire: countdown to the next damage tick, and damage ticks still to land */
+  tick: number;
+  ticksLeft?: number;
+  ownerId?: "p1" | "p2";
+  seed: number;
 }
 
 export interface Crack {
@@ -309,6 +358,8 @@ export interface Drone {
   /** Locked sniper aim point (player position captured when the warden locks on) */
   sniperAimX: number;
   sniperAimY: number;
+  /** EMP payload: seconds this specialist stays offline. */
+  emp?: number;
 }
 
 export interface Boss {

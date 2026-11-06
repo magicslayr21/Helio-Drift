@@ -51,6 +51,7 @@ const EMPTY_HUD: Hud = {
   owned: [{ id: "pulse", level: 1 }],
   missiles: 4,
   maxMissiles: 4,
+  missileBuild: { payload: "blast", guidance: "direct", trigger: "impact" },
   missileCharge: 1,
   heat: 0,
   comboTime: 0,
@@ -1017,6 +1018,11 @@ export default function GameShell({
                     }}
                     onEquipDrone={(id) => {
                       if (gameRef.current?.equipSalvageWeapon(id)) refreshShop();
+                    }}
+                    missileBuild={hud.missileBuild}
+                    onFitWarhead={(id) => {
+                      const game = gameRef.current;
+                      if (game?.fitWarheadPart(id)) setHud(game.snapshot());
                     }}
                     notice="FLIGHT PAUSED · INSTALL YOUR NEXT ADVANTAGE"
                   />

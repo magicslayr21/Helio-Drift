@@ -260,6 +260,12 @@ export type CoopCommand =
     }
   | { type: "chooseUpgrade"; playerId: CoopPlayerId; sequence: number; upgrade: string }
   | { type: "equipDroneWeapon"; playerId: CoopPlayerId; sequence: number; weapon: WeaponId | null }
+  | {
+      type: "fitWarhead";
+      playerId: CoopPlayerId;
+      sequence: number;
+      part: import("../types").WarheadPartId;
+    }
   | { type: "activateOverdrive"; playerId: CoopPlayerId; sequence: number }
   | { type: "startBonusBoss"; playerId: CoopPlayerId; sequence: number }
   | { type: "declineBonusBoss"; playerId: CoopPlayerId; sequence: number };

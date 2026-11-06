@@ -42,6 +42,10 @@ import {
   WARDEN_BOLT_DMG,
   freshPlayer,
   freshSalvageDrone,
+  DEFAULT_MISSILE_BUILD,
+  WARHEAD_PARTS,
+  isWarheadPart,
+  normalizeMissileBuild,
 } from "./balance";
 import type {
   Mode,
@@ -70,6 +74,11 @@ import type {
   SalvageDrone,
   SalvageClone,
   SectorTheme,
+  MissileBuild,
+  MissileZone,
+  PayloadId,
+  WarheadPartId,
+  WarheadSlot,
 } from "./types";
 import { renderSpecialist } from "./render-specialists";
 import { DEFAULT_SETTINGS } from "./preferences";
@@ -101,6 +110,15 @@ export type GameSound = Pick<
   typeof audio,
   "play" | "unlock" | "silence" | "beamHeat" | "setMusic" | "stopMusic" | "hasMusicOverride"
 >;
+/** Visual flavour for a missile-family explosion. */
+export interface MissileBlastStyle {
+  color?: string;
+  fullLock?: boolean;
+  crossfire?: boolean;
+  payload?: PayloadId;
+  small?: boolean;
+}
+
 export const SILENT_GAME_SOUND: GameSound = {
   play() {},
   unlock() {},
@@ -264,7 +282,10 @@ export class Game {
     // Retire saved player tethers from older co-op rooms. This unit now shields allies.
     this.specialTethers().length = 0;
     const c = COOP_CONFIG.tetherSentinel;
-    const sources = this.drones.filter((d) => d.coop?.kind === "tetherSentinel" && d.hp > 0);
+    // an EMP'd Tether Sentinel projects nothing until it comes back online
+    const sources = this.drones.filter(
+      (d) => d.coop?.kind === "tetherSentinel" && d.hp > 0 && !((d.emp ?? 0) > 0),
+    );
     for (const target of [...this.rocks, ...this.drones]) {
       let source: Drone | undefined,
         nearest: number = c.shieldRange;
@@ -413,6 +434,8 @@ export class Game {
   missileMarks: Record<number, { owner: string; at: number }> = {};
   /** Presentation-only missile trails keyed by bullet id (or object offline). */
   missileTrails = new Map<unknown, { x: number; y: number }[]>();
+  /** Gravity wells and Incendiary patches left by Workshop payloads. */
+  missileZones: MissileZone[] = [];
   banner = "";
   bannerSub = "";
   bannerT = 0;
@@ -976,6 +999,21 @@ export class Game {
     };
   }
 
+  /**
+   * Warhead Workshop: fit a part to its slot. Fitting is free in this release;
+   * the part it replaces simply comes off. Missiles already in flight keep the
+   * warhead they launched with.
+   */
+  fitWarheadPart(id: WarheadPartId): boolean {
+    if (!isWarheadPart(id)) return false;
+    const slot: WarheadSlot = WARHEAD_PARTS[id].slot;
+    const build = normalizeMissileBuild(this.p.missileBuild);
+    if (build[slot] === id) return false;
+    this.p.missileBuild = { ...build, [slot]: id };
+    this.sound.play("cycle");
+    return true;
+  }
+
   buyWeapon(w: WeaponId): boolean {
     const price = this.weaponPrice(w);
     if (price == null || this.credits < price) return false;
@@ -1185,6 +1223,7 @@ export class Game {
       owned: this.ownedWeapons().map((id) => ({ id, level: p.weapons[id] })),
       missiles: p.missiles,
       maxMissiles: p.maxMissiles,
+      missileBuild: normalizeMissileBuild(p.missileBuild),
       missileCharge:
         p.missiles >= p.maxMissiles ? 1 : clamp(p.missileCharge / p.missileRegen, 0, 1),
       heat: p.heat,
@@ -1534,11 +1573,16 @@ export class Game {
 
     // ---- wardens ----
     for (const d of this.drones) {
+      if ((d.emp ?? 0) > 0) {
+        this.driftDisabledDrone(d, dt);
+        continue;
+      }
       this.selectTarget(d.x, d.y);
       this.updateDrone(d, dt);
     }
 
     this.updateTethers(dt);
+    this.updateMissileZones(dt);
 
     // ---- salvage drone ----
     this.forEachPilot(() => this.updateSalvageDrone(dt));
@@ -2799,8 +2843,9 @@ export class Game {
   /** returns true if the projectile is consumed by this impact */
   impact(b: Bullet, kind: "rock" | "drone" | "boss", idx: number, id: number): boolean {
     const p = this.p;
-    if (b.kind === "missile") {
-      this.detonateMissile(b);
+    if (b.kind === "missile") return this.missileContact(b, id);
+    if (b.kind === "bomblet") {
+      this.detonateBomblet(b);
       return true;
     }
     const crit = this.random() < p.crit;
@@ -2878,6 +2923,37 @@ export class Game {
         this.bullets.splice(i, 1);
         continue;
       }
+      if (b.kind === "missile" && b.stuck) {
+        // Delayed trigger: ride the target until the fuse runs out (or the target dies)
+        const t = this.findTarget(b.stuck.id);
+        if (t) {
+          b.x = t.x + b.stuck.dx;
+          b.y = t.y + b.stuck.dy;
+        }
+        b.stuck.t -= dt;
+        if (!t || b.stuck.t <= 0) {
+          b.missileDmg =
+            (b.missileDmg ?? p.blastDmg) * GAME_CONFIG.warheads.delayed.damageMultiplier;
+          this.detonateMissile(b);
+          this.bullets.splice(i, 1);
+        }
+        continue;
+      }
+      if (b.kind === "missile" && b.orbit) {
+        this.orbitMissile(b, dt);
+        continue;
+      }
+      if (b.kind === "bomblet") {
+        b.fuse -= dt;
+        const drag = Math.max(0, 1 - 2.4 * dt);
+        b.vx *= drag;
+        b.vy *= drag;
+        if (b.fuse <= 0) {
+          this.detonateBomblet(b);
+          this.bullets.splice(i, 1);
+          continue;
+        }
+      }
       if (b.kind === "missile" || b.kind === "seeker" || b.kind === "rail") this.guide(b, dt);
       if (b.kind === "missile" && this.frame % 2 === 0) {
         this.particles.push({
@@ -2941,7 +3017,14 @@ export class Game {
       }
       b.x += b.vx * dt;
       b.y += b.vy * dt;
-      if (b.kind === "missile") this.spiralMissile(b, dt);
+      if (b.kind === "missile") {
+        this.spiralMissile(b, dt);
+        if (b.warhead?.trigger === "proximity" && this.missileProximity(b)) {
+          this.detonateMissile(b);
+          this.bullets.splice(i, 1);
+          continue;
+        }
+      }
       b.life -= dt;
 
       if (b.kind === "ricochet") {
@@ -2988,6 +3071,7 @@ export class Game {
       }
       if (b.life <= 0) {
         if (b.kind === "missile") this.detonateMissile(b);
+        if (b.kind === "bomblet") this.detonateBomblet(b);
         if (b.kind === "flak") this.detonateFlak(b);
         // a warden shell that found nothing still goes off where it died
         if (b.blast) this.enemyBlast(b.x, b.y, b.blast, b.dmg * 0.6, b.damageCause);
@@ -3061,7 +3145,11 @@ export class Game {
             const dmg = b.dmg * (crit ? p.critMult : 1);
             this.damageHole(dmg, crit);
             if (b.kind === "missile") {
-              this.detonateMissile(b);
+              if (this.missileContact(b, h.id)) this.bullets.splice(i, 1);
+              continue;
+            }
+            if (b.kind === "bomblet") {
+              this.detonateBomblet(b);
               this.bullets.splice(i, 1);
               continue;
             }
@@ -3591,7 +3679,7 @@ export class Game {
     obj.grazed = (obj.grazed ?? 0) | (this.specialPilotId() === "p2" ? 2 : 1);
   }
 
-  /** Spawn one Salvo Lock missile. */
+  /** Spawn one missile with the pilot's fitted warhead (or an explicit one for follow-ups). */
   launchMissile(opts: {
     angle: number;
     target?: number;
@@ -3601,22 +3689,42 @@ export class Game {
     speedMul?: number;
     dmgMul?: number;
     offset?: number;
+    /** spawn point for follow-ups (Relay hops, Chain minis); defaults to the ship */
+    x?: number;
+    y?: number;
+    /** absolute payload damage / radius for follow-ups */
+    dmg?: number;
+    radius?: number;
+    warhead?: MissileBuild;
+    mini?: boolean;
+    hops?: number;
+    relayTargets?: number[];
+    orbitAngle?: number;
   }) {
     const p = this.p;
     const cfg = GAME_CONFIG.salvo;
-    const speed = cfg.launchSpeed * (opts.speedMul ?? 1);
+    const W = GAME_CONFIG.warheads;
+    const build = normalizeMissileBuild(opts.warhead ?? p.missileBuild);
+    const followUp = opts.x !== undefined;
+    const speed =
+      (opts.mini ? W.chain.speed : cfg.launchSpeed) *
+      (opts.speedMul ?? 1) *
+      (build.guidance === "corkscrew" ? W.corkscrew.speedMultiplier : 1);
     const o = opts.offset ?? 0;
+    const ox = opts.x ?? p.x,
+      oy = opts.y ?? p.y;
     const missile: Bullet = {
-      x: p.x + Math.cos(opts.angle) * o,
-      y: p.y + Math.sin(opts.angle) * o,
+      x: ox + Math.cos(opts.angle) * o,
+      y: oy + Math.sin(opts.angle) * o,
       vx: Math.cos(opts.angle) * speed,
       vy: Math.sin(opts.angle) * speed,
-      r: 7,
-      life: 4.5 * (p.rangeMul ?? 1),
+      r: opts.mini ? 5 : 7,
+      life: (opts.mini ? 2.5 : 4.5) * (p.rangeMul ?? 1),
       dmg: 0,
       kind: "missile",
       pierce: 0,
-      color: this.pilotAccent(),
+      // co-op keeps pilot identity on the airframe; solo wears the payload's colour
+      color: this.cooperative ? this.pilotAccent() : WARHEAD_PARTS[build.payload].color,
       hitIds: new Set(),
       target: opts.target,
       turn: cfg.turn,
@@ -3624,16 +3732,33 @@ export class Game {
       fuse: 0,
       extra: 0,
       extraDmg: 0,
-      missileDmg: p.blastDmg * (opts.dmgMul ?? 1),
-      missileR: p.blastR,
+      missileDmg: opts.dmg ?? p.blastDmg * (opts.dmgMul ?? 1),
+      missileR: opts.radius ?? p.blastR,
+      warhead: build,
     };
-    if (opts.phase !== undefined) {
-      const flight = Math.max(cfg.spiralMinFlight, opts.flight ?? cfg.spiralMinFlight);
+    if (opts.mini) missile.mini = true;
+    if (opts.hops) missile.hops = opts.hops;
+    if (opts.relayTargets?.length) missile.relayTargets = opts.relayTargets.slice();
+    const amp = build.guidance === "corkscrew" ? W.corkscrew.spiralMultiplier : 1;
+    if (build.guidance === "orbit" && !followUp) {
+      missile.orbit = {
+        t: W.orbit.duration,
+        angle: opts.orbitAngle ?? opts.angle,
+        blocks: W.orbit.blocks,
+      };
+    } else if (opts.phase !== undefined || (build.guidance === "corkscrew" && !opts.mini)) {
+      const phase = opts.phase ?? 0;
+      const t = opts.target != null ? this.findTarget(opts.target) : undefined;
+      const flight = Math.max(
+        cfg.spiralMinFlight,
+        opts.flight ?? (t ? Math.hypot(t.x - ox, t.y - oy) / speed + 0.25 : 1),
+      );
       missile.spiral = {
-        phase: opts.phase,
+        phase,
         flight,
         age: 0,
-        offset: Math.sin(opts.phase) * cfg.spiralAmplitude,
+        offset: Math.sin(phase) * cfg.spiralAmplitude * amp,
+        amp,
       };
     }
     if (opts.fullLock) missile.fullLock = true;
@@ -3663,6 +3788,9 @@ export class Game {
         dmgMul: fullLock ? cfg.fullLockDamageMultiplier : 1,
         // later pairs launch a little further out so they never stack on the first pair
         offset: 10 + Math.floor(i / 2) * 9,
+        relayTargets: locks,
+        // Orbit guidance spreads the salvo evenly around the ship
+        orbitAngle: p.angle + (i / n) * TAU,
       });
     }
     p.missiles -= n;
@@ -3697,7 +3825,8 @@ export class Game {
     const cfg = GAME_CONFIG.salvo;
     s.age += dt;
     const t = clamp(s.age / s.flight, 0, 1);
-    const offset = Math.sin(t * cfg.spiralFrequency + s.phase) * cfg.spiralAmplitude * (1 - t);
+    const offset =
+      Math.sin(t * cfg.spiralFrequency + s.phase) * cfg.spiralAmplitude * (s.amp ?? 1) * (1 - t);
     const delta = offset - s.offset;
     s.offset = offset;
     const spd = Math.hypot(b.vx, b.vy) || 1;
@@ -3705,12 +3834,78 @@ export class Game {
     b.y += (b.vx / spd) * delta;
   }
 
-  /** Every missile detonation goes through here: Crossfire, then the blast. */
+  /**
+   * A missile touched a hostile. Delayed triggers stick and start their fuse;
+   * everything else detonates. Returns true when the missile is consumed.
+   */
+  missileContact(b: Bullet, id: number): boolean {
+    if (b.warhead?.trigger === "delayed" && !b.stuck) {
+      const t = this.findTarget(id);
+      if (t) {
+        b.stuck = { id, dx: b.x - t.x, dy: b.y - t.y, t: GAME_CONFIG.warheads.delayed.fuse };
+        b.target = id;
+        this.sound.play("lock");
+        this.rings.push({ x: b.x, y: b.y, r: 4, max: 22, life: 0.25, color: b.color, w: 2 });
+        return false;
+      }
+    }
+    this.detonateMissile(b);
+    return true;
+  }
+
+  /** Orbit guidance: circle the owner, eat enemy shots, then break off and strike. */
+  orbitMissile(b: Bullet, dt: number) {
+    const o = b.orbit!;
+    const W = GAME_CONFIG.warheads.orbit;
+    const p = this.p;
+    o.t -= dt;
+    o.angle += W.angularSpeed * dt;
+    b.x = p.x + Math.cos(o.angle) * W.radius;
+    b.y = p.y + Math.sin(o.angle) * W.radius;
+    const spd = GAME_CONFIG.salvo.launchSpeed;
+    b.vx = -Math.sin(o.angle) * spd;
+    b.vy = Math.cos(o.angle) * spd;
+    if (o.blocks > 0) {
+      for (const s of this.bullets) {
+        if ((s.kind !== "enemy" && s.kind !== "wardenShard") || s.life <= 0) continue;
+        if (Math.hypot(s.x - b.x, s.y - b.y) > s.r + b.r + 6) continue;
+        s.life = 0;
+        o.blocks--;
+        this.rings.push({ x: s.x, y: s.y, r: 3, max: 26, life: 0.25, color: b.color, w: 2 });
+        this.burst(s.x, s.y, 6, "#ffffff");
+        this.sound.play("hit");
+        if (o.blocks <= 0) break;
+      }
+    }
+    if (o.t > 0 && p.hull > 0) return;
+    delete b.orbit;
+    let t = b.target != null ? this.findTarget(b.target) : undefined;
+    t ??= this.nearestTarget(b.x, b.y, 900 * (p.rangeMul ?? 1));
+    const a = t ? Math.atan2(t.y - b.y, t.x - b.x) : o.angle;
+    b.target = t?.id;
+    b.vx = Math.cos(a) * spd;
+    b.vy = Math.sin(a) * spd;
+    b.life = Math.max(b.life, 3);
+  }
+
+  /** Proximity trigger: is any hostile within the early-detonation distance? */
+  missileProximity(b: Bullet): boolean {
+    const reach = GAME_CONFIG.warheads.proximity.distance + b.r;
+    for (const t of this.hostiles())
+      if (Math.hypot(t.x - b.x, t.y - b.y) - t.r <= reach) return true;
+    return false;
+  }
+
+  /** Every missile detonation goes through here: Crossfire, payload, then Relay / Chain. */
   detonateMissile(b: Bullet) {
     const p = this.p;
     const cfg = GAME_CONFIG.salvo;
-    let dmg = b.missileDmg ?? p.blastDmg;
-    const radius = b.missileR ?? p.blastR;
+    const W = GAME_CONFIG.warheads;
+    const build = b.warhead ?? DEFAULT_MISSILE_BUILD;
+    const baseDmg = b.missileDmg ?? p.blastDmg;
+    let dmg = baseDmg;
+    let radius = b.missileR ?? p.blastR;
+    if (build.trigger === "proximity") radius *= W.proximity.radiusMultiplier;
     let crossfire = false;
     if (this.cooperative && b.target != null) {
       const owner = b.ownerId ?? this.specialPilotId();
@@ -3729,11 +3924,255 @@ export class Game {
         if (this.missileClock - this.missileMarks[+id].at > cfg.crossfireWindow)
           delete this.missileMarks[+id];
     }
-    this.explode(b.x, b.y, radius, dmg, "Missile blast", undefined, {
+    const targetAlive = b.target != null && !!this.findTarget(b.target);
+    this.applyPayload(b, build, dmg, radius, crossfire);
+
+    // Relay: a kill by this blast sends the warhead on to another of the salvo's locks
+    if (
+      build.guidance === "relay" &&
+      targetAlive &&
+      !this.findTarget(b.target!) &&
+      (b.hops ?? 0) < W.relay.hops
+    ) {
+      const next =
+        (b.relayTargets ?? [])
+          .filter((id) => id !== b.target)
+          .map((id) => this.findTarget(id))
+          .find((t) => t) ?? this.nearestTarget(b.x, b.y, W.relay.searchRange * (p.rangeMul ?? 1));
+      if (next) {
+        this.arcs.push({ x1: b.x, y1: b.y, x2: next.x, y2: next.y, life: 0.18 });
+        this.launchMissile({
+          angle: Math.atan2(next.y - b.y, next.x - b.x),
+          x: b.x,
+          y: b.y,
+          target: next.id,
+          dmg: baseDmg * W.relay.damageMultiplier,
+          radius: b.missileR,
+          warhead: build,
+          hops: (b.hops ?? 0) + 1,
+          relayTargets: b.relayTargets,
+          mini: b.mini,
+          fullLock: b.fullLock,
+        });
+        this.floatText(b.x, b.y - 20, "RELAY", WARHEAD_PARTS.relay.color, 11);
+      }
+    }
+
+    // Chain: every full-size blast launches one mini missile at the next hostile
+    if (build.trigger === "chain" && !b.mini) {
+      let best: Hostile | undefined;
+      let bd = 900 * (p.rangeMul ?? 1);
+      for (const t of this.hostiles()) {
+        if (t.id === b.target) continue;
+        const d = Math.hypot(t.x - b.x, t.y - b.y) - t.r;
+        if (d < bd) {
+          bd = d;
+          best = t;
+        }
+      }
+      this.launchMissile({
+        angle: best ? Math.atan2(best.y - b.y, best.x - b.x) : this.random() * TAU,
+        x: b.x,
+        y: b.y,
+        offset: 6,
+        target: best?.id,
+        dmg: baseDmg * W.chain.damageMultiplier,
+        radius: (b.missileR ?? p.blastR) * W.chain.radiusMultiplier,
+        warhead: build,
+        mini: true,
+      });
+    }
+  }
+
+  /** The payload decides what a detonation actually does. */
+  applyPayload(b: Bullet, build: MissileBuild, dmg: number, radius: number, crossfire: boolean) {
+    const p = this.p;
+    const W = GAME_CONFIG.warheads;
+    const color = WARHEAD_PARTS[build.payload].color;
+    const style = { color: b.color, fullLock: b.fullLock, crossfire, payload: build.payload };
+    // control and damage values scale with the shot's power (Full Lock, Relay, Chain, Delayed)
+    const power = dmg / (p.blastDmg || GAME_CONFIG.player.blastDamage);
+    const reach = radius / (p.blastR || GAME_CONFIG.player.blastRadius);
+    const control = b.mini ? W.miniControlDuration : 1;
+    const x = b.x,
+      y = b.y;
+    switch (build.payload) {
+      case "blast":
+        this.explode(x, y, radius, dmg, "Missile blast", undefined, style);
+        return;
+      case "cluster": {
+        this.missileBlastFx(x, y, radius * 0.45, { ...style, small: true });
+        this.sound.play("flak");
+        const n = W.cluster.bomblets;
+        for (let i = 0; i < n; i++) {
+          const a = (i / n) * TAU + this.rnd(-0.3, 0.3);
+          const v = W.cluster.scatterSpeed * this.rnd(0.65, 1.1) * Math.sqrt(reach);
+          this.addBullet({
+            x,
+            y,
+            vx: Math.cos(a) * v + b.vx * 0.15,
+            vy: Math.sin(a) * v + b.vy * 0.15,
+            r: 4,
+            life: 1.4,
+            dmg: 0,
+            kind: "bomblet",
+            pierce: 0,
+            color,
+            hitIds: new Set(),
+            turn: 0,
+            bounces: 0,
+            fuse: this.rnd(W.cluster.fuseMin, W.cluster.fuseMax),
+            extra: 0,
+            extraDmg: W.cluster.bombletDamage * power,
+            blastR: W.cluster.bombletRadius * reach,
+          });
+        }
+        return;
+      }
+      case "gravity":
+        this.missileZones.push({
+          kind: "gravity",
+          x,
+          y,
+          r: W.gravity.radius * reach,
+          life: W.gravity.duration * control,
+          max: W.gravity.duration * control,
+          dps: 0,
+          tick: 0,
+          ownerId: b.ownerId,
+          seed: this.random() * TAU,
+        });
+        this.rings.push({ x, y, r: W.gravity.radius * reach, max: 6, life: 0.45, color, w: 3 });
+        this.sound.play("bossCharge");
+        return;
+      case "emp": {
+        const r = W.emp.radius * reach;
+        const duration = W.emp.duration * control;
+        for (const d of this.drones) {
+          if (Math.hypot(d.x - x, d.y - y) > r + d.r) continue;
+          d.emp = Math.max(d.emp ?? 0, duration);
+          delete d.supportShield;
+        }
+        for (const rock of this.rocks)
+          if (rock.supportShield && Math.hypot(rock.x - x, rock.y - y) <= r + rock.r)
+            delete rock.supportShield;
+        this.missileBlastFx(x, y, r, { ...style, color });
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * TAU + this.random();
+          this.arcs.push({
+            x1: x,
+            y1: y,
+            x2: x + Math.cos(a) * r,
+            y2: y + Math.sin(a) * r,
+            life: 0.16,
+          });
+        }
+        this.sound.play("arc");
+        return;
+      }
+      case "incendiary":
+        this.missileZones.push({
+          kind: "fire",
+          x,
+          y,
+          r: radius,
+          life: W.incendiary.duration,
+          max: W.incendiary.duration,
+          dps: W.incendiary.dps * power,
+          // 20 dps over 2 s lands as 8 ticks of 5, the first a quarter-second in
+          tick: W.incendiary.tick,
+          ticksLeft: Math.round(W.incendiary.duration / W.incendiary.tick),
+          ownerId: b.ownerId,
+          seed: this.random() * TAU,
+        });
+        this.missileBlastFx(x, y, radius * 0.6, { ...style, color, small: true });
+        this.sound.play("flak");
+        return;
+    }
+  }
+
+  /** Cluster bomblet: a small blast that cannot hurt the pilot. */
+  detonateBomblet(b: Bullet) {
+    this.explode(b.x, b.y, b.blastR ?? 30, b.extraDmg, "Cluster bomblet", 0, {
       color: b.color,
-      fullLock: b.fullLock,
-      crossfire,
+      small: true,
     });
+  }
+
+  /** Gravity wells pull small and medium rocks; Incendiary patches burn whatever stands in them. */
+  updateMissileZones(dt: number) {
+    const W = GAME_CONFIG.warheads;
+    for (let i = this.missileZones.length - 1; i >= 0; i--) {
+      const z = this.missileZones[i];
+      z.life -= dt;
+      if (z.kind === "gravity") {
+        for (const r of this.rocks) {
+          if (r.size > W.gravity.maxRockSize || r.trait === "meteor") continue;
+          const dx = z.x - r.x,
+            dy = z.y - r.y;
+          const d = Math.hypot(dx, dy);
+          if (d > z.r + r.r || d < 2) continue;
+          const pull = W.gravity.pull * (0.35 + 0.65 * (1 - d / (z.r + r.r)));
+          r.vx += (dx / d) * pull * dt;
+          r.vy += (dy / d) * pull * dt;
+          // damp the orbit so pulled rocks settle into the well instead of slingshotting
+          const damp = Math.max(0, 1 - 2.2 * dt);
+          r.vx *= damp;
+          r.vy *= damp;
+        }
+      } else {
+        z.tick -= dt;
+        while (z.tick <= 1e-6 && (z.ticksLeft ?? 0) > 0) {
+          z.tick += W.incendiary.tick;
+          z.ticksLeft = (z.ticksLeft ?? 1) - 1;
+          this.selectBulletPilot({ kind: "missile", ownerId: z.ownerId } as Bullet);
+          const amount = z.dps * W.incendiary.tick;
+          for (const t of this.hostiles())
+            if (Math.hypot(t.x - z.x, t.y - z.y) <= z.r + t.r) this.zoneDamage(t.id, amount);
+        }
+      }
+      if (z.life <= 1e-6 && !(z.ticksLeft ?? 0)) this.missileZones.splice(i, 1);
+    }
+  }
+
+  /** Damage over time from a zone: no crits, no leech, quiet hits. */
+  zoneDamage(id: number, amount: number) {
+    if (this.boss) {
+      if (this.boss.id === id) {
+        const bo = this.boss;
+        this.loseBossHp(bo, amount);
+        bo.flash = Math.max(bo.flash, 0.5);
+        if (bo.hp <= 0) this.killBoss();
+        return;
+      }
+      if (this.boss.hole?.id === id) {
+        this.damageHole(amount, false);
+        return;
+      }
+    }
+    const ri = this.rocks.findIndex((r) => r.id === id);
+    if (ri >= 0) {
+      const r = this.rocks[ri];
+      this.loseRockHp(r, amount);
+      r.flash = Math.max(r.flash, 0.6);
+      if (r.hp <= 0) this.breakRock(ri, 0, 0);
+      return;
+    }
+    const di = this.drones.findIndex((d) => d.id === id);
+    if (di >= 0) this.damageDrone(di, amount, false, true);
+  }
+
+  /** EMP: an offline specialist drifts to a stop and does nothing else. */
+  driftDisabledDrone(d: Drone, dt: number) {
+    d.emp = Math.max(0, (d.emp ?? 0) - dt);
+    const damp = Math.max(0, 1 - 1.8 * dt);
+    d.vx *= damp;
+    d.vy *= damp;
+    d.x = clamp(d.x + d.vx * dt, d.r, this.w - d.r);
+    d.y = clamp(d.y + d.vy * dt, d.r, this.h - d.r);
+    d.flash = Math.max(0, d.flash - dt * 4);
+    if (d.coop) d.coop.warning = 0;
+    d.pulseCharge = undefined;
   }
 
   hitRock(index: number, dmg: number, vx: number, vy: number, crit: boolean) {
@@ -4225,7 +4664,7 @@ export class Game {
     dmg: number,
     cause = "Missile blast",
     playerDamage: number = GAME_CONFIG.asteroids.genericExplosionPlayerDamage,
-    style?: { color?: string; fullLock?: boolean; crossfire?: boolean },
+    style?: MissileBlastStyle,
   ) {
     if (style) this.missileBlastFx(x, y, radius, style);
     else {
@@ -4233,7 +4672,7 @@ export class Game {
       this.burst(x, y, 26, MAGENTA);
       this.shake += 10;
     }
-    this.sound.play("explodeBig");
+    this.sound.play(style?.small ? "explodeSmall" : "explodeBig");
     const rockIds = this.rocks
       .filter((r) => Math.hypot(r.x - x, r.y - y) < radius + r.r)
       .map((r) => r.id);
@@ -4272,25 +4711,43 @@ export class Game {
     this.forEachPilot(() => {
       if (playerDamage > 0 && Math.hypot(this.p.x - x, this.p.y - y) < radius * 0.6)
         this.damagePlayer(playerDamage, cause);
-      this.timeScale = GAME_CONFIG.simulation.explosionTimeScale;
+      if (!style?.small) this.timeScale = GAME_CONFIG.simulation.explosionTimeScale;
     });
   }
 
   /**
-   * Salvo Lock detonation: a white-hot core flash, the pilot-coloured shockwave,
-   * a thin trailing pressure ring and a spray of streaking sparks. Full Lock
+   * Missile detonation: a white-hot core flash, the airframe-coloured shockwave,
+   * a thin trailing pressure ring and sparks in the payload's colour. Full Lock
    * blasts add a white halo; Crossfire adds a second, counter-coloured ring.
+   * Small blasts (bomblets, payload pops) use a lighter, quicker version.
    */
-  missileBlastFx(
-    x: number,
-    y: number,
-    radius: number,
-    style: { color?: string; fullLock?: boolean; crossfire?: boolean },
-  ) {
+  missileBlastFx(x: number, y: number, radius: number, style: MissileBlastStyle) {
     const color = style.color ?? MAGENTA;
+    const hot = style.payload ? WARHEAD_PARTS[style.payload].color : color;
+    if (style.small) {
+      this.rings.push({ x, y, r: 2, max: radius * 0.6, life: 0.12, color: "#ffffff", w: 3 });
+      this.rings.push({ x, y, r: 3, max: radius * 1.2, life: 0.3, color, w: 2 });
+      for (let i = 0; i < 5 && this.particles.length < 700; i++) {
+        const a = this.random() * TAU;
+        const v = this.rnd(140, 300);
+        this.particles.push({
+          x,
+          y,
+          vx: Math.cos(a) * v,
+          vy: Math.sin(a) * v,
+          life: this.rnd(0.15, 0.3),
+          max: 0.3,
+          size: this.rnd(1.2, 2),
+          color: i % 2 ? "#ffffff" : hot,
+          drag: 0.88,
+        });
+      }
+      this.shake += 1.5;
+      return;
+    }
     this.rings.push({ x, y, r: 2, max: radius * 0.55, life: 0.16, color: "#ffffff", w: 6 });
     this.rings.push({ x, y, r: 6, max: radius * 1.35, life: 0.42, color, w: 3.5 });
-    this.rings.push({ x, y, r: 4, max: radius * 1.85, life: 0.6, color, w: 1 });
+    this.rings.push({ x, y, r: 4, max: radius * 1.85, life: 0.6, color: hot, w: 1 });
     if (style.fullLock)
       this.rings.push({ x, y, r: 10, max: radius * 1.15, life: 0.3, color: "#ffffff", w: 1.2 });
     if (style.crossfire) {
@@ -4309,7 +4766,7 @@ export class Game {
         life: this.rnd(0.22, 0.4),
         max: 0.4,
         size: this.rnd(1.6, 2.6),
-        color: i % 3 === 0 ? "#ffffff" : color,
+        color: i % 3 === 0 ? "#ffffff" : i % 3 === 1 ? hot : color,
         drag: 0.9,
       });
     }
@@ -7288,45 +7745,106 @@ export class Game {
     ctx.globalAlpha = 1;
     ctx.translate(b.x, b.y);
     ctx.rotate(Math.atan2(b.vy, b.vx));
-    ctx.scale(1.35, 1.35);
+    const scale = b.mini ? 0.95 : 1.35;
+    ctx.scale(scale, scale);
+    const w = b.warhead ?? DEFAULT_MISSILE_BUILD;
+    const tint = WARHEAD_PARTS[w.payload].color;
     const seed = (b.id ?? 0) * 1.7;
     const flick =
       1 + Math.sin(this.frame * 0.9 + seed) * 0.18 + Math.sin(this.frame * 2.3 + seed) * 0.1;
-    // plume: outer accent flame, inner white core
+    const lit = !b.stuck && !b.orbit;
+    // plume: outer airframe flame, payload-tinted middle, white core
     ctx.globalCompositeOperation = "lighter";
-    ctx.beginPath();
-    ctx.moveTo(-8, -3.4);
-    ctx.quadraticCurveTo(-16 - 10 * flick, 0, -8, 3.4);
-    ctx.closePath();
-    ctx.fillStyle = color;
-    ctx.shadowBlur = 16;
-    ctx.shadowColor = color;
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(-8, -1.6);
-    ctx.quadraticCurveTo(-12 - 5 * flick, 0, -8, 1.6);
-    ctx.closePath();
-    ctx.fillStyle = "#ffffff";
-    ctx.fill();
+    if (lit || b.orbit) {
+      ctx.beginPath();
+      ctx.moveTo(-8, -3.4);
+      ctx.quadraticCurveTo(-16 - 10 * flick, 0, -8, 3.4);
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.shadowBlur = 16;
+      ctx.shadowColor = color;
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(-8, -2.4);
+      ctx.quadraticCurveTo(-14 - 7 * flick, 0, -8, 2.4);
+      ctx.closePath();
+      ctx.fillStyle = tint;
+      ctx.globalAlpha = 0.7;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      ctx.moveTo(-8, -1.4);
+      ctx.quadraticCurveTo(-12 - 5 * flick, 0, -8, 1.4);
+      ctx.closePath();
+      ctx.fillStyle = "#ffffff";
+      ctx.fill();
+      // Incendiary sheds embers; EMP crackles
+      if (w.payload === "incendiary" && this.frame % 2 === 0) {
+        ctx.fillStyle = tint;
+        for (let k = 0; k < 3; k++) {
+          const ex = -14 - ((this.frame * 3 + k * 7 + seed * 9) % 14);
+          const ey = Math.sin(this.frame * 0.7 + k * 2.1 + seed) * 4;
+          ctx.fillRect(ex, ey, 1.4, 1.4);
+        }
+      }
+    }
+    if (w.payload === "emp" && (this.frame + Math.floor(seed)) % 5 < 2) {
+      ctx.strokeStyle = tint;
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(-6, -3);
+      ctx.lineTo(-2, -7);
+      ctx.lineTo(1, -4);
+      ctx.lineTo(5, -8);
+      ctx.stroke();
+    }
     ctx.globalCompositeOperation = "source-over";
     ctx.shadowBlur = 0;
-    // swept tail fins
+
+    // ---- guidance: the airframe ----
     ctx.fillStyle = color;
+    ctx.strokeStyle = color;
     ctx.globalAlpha = 0.9;
     for (const s of [-1, 1]) {
-      ctx.beginPath();
-      ctx.moveTo(-3, 2.2 * s);
-      ctx.lineTo(-9.5, 7 * s);
-      ctx.lineTo(-7.5, 2 * s);
-      ctx.closePath();
-      ctx.fill();
-      // canards
-      ctx.beginPath();
-      ctx.moveTo(5, 2 * s);
-      ctx.lineTo(2, 4.6 * s);
-      ctx.lineTo(1.5, 2 * s);
-      ctx.closePath();
-      ctx.fill();
+      if (w.guidance === "corkscrew") {
+        // long raked fins for the high-speed spiral
+        ctx.beginPath();
+        ctx.moveTo(-1, 2.2 * s);
+        ctx.lineTo(-10.5, 8.5 * s);
+        ctx.lineTo(-8.5, 8.5 * s);
+        ctx.lineTo(-6.5, 2 * s);
+        ctx.closePath();
+        ctx.fill();
+      } else if (w.guidance === "relay") {
+        // forward-swept wings and twin relay prongs at the nose
+        ctx.beginPath();
+        ctx.moveTo(-6, 2.2 * s);
+        ctx.lineTo(-1, 7.5 * s);
+        ctx.lineTo(-3, 2 * s);
+        ctx.closePath();
+        ctx.fill();
+        ctx.lineWidth = 0.9;
+        ctx.beginPath();
+        ctx.moveTo(5, 2.4 * s);
+        ctx.lineTo(12, 4.2 * s);
+        ctx.stroke();
+      } else if (w.guidance !== "orbit") {
+        ctx.beginPath();
+        ctx.moveTo(-3, 2.2 * s);
+        ctx.lineTo(-9.5, 7 * s);
+        ctx.lineTo(-7.5, 2 * s);
+        ctx.closePath();
+        ctx.fill();
+      }
+      if (w.guidance !== "orbit" && w.guidance !== "relay") {
+        // canards
+        ctx.beginPath();
+        ctx.moveTo(5, 2 * s);
+        ctx.lineTo(2, 4.6 * s);
+        ctx.lineTo(1.5, 2 * s);
+        ctx.closePath();
+        ctx.fill();
+      }
     }
     ctx.globalAlpha = 1;
     // fuselage: elongated hexagon, dark core with a lit edge
@@ -7346,22 +7864,318 @@ export class Game {
     ctx.shadowColor = color;
     ctx.stroke();
     ctx.shadowBlur = 0;
-    // pulsing accent band: the lock beacon
+    if (w.guidance === "corkscrew") {
+      // rifling stripes
+      ctx.strokeStyle = tint;
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = 0.8;
+      for (const x of [-6, -3, 0]) {
+        ctx.beginPath();
+        ctx.moveTo(x, 2.4);
+        ctx.lineTo(x + 2.4, -2.4);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+    if (w.guidance === "orbit") {
+      // ring-wing around the mid-body
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.ellipse(-3, 0, 2.2, 7.2, 0, 0, TAU);
+      ctx.stroke();
+    }
+    if (w.guidance === "relay" && this.frame % 20 < 10) {
+      ctx.fillStyle = WARHEAD_PARTS.relay.color;
+      ctx.fillRect(-1.5, -4.4, 1.6, 1.6);
+    }
+
+    // ---- payload: the chamber window ----
     const beacon = 0.55 + 0.45 * Math.sin(this.frame * 0.5 + seed);
-    ctx.fillStyle = hot;
+    ctx.fillStyle = b.fullLock ? "#ffffff" : tint;
+    ctx.strokeStyle = b.fullLock ? "#ffffff" : tint;
     ctx.globalAlpha = beacon;
-    ctx.fillRect(-2.5, -2.6, 2.2, 5.2);
+    if (w.payload === "cluster") {
+      for (const x of [-5.5, -2.5, 0.5]) ctx.fillRect(x, -1, 1.8, 2);
+    } else if (w.payload === "gravity") {
+      ctx.lineWidth = 0.9;
+      ctx.beginPath();
+      ctx.arc(-1.5, 0, 1.6, 0, TAU);
+      ctx.stroke();
+      // a mote orbiting the nose
+      const a = this.frame * 0.35 + seed;
+      ctx.globalAlpha = 1;
+      ctx.fillRect(9 + Math.cos(a) * 5 - 0.8, Math.sin(a) * 5 - 0.8, 1.6, 1.6);
+    } else if (w.payload === "emp") {
+      ctx.lineWidth = 0.9;
+      ctx.beginPath();
+      ctx.moveTo(-6, 0);
+      ctx.lineTo(-4.5, -1.6);
+      ctx.lineTo(-3, 1.6);
+      ctx.lineTo(-1.5, -1.6);
+      ctx.lineTo(0, 1.6);
+      ctx.lineTo(1.5, 0);
+      ctx.stroke();
+    } else if (w.payload === "incendiary") {
+      ctx.beginPath();
+      ctx.moveTo(-4, 1.8);
+      ctx.quadraticCurveTo(-5.5, -0.5, -2.5, -2);
+      ctx.quadraticCurveTo(-1, 0.5, -1.5, 1.8);
+      ctx.closePath();
+      ctx.fill();
+    } else ctx.fillRect(-2.5, -2.6, 2.2, 5.2);
     ctx.globalAlpha = 1;
-    // seeker cap
+
+    // ---- trigger: the nose ----
+    if (w.trigger === "delayed") {
+      ctx.strokeStyle = WARHEAD_PARTS.delayed.color;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(8, 1.5);
+      ctx.lineTo(12, 4);
+      ctx.moveTo(8, -1.5);
+      ctx.lineTo(12, -4);
+      ctx.stroke();
+    }
+    if (w.trigger === "chain" && !b.mini) {
+      // a mini missile docked under the belly
+      ctx.fillStyle = "#15121f";
+      ctx.strokeStyle = WARHEAD_PARTS.chain.color;
+      ctx.lineWidth = 0.7;
+      ctx.beginPath();
+      ctx.moveTo(4, 4.3);
+      ctx.lineTo(-4, 3.3);
+      ctx.lineTo(-4, 5.3);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
     const cap = ctx.createRadialGradient(8, 0, 0, 8, 0, 4.5);
     cap.addColorStop(0, "#ffffff");
-    cap.addColorStop(0.5, hot);
-    cap.addColorStop(1, `${color}00`);
+    cap.addColorStop(0.5, b.fullLock ? "#ffffff" : tint);
+    cap.addColorStop(1, `${tint}00`);
     ctx.beginPath();
-    ctx.arc(8, 0, 4.5, 0, TAU);
+    ctx.arc(8, 0, w.trigger === "proximity" ? 5.2 : 4.5, 0, TAU);
     ctx.fillStyle = cap;
     ctx.fill();
     ctx.restore();
+
+    // world-space trigger telegraphs
+    if (w.trigger === "proximity" && lit) {
+      const pulse = 0.5 + 0.5 * Math.sin(this.frame * 0.4 + seed);
+      ctx.save();
+      ctx.strokeStyle = WARHEAD_PARTS.proximity.color;
+      ctx.globalAlpha = 0.1 + pulse * 0.12;
+      ctx.setLineDash([2, 5]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, GAME_CONFIG.warheads.proximity.distance + b.r, 0, TAU);
+      ctx.stroke();
+      ctx.restore();
+    }
+    if (b.stuck) {
+      // Delayed fuse: a ring that fills as the charge counts down, blinking faster at the end
+      const fuse = GAME_CONFIG.warheads.delayed.fuse;
+      const left = clamp(b.stuck.t / fuse, 0, 1);
+      const blink = Math.sin((1 - left) * (1 - left) * 60) > 0;
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.strokeStyle = "rgba(255,255,255,0.15)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, 13, 0, TAU);
+      ctx.stroke();
+      ctx.strokeStyle = WARHEAD_PARTS.delayed.color;
+      ctx.lineWidth = 2.4;
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = WARHEAD_PARTS.delayed.color;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, 13, -Math.PI / 2, -Math.PI / 2 + TAU * (1 - left));
+      ctx.stroke();
+      if (blink) {
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, 3, 0, TAU);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+  }
+
+  /** Cluster bomblet: a blinking pellet with a short hot streak. */
+  renderBomblet(ctx: CanvasRenderingContext2D, b: Bullet) {
+    const blink = b.fuse < 0.18 ? (this.frame % 4 < 2 ? 1 : 0.4) : 0.85;
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.strokeStyle = b.color;
+    ctx.globalAlpha = 0.45;
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(b.x, b.y);
+    ctx.lineTo(b.x - b.vx * 0.04, b.y - b.vy * 0.04);
+    ctx.stroke();
+    ctx.globalAlpha = blink;
+    ctx.fillStyle = b.color;
+    ctx.shadowBlur = 10;
+    ctx.shadowColor = b.color;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, 3.4, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, 1.4, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /**
+   * Gravity wells: a dark lensing core with spiral arms winding inward and
+   * rings that contract toward the centre. Incendiary patches: a molten rim,
+   * licking flame tongues and rising embers that fade with the fire.
+   */
+  renderMissileZones(ctx: CanvasRenderingContext2D) {
+    for (const z of this.missileZones) {
+      const fade = clamp(z.life / Math.min(0.35, z.max), 0, 1);
+      const age = z.max - z.life;
+      ctx.save();
+      ctx.translate(z.x, z.y);
+      if (z.kind === "gravity") {
+        const color = WARHEAD_PARTS.gravity.color;
+        const grow = clamp(age / 0.2, 0, 1);
+        const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, z.r * grow);
+        glow.addColorStop(0, "rgba(3,1,7,0.9)");
+        glow.addColorStop(0.18, `${color}55`);
+        glow.addColorStop(0.6, `${color}14`);
+        glow.addColorStop(1, `${color}00`);
+        ctx.globalAlpha = fade;
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(0, 0, z.r * grow, 0, TAU);
+        ctx.fill();
+        // contracting rings
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        for (let k = 0; k < 3; k++) {
+          const t = (age * 0.9 + k / 3) % 1;
+          ctx.globalAlpha = fade * t * 0.5;
+          ctx.beginPath();
+          ctx.arc(0, 0, z.r * (1 - t) * grow, 0, TAU);
+          ctx.stroke();
+        }
+        // spiral arms
+        ctx.rotate(z.seed + age * 3.2);
+        ctx.globalAlpha = fade * 0.42;
+        ctx.lineWidth = 1.1;
+        for (let arm = 0; arm < 3; arm++) {
+          ctx.rotate(TAU / 3);
+          ctx.beginPath();
+          for (let i = 0; i <= 24; i++) {
+            const f = i / 24;
+            const rr = z.r * 0.85 * grow * (1 - f) + 6;
+            const a = f * 3.4;
+            if (i === 0) ctx.moveTo(Math.cos(a) * rr, Math.sin(a) * rr);
+            else ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+          }
+          ctx.stroke();
+        }
+        ctx.globalAlpha = fade;
+        ctx.fillStyle = "#030107";
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.arc(0, 0, 7, 0, TAU);
+        ctx.fill();
+        ctx.stroke();
+      } else {
+        const color = WARHEAD_PARTS.incendiary.color;
+        const heat = ctx.createRadialGradient(0, 0, 0, 0, 0, z.r);
+        heat.addColorStop(0, "rgba(255,230,160,0.32)");
+        heat.addColorStop(0.55, `${color}30`);
+        heat.addColorStop(1, `${color}00`);
+        ctx.globalAlpha = fade;
+        ctx.globalCompositeOperation = "lighter";
+        ctx.fillStyle = heat;
+        ctx.beginPath();
+        ctx.arc(0, 0, z.r, 0, TAU);
+        ctx.fill();
+        // molten rim
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.4;
+        ctx.setLineDash([6, 5]);
+        ctx.lineDashOffset = -age * 30;
+        ctx.globalAlpha = fade * 0.6;
+        ctx.beginPath();
+        ctx.arc(0, 0, z.r * 0.92, 0, TAU);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // flame tongues
+        for (let k = 0; k < 9; k++) {
+          const a = z.seed + (k / 9) * TAU;
+          const dist = z.r * (0.25 + ((k * 37) % 60) / 100);
+          const fx = Math.cos(a) * dist,
+            fy = Math.sin(a) * dist;
+          const hgt = 9 + 6 * Math.sin(this.frame * 0.35 + k * 1.7);
+          ctx.globalAlpha = fade * 0.85;
+          ctx.fillStyle = k % 3 === 0 ? "#ffe0a3" : color;
+          ctx.beginPath();
+          ctx.moveTo(fx - 4, fy + 2);
+          ctx.quadraticCurveTo(fx - 3, fy - hgt * 0.6, fx, fy - hgt);
+          ctx.quadraticCurveTo(fx + 3, fy - hgt * 0.6, fx + 4, fy + 2);
+          ctx.closePath();
+          ctx.fill();
+        }
+        // embers rising out of the patch
+        ctx.fillStyle = "#ffd166";
+        for (let k = 0; k < 10; k++) {
+          const t = (age * 0.8 + k * 0.137) % 1;
+          const a = z.seed * 3 + k * 2.39;
+          const ex = Math.cos(a) * z.r * 0.7 * ((k % 5) / 5 + 0.2);
+          const ey = Math.sin(a) * z.r * 0.5 - t * 34;
+          ctx.globalAlpha = fade * (1 - t);
+          ctx.fillRect(ex, ey, 1.6, 1.6);
+        }
+      }
+      ctx.restore();
+    }
+  }
+
+  /** EMP: offline specialists flicker grey with arcs crawling over the hull. */
+  renderEmpOverlay(ctx: CanvasRenderingContext2D) {
+    const color = WARHEAD_PARTS.emp.color;
+    for (const d of this.drones) {
+      if (!((d.emp ?? 0) > 0)) continue;
+      ctx.save();
+      ctx.translate(d.x, d.y);
+      ctx.globalAlpha = 0.35 + 0.25 * Math.sin(this.frame * 0.9 + d.id);
+      ctx.fillStyle = "rgba(20,24,34,0.55)";
+      ctx.beginPath();
+      ctx.arc(0, 0, d.r + 2, 0, TAU);
+      ctx.fill();
+      ctx.globalAlpha = 0.9;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.1;
+      ctx.shadowBlur = 8;
+      ctx.shadowColor = color;
+      for (let k = 0; k < 2; k++) {
+        const a = this.frame * 0.21 + k * Math.PI + d.id;
+        ctx.beginPath();
+        for (let i = 0; i <= 5; i++) {
+          const t = a + i * 0.3;
+          const rr = d.r + 3 + (i % 2 ? 4 : -1);
+          if (i === 0) ctx.moveTo(Math.cos(t) * rr, Math.sin(t) * rr);
+          else ctx.lineTo(Math.cos(t) * rr, Math.sin(t) * rr);
+        }
+        ctx.stroke();
+      }
+      ctx.shadowBlur = 0;
+      ctx.font = "9px monospace";
+      ctx.textAlign = "center";
+      ctx.fillStyle = color;
+      ctx.globalAlpha = this.frame % 30 < 20 ? 0.9 : 0.3;
+      ctx.fillText(`OFFLINE ${Math.ceil(d.emp ?? 0)}`, 0, -d.r - 8);
+      ctx.restore();
+    }
   }
 
   renderPilot(ctx: CanvasRenderingContext2D) {
@@ -7516,6 +8330,9 @@ export class Game {
       ctx.restore();
     }
     ctx.shadowBlur = 0;
+
+    // lingering warhead effects sit under the rocks they act on
+    this.renderMissileZones(ctx);
 
     // rocks
     for (const r of this.rocks) {
@@ -8415,6 +9232,7 @@ export class Game {
       ctx.strokeRect(bx + 0.5, 26.5, bw - 1, 7);
     }
 
+    this.renderEmpOverlay(ctx);
     this.forEachPilot(() => this.renderPilot(ctx));
 
     // bullets
@@ -8423,6 +9241,10 @@ export class Game {
       const a = Math.atan2(b.vy, b.vx);
       if (b.kind === "missile") {
         this.renderMissile(ctx, b);
+        continue;
+      }
+      if (b.kind === "bomblet") {
+        this.renderBomblet(ctx, b);
         continue;
       }
       if (b.kind === "flak") {

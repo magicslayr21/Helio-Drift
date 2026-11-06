@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { ArrowLeft, ArrowRight, RefreshCw, Radio, Shield, Users } from "lucide-react";
-import { WEAPON_ORDER } from "../game/balance";
+import { WEAPON_ORDER, normalizeMissileBuild } from "../game/balance";
 import { Game } from "../game/engine";
 import { UpgradeOption } from "./UpgradeOption";
 import { ShopScreen } from "./ShopScreen";
@@ -1226,6 +1226,10 @@ function CoopShop({
           }}
           onEquipWeapon={(id) => {
             send({ type: "selectWeapon", weapon: id });
+          }}
+          missileBuild={normalizeMissileBuild(player.ship.missileBuild)}
+          onFitWarhead={(id) => {
+            send({ type: "fitWarhead", part: id });
           }}
           notice={notice}
           extra={

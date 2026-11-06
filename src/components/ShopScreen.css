@@ -182,6 +182,12 @@
   background: linear-gradient(115deg, #91e7b013, #91e7b003);
   box-shadow: inset 0 -2px #91e7b0;
 }
+.helio-shop .shop-tab[data-shop-tab="missiles"].is-selected {
+  color: #ff8ae4;
+  border-color: #ff5ad880;
+  background: linear-gradient(115deg, #ff5ad813, #ff5ad803);
+  box-shadow: inset 0 -2px #ff5ad8;
+}
 .helio-shop .shop-tab:not(:disabled):hover {
   border-color: #ffb03a;
 }

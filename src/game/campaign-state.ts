@@ -28,6 +28,7 @@ const WORLD_FIELDS = [
   "salvoFlash",
   "missileClock",
   "missileMarks",
+  "missileZones",
   "particles",
   "rings",
   "texts",

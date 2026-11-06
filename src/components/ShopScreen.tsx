@@ -1,8 +1,24 @@
-import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { WEAPON_DEFS, WEAPON_ORDER } from "../game/balance";
-import type { SalvageShopInfo, SalvageUpgradeId, WeaponId, WeaponShopInfo } from "../game/types";
+import type {
+  MissileBuild,
+  SalvageShopInfo,
+  SalvageUpgradeId,
+  WarheadPartId,
+  WeaponId,
+  WeaponShopInfo,
+} from "../game/types";
 import { audio } from "../game/audio";
 import { ShopIcon, WeaponIcon, WEAPON_ICONS } from "./ShopIcons";
+import { WarheadWorkshop } from "./WarheadWorkshop";
 import "./ShopScreen.css";
 
 type Purchase = {
@@ -12,6 +28,8 @@ type Purchase = {
   label: string;
 };
 const RARITY = { common: "#ffb03a", rare: "#6fe7ff", epic: "#ff3d6e" };
+type ShopTab = "weapons" | "drone" | "missiles";
+const TABS: ShopTab[] = ["weapons", "drone", "missiles"];
 const PATHS = [
   { id: "offense", name: "Firepower", color: "#ff7d9b", note: "Hit harder. Fire faster." },
   { id: "support", name: "Protection", color: "#91e7b0", note: "Repair, reinforce, protect." },
@@ -28,6 +46,8 @@ export interface ShopScreenProps {
   onBuyDrone: (id: SalvageUpgradeId | "base") => void;
   onEquipDrone: (id: WeaponId | null) => void;
   onEquipWeapon?: (id: WeaponId) => void;
+  missileBuild: MissileBuild;
+  onFitWarhead: (id: WarheadPartId) => void;
   notice?: string;
   extra?: ReactNode;
 }
@@ -42,10 +62,12 @@ export function ShopScreen({
   onBuyDrone,
   onEquipDrone,
   onEquipWeapon,
+  missileBuild,
+  onFitWarhead,
   notice,
   extra,
 }: ShopScreenProps) {
-  const [tab, setTab] = useState<"weapons" | "drone">("weapons");
+  const [tab, setTab] = useState<ShopTab>("weapons");
   const [selected, setSelected] = useState(activeWeapon);
   const [pending, setPending] = useState<Purchase | null>(null);
   const [receipt, setReceipt] = useState<{
@@ -130,10 +152,19 @@ export function ShopScreen({
     setUnconfirmed(false);
     buy();
   };
-  const switchTab = (next: "weapons" | "drone") => {
+  const switchTab = (next: ShopTab) => {
     setTab(next);
     frame.current?.querySelector(".shop-body")?.scrollTo({ top: 0, behavior: "instant" });
     audio.play("ui");
+  };
+  /** Arrow keys move between the department tabs, wrapping at either end. */
+  const tabKeys = (current: ShopTab) => (e: KeyboardEvent) => {
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    e.preventDefault();
+    const step = e.key === "ArrowRight" ? 1 : -1;
+    const next = TABS[(TABS.indexOf(current) + step + TABS.length) % TABS.length];
+    switchTab(next);
+    frame.current?.querySelector<HTMLButtonElement>(`[data-shop-tab=${next}]`)?.focus();
   };
   const maxed = info.price === null;
   const canBuy = !maxed && credits >= info.price! && !pending;
@@ -194,13 +225,7 @@ export function ShopScreen({
           aria-controls={`${panelId}-weapons`}
           id={`${panelId}-weapons-tab`}
           onClick={() => switchTab("weapons")}
-          onKeyDown={(e) => {
-            if (e.key === "ArrowRight") {
-              e.preventDefault();
-              switchTab("drone");
-              frame.current?.querySelector<HTMLButtonElement>("[data-shop-tab=drone]")?.focus();
-            }
-          }}
+          onKeyDown={tabKeys("weapons")}
           data-shop-tab="weapons"
         >
           <ShopIcon id="weapons" />
@@ -218,13 +243,7 @@ export function ShopScreen({
           aria-controls={`${panelId}-drone`}
           id={`${panelId}-drone-tab`}
           onClick={() => switchTab("drone")}
-          onKeyDown={(e) => {
-            if (e.key === "ArrowLeft") {
-              e.preventDefault();
-              switchTab("weapons");
-              frame.current?.querySelector<HTMLButtonElement>("[data-shop-tab=weapons]")?.focus();
-            }
-          }}
+          onKeyDown={tabKeys("drone")}
           data-shop-tab="drone"
         >
           <ShopIcon id="drone" />
@@ -236,22 +255,33 @@ export function ShopScreen({
         </button>
         <button
           type="button"
-          className="shop-tab shop-tab--unreleased"
+          className={`shop-tab ${tab === "missiles" ? "is-selected" : ""}`}
           role="tab"
-          aria-selected={false}
-          aria-disabled="true"
-          disabled
+          aria-selected={tab === "missiles"}
+          aria-controls={`${panelId}-missiles`}
+          id={`${panelId}-missiles-tab`}
+          onClick={() => switchTab("missiles")}
+          onKeyDown={tabKeys("missiles")}
+          data-shop-tab="missiles"
         >
           <ShopIcon id="missiles" />
           <span>
             <strong>Missiles</strong>
-            <small>In development</small>
+            <small>Warhead Workshop / 3 slots</small>
           </span>
           <i>03</i>
         </button>
       </div>
       <div className="shop-body">
-        {tab === "weapons" ? (
+        {tab === "missiles" ? (
+          <section
+            role="tabpanel"
+            id={`${panelId}-missiles`}
+            aria-labelledby={`${panelId}-missiles-tab`}
+          >
+            <WarheadWorkshop build={missileBuild} onFit={onFitWarhead} />
+          </section>
+        ) : tab === "weapons" ? (
           <section
             role="tabpanel"
             id={`${panelId}-weapons`}

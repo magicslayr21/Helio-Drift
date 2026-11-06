@@ -53,6 +53,7 @@ export type MultiplayerClientMessage =
   | { type: "buyDrone"; sequence: number }
   | { type: "buyDroneUpgrade"; sequence: number; upgrade: SalvageUpgradeId }
   | { type: "equipDroneWeapon"; sequence: number; weapon: WeaponId | null }
+  | { type: "fitWarhead"; sequence: number; part: import("../types").WarheadPartId }
   | { type: "chooseUpgrade"; sequence: number; upgrade: string }
   | { type: "rerollUpgrades"; sequence: number }
   | { type: "activateOverdrive"; sequence: number }
