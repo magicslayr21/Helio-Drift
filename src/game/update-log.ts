@@ -1,5 +1,60 @@
 export const UPDATE_LOG = [
   {
+    version: "0.7.1-alpha.1",
+    date: "2026-11-06",
+    title: "Warhead workshop",
+    sections: [
+      {
+        title: "SHOP",
+        items: [
+          "The Missiles tab is open: the Warhead Workshop fits one payload, one guidance and one trigger part to every missile in your rack.",
+          "13 parts across three slots, each with its rarity shown. Fitting a part is free, and missiles already in flight keep the warhead they launched with.",
+          "A live schematic of the assembled missile updates as you fit each part.",
+        ],
+      },
+      {
+        title: "PAYLOADS",
+        items: [
+          "Blast: 42 damage in a 72 radius (the default).",
+          "Cluster: bursts into 6 bomblets that scatter and deal 16 damage each. Bomblets never hurt you.",
+          "Gravity: a 1.5 s well that pulls small and medium rocks within 160.",
+          "EMP: specialists in the blast go offline for 3 s and Tether Sentinel shields drop.",
+          "Incendiary: a burning patch for 2 s at 20 damage per second.",
+        ],
+      },
+      {
+        title: "GUIDANCE",
+        items: [
+          "Direct: pure pursuit at a 6.5 turn rate (the default).",
+          "Corkscrew: +15% speed and a wider spiral, even on a single tapped missile.",
+          "Relay: when its blast kills the target, the missile flies on to another lock at 60% damage, up to 2 hops.",
+          "Orbit: missiles circle your ship for 1.5 s, each blocking 1 enemy shot, then strike.",
+        ],
+      },
+      {
+        title: "TRIGGERS",
+        items: [
+          "Impact: detonates on contact (the default).",
+          "Proximity: detonates 40 px early with +20% radius.",
+          "Chain: each blast launches a mini missile at 30% damage. Mini missiles do not chain.",
+          "Delayed: sticks to the target and detonates after 1 s for 1.6× damage.",
+          "Bosses take the full effect of damage parts; Gravity and EMP never move or disable a boss.",
+        ],
+      },
+      {
+        title: "VISUALS",
+        items: [
+          "Each part changes the missile: the payload tints the warhead, plume and blast; guidance changes the fins (raked fins, forward-swept relay prongs or an orbit ring-wing); triggers add a proximity sensor ring, a docked mini missile or grapple barbs.",
+          "Gravity wells draw a dark core with spiral arms, fire patches burn with flame tongues and embers, offline specialists crackle with arcs, and stuck Delayed charges show a countdown ring.",
+        ],
+      },
+      {
+        title: "CO-OP",
+        items: ["Each pilot fits their own warhead from the shared shop."],
+      },
+    ],
+  },
+  {
     version: "0.7.0-alpha.1",
     date: "2026-11-06",
     title: "Salvo lock",

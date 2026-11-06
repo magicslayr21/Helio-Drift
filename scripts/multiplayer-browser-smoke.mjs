@@ -694,31 +694,64 @@ try {
       shopTabs.some((tab) => tab.toLowerCase().includes(title.toLowerCase())),
       true,
     );
+  // 0.7.1: the Missiles tab opens the Warhead Workshop. Fitting a part changes the
+  // missile build but never credits, weapons or the drone.
   const beforeMissiles = await evaluate(
     cdp,
     campaign,
     `JSON.stringify({credits:window.__campaignUpgradeGame.credits,
-      weapons:window.__campaignUpgradeGame.p.weapons,drone:window.__campaignUpgradeGame.salvageDrone,
-      selected:document.querySelector('.helio-shop [role=tab][aria-selected=true]').textContent})`,
+      weapons:window.__campaignUpgradeGame.p.weapons,drone:window.__campaignUpgradeGame.salvageDrone})`,
   );
   assert.equal(
     await evaluate(
       cdp,
       campaign,
       `(() => {const tab=[...document.querySelectorAll('.helio-shop [role=tab]')].find(t=>t.textContent.includes('Missiles'));
-        const inert=tab.getAttribute('aria-disabled')==='true';tab.click();return inert;})()`,
+        const inert=tab.disabled||tab.getAttribute('aria-disabled')==='true';tab.click();return inert;})()`,
     ),
-    true,
+    false,
+  );
+  await waitFor(
+    cdp,
+    campaign,
+    "document.querySelectorAll('.helio-shop [data-warhead-part]').length === 13",
+    "Warhead Workshop parts",
+  );
+  await evaluate(cdp, campaign, "document.querySelector('[data-warhead-part=cluster]').click()");
+  await waitFor(
+    cdp,
+    campaign,
+    "window.__campaignUpgradeGame.p.missileBuild.payload === 'cluster'",
+    "fitted Cluster payload",
+  );
+  assert.equal(
+    await evaluate(
+      cdp,
+      campaign,
+      "document.querySelector('[data-warhead-part=cluster]').getAttribute('aria-pressed')",
+    ),
+    "true",
   );
   assert.equal(
     await evaluate(
       cdp,
       campaign,
       `JSON.stringify({credits:window.__campaignUpgradeGame.credits,
-        weapons:window.__campaignUpgradeGame.p.weapons,drone:window.__campaignUpgradeGame.salvageDrone,
-        selected:document.querySelector('.helio-shop [role=tab][aria-selected=true]').textContent})`,
+        weapons:window.__campaignUpgradeGame.p.weapons,drone:window.__campaignUpgradeGame.salvageDrone})`,
     ),
     beforeMissiles,
+  );
+  await evaluate(cdp, campaign, "document.querySelector('[data-warhead-part=blast]').click()");
+  await evaluate(
+    cdp,
+    campaign,
+    "document.querySelector('.helio-shop [data-shop-tab=weapons]').click()",
+  );
+  await waitFor(
+    cdp,
+    campaign,
+    "document.querySelector('.helio-shop [data-shop-tab=weapons]').getAttribute('aria-selected') === 'true'",
+    "weapons tab restored",
   );
   const weaponIds = await evaluate(cdp, campaign, "window.__campaignShopDefinitions.WEAPON_ORDER");
   assert.equal(weaponIds.length, 8);
@@ -958,7 +991,7 @@ try {
     "shop close restores pending choices",
   );
   console.info(
-    "[shop readiness] eight weapon icons and stat comparisons, three tabs, inert missiles, purchases, upgrades, receipts, max level, credit limits, drone mounts and preserved level-up choices passed",
+    "[shop readiness] eight weapon icons and stat comparisons, three tabs, warhead workshop fitting, purchases, upgrades, receipts, max level, credit limits, drone mounts and preserved level-up choices passed",
   );
   await cdp.send(
     "Emulation.setEmulatedMedia",

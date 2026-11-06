@@ -6,6 +6,7 @@ import {
   SALVAGE_UPGRADES,
   SALVAGE_UPGRADE_ORDER,
   STAT_UPGRADES,
+  normalizeMissileBuild,
 } from "./balance";
 
 export interface SavedLeaderboardRun {
@@ -171,6 +172,8 @@ export class RunSave {
         state.p.missileHoldT ??= -1;
         state.p.missileLockT ??= 0;
         state.p.fullLockAt ??= -1;
+        // Warhead Workshop (0.7.1): older saves fit the default Blast / Direct / Impact.
+        state.p.missileBuild = normalizeMissileBuild(state.p.missileBuild);
       }
       // New modules default to unpurchased in saves from earlier alpha releases.
       if (state?.salvageDrone?.upgrades && state.salvageDrone.upgrades.shield === undefined)

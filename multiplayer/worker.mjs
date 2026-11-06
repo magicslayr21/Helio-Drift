@@ -28,6 +28,23 @@ const DRONE_UPGRADES = new Set([
   "speed",
 ]);
 
+// Warhead Workshop parts (src/game/balance.ts WARHEAD_PARTS).
+const WARHEAD_PARTS = new Set([
+  "blast",
+  "cluster",
+  "gravity",
+  "emp",
+  "incendiary",
+  "direct",
+  "corkscrew",
+  "relay",
+  "orbit",
+  "impact",
+  "proximity",
+  "chain",
+  "delayed",
+]);
+
 class RequestError extends Error {
   constructor(status, message) {
     super(message);
@@ -617,6 +634,7 @@ export class MatchRoom {
       case "buyDrone":
       case "buyDroneUpgrade":
       case "equipDroneWeapon":
+      case "fitWarhead":
       case "chooseUpgrade":
       case "rerollUpgrades":
       case "activateOverdrive":
@@ -781,6 +799,10 @@ export class MatchRoom {
       if (!DRONE_UPGRADES.has(message.upgrade))
         return this.sendError(socket, "invalid_command", "Drone upgrade is invalid.");
       command.upgrade = message.upgrade;
+    } else if (message.type === "fitWarhead") {
+      if (!WARHEAD_PARTS.has(message.part))
+        return this.sendError(socket, "invalid_command", "Warhead part is invalid.");
+      command.part = message.part;
     } else if (message.type === "equipDroneWeapon") {
       if (message.weapon !== null && !WEAPONS.has(message.weapon))
         return this.sendError(socket, "invalid_command", "Drone weapon is invalid.");

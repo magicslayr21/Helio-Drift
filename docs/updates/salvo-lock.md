@@ -237,3 +237,33 @@ Decisions taken while building Phase 1:
   their upgrade stacks, which gives the 4-missile rack and the new blast values, and they load
   with a full rack. Co-op room checkpoints from before Salvo Lock get the same rack and blast
   values when restored.
+
+## Phase 2 build notes (`0.7.1-alpha.1`)
+
+- **How parts are obtained:** the spec gives Phase 2 no prices, and Phase 3 adds blueprint offers
+  and buying. Until then every part can be fitted for free from the Missiles tab, with its rarity
+  shown. Phase 3 replaces this with the blueprint offers.
+- **Shots in flight:** each missile copies the build when it launches, so a refit never changes
+  missiles already in the air, including Relay hops and Chain minis.
+- **Payload scaling:** a shot's power (Full Lock ×1.25, Relay 60%, Chain 30%, Delayed ×1.6,
+  Crossfire ×1.4) multiplies Cluster bomblet damage and Incendiary damage per second. Chain minis
+  carry Gravity and EMP at 50% duration, so a mini EMP cannot match a full one.
+- **Payload radii:** EMP uses its own 110 radius and Gravity uses 160. Incendiary uses the blast
+  radius. Proximity's +20% applies to all of them.
+- **Relay:** a missile relays only when its own blast killed its target. It flies to the next
+  living lock from the same salvo, or to the nearest target within 700 if none is left.
+- **Orbit:** salvo missiles spread evenly around the ship. Relay hops and Chain minis launch
+  straight away and never orbit. An orbiting missile ignores rocks until it breaks orbit.
+- **Delayed:** the charge rides its target at the point it hit. If the target dies first, the
+  charge detonates at once, still at ×1.6.
+- **Bosses:** damage parts (Blast, Cluster, Incendiary, Delayed's multiplier) hit bosses in
+  full. Gravity never pulls a boss, and EMP never disables one.
+- **Co-op:** a new `fitWarhead` command carries the part id. The Worker validates it against
+  the 13 part ids and the simulation validates the slot. Room checkpoints from before the
+  Workshop restore with Blast / Direct / Impact.
+- **Missile designs per part:** the payload tints the warhead, the middle of the plume, the
+  chamber window and the blast sparks. Solo missiles wear the payload colour and co-op missiles
+  keep the pilot's colour. Guidance changes the airframe: raked fins with rifling stripes
+  (Corkscrew), forward-swept wings with relay prongs (Relay), or a ring-wing (Orbit). Triggers
+  change the nose: a pulsing 40 px sensor ring (Proximity), a docked mini missile (Chain), or
+  grapple barbs plus a countdown ring once stuck (Delayed).

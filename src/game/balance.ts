@@ -5,6 +5,7 @@
 
 import type {
   BossSpec,
+  MissileBuild,
   Player,
   Rarity,
   RockTrait,
@@ -12,6 +13,9 @@ import type {
   SalvageUpgradeId,
   SectorTheme,
   StatUpgrade,
+  WarheadPartId,
+  WarheadRarity,
+  WarheadSlot,
   WeaponId,
 } from "./types";
 import { GAME_CONFIG } from "./game-config";
@@ -271,6 +275,137 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     },
   },
 ];
+
+/* ------------------------------------------------------------ warhead workshop */
+
+export const DEFAULT_MISSILE_BUILD: MissileBuild = {
+  payload: "blast",
+  guidance: "direct",
+  trigger: "impact",
+};
+
+export interface WarheadPartDef {
+  slot: WarheadSlot;
+  name: string;
+  rarity: WarheadRarity;
+  /** Tier I effect, as shown in the Workshop. */
+  effect: string;
+  /** Warhead tint: seeker cap, plume core and blast highlights. */
+  color: string;
+}
+
+const W = GAME_CONFIG.warheads;
+export const WARHEAD_SLOTS: WarheadSlot[] = ["payload", "guidance", "trigger"];
+export const WARHEAD_PARTS: Record<WarheadPartId, WarheadPartDef> = {
+  blast: {
+    slot: "payload",
+    name: "Blast",
+    rarity: "default",
+    effect: `${GAME_CONFIG.player.blastDamage} damage in a ${GAME_CONFIG.player.blastRadius} radius.`,
+    color: "#ff3d6e",
+  },
+  cluster: {
+    slot: "payload",
+    name: "Cluster",
+    rarity: "rare",
+    effect: `Bursts into ${W.cluster.bomblets} bomblets × ${W.cluster.bombletDamage} damage that scatter and detonate.`,
+    color: "#ffb03a",
+  },
+  gravity: {
+    slot: "payload",
+    name: "Gravity",
+    rarity: "rare",
+    effect: `Opens a ${W.gravity.duration} s well that pulls small and medium rocks within ${W.gravity.radius}.`,
+    color: "#a98bff",
+  },
+  emp: {
+    slot: "payload",
+    name: "EMP",
+    rarity: "epic",
+    effect: `Disables specialists for ${W.emp.duration} s and drops Tether Sentinel shields.`,
+    color: "#8ff7ff",
+  },
+  incendiary: {
+    slot: "payload",
+    name: "Incendiary",
+    rarity: "common",
+    effect: `Leaves a burning patch for ${W.incendiary.duration} s, ${W.incendiary.dps} damage per second.`,
+    color: "#ff7a2e",
+  },
+  direct: {
+    slot: "guidance",
+    name: "Direct",
+    rarity: "default",
+    effect: `Pure pursuit with a ${GAME_CONFIG.salvo.turn} turn rate.`,
+    color: "#ffe0a3",
+  },
+  corkscrew: {
+    slot: "guidance",
+    name: "Corkscrew",
+    rarity: "common",
+    effect: `+${Math.round((W.corkscrew.speedMultiplier - 1) * 100)}% speed and a wider spiral.`,
+    color: "#ffd166",
+  },
+  relay: {
+    slot: "guidance",
+    name: "Relay",
+    rarity: "epic",
+    effect: `On a kill, flies on to another lock at ${W.relay.damageMultiplier * 100}% damage, up to ${W.relay.hops} hops.`,
+    color: "#7dffb2",
+  },
+  orbit: {
+    slot: "guidance",
+    name: "Orbit",
+    rarity: "rare",
+    effect: `Circles the ship for ${W.orbit.duration} s blocking ${W.orbit.blocks} enemy shot each, then strikes.`,
+    color: "#6fe7ff",
+  },
+  impact: {
+    slot: "trigger",
+    name: "Impact",
+    rarity: "default",
+    effect: "Detonates on contact.",
+    color: "#ffe0a3",
+  },
+  proximity: {
+    slot: "trigger",
+    name: "Proximity",
+    rarity: "common",
+    effect: `Detonates ${W.proximity.distance} px early with +${Math.round((W.proximity.radiusMultiplier - 1) * 100)}% radius.`,
+    color: "#ffd166",
+  },
+  chain: {
+    slot: "trigger",
+    name: "Chain",
+    rarity: "epic",
+    effect: `Each blast launches a mini missile at ${W.chain.damageMultiplier * 100}% damage.`,
+    color: "#ff5ad8",
+  },
+  delayed: {
+    slot: "trigger",
+    name: "Delayed",
+    rarity: "rare",
+    effect: `Sticks to the target and detonates after ${W.delayed.fuse} s for ${W.delayed.damageMultiplier}× damage.`,
+    color: "#ff9168",
+  },
+};
+
+export const isWarheadPart = (id: unknown): id is WarheadPartId =>
+  typeof id === "string" && Object.prototype.hasOwnProperty.call(WARHEAD_PARTS, id);
+
+/** Replace a missing or invalid build (old saves, tampered rooms) with valid parts. */
+export function normalizeMissileBuild(build: unknown): MissileBuild {
+  const raw = (build && typeof build === "object" ? build : {}) as Record<string, unknown>;
+  const pick = <T extends WarheadPartId>(slot: WarheadSlot, fallback: T): T =>
+    isWarheadPart(raw[slot]) && WARHEAD_PARTS[raw[slot] as WarheadPartId].slot === slot
+      ? (raw[slot] as T)
+      : fallback;
+  return {
+    payload: pick("payload", DEFAULT_MISSILE_BUILD.payload),
+    guidance: pick("guidance", DEFAULT_MISSILE_BUILD.guidance),
+    trigger: pick("trigger", DEFAULT_MISSILE_BUILD.trigger),
+  };
+}
 
 /* ------------------------------------------------------------ salvage drone */
 
@@ -532,6 +667,7 @@ export function freshPlayer(): Player {
     missileHoldT: -1,
     missileLockT: 0,
     fullLockAt: -1,
+    missileBuild: { ...DEFAULT_MISSILE_BUILD },
     magnet: GAME_CONFIG.player.magnet,
     creditChance: GAME_CONFIG.player.creditChance,
     creditValue: GAME_CONFIG.player.creditValue,

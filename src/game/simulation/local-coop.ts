@@ -1,6 +1,13 @@
 import { CoopCampaign, PILOTS, freshPilotCampaign, isHostileShot } from "../coop-campaign";
 import { captureCampaignWorld, restoreCampaignWorld } from "../campaign-state";
-import { freshPlayer, freshSalvageDrone, THEMES, STAT_UPGRADES } from "../balance";
+import {
+  freshPlayer,
+  freshSalvageDrone,
+  THEMES,
+  STAT_UPGRADES,
+  isWarheadPart,
+  normalizeMissileBuild,
+} from "../balance";
 import {
   applyDeveloperCommand,
   validDeveloperCommand,
@@ -121,6 +128,8 @@ export class LocalCoopSimulation {
         p.ship.blastR = GAME_CONFIG.player.blastRadius;
         p.ship.missileCharge = 0;
       }
+      // Warhead Workshop (0.7.1): rooms from earlier builds fit the default parts.
+      p.ship.missileBuild = normalizeMissileBuild(p.ship.missileBuild);
     }
     sim.game = sim.createGame();
     if (snapshot.campaign) restoreCampaignWorld(sim.game, snapshot.campaign);
@@ -352,9 +361,11 @@ export class LocalCoopSimulation {
       !Object.prototype.hasOwnProperty.call(p.drone.upgrades, command.upgrade)
     )
       return false;
+    if (command.type === "fitWarhead" && !isWarheadPart(command.part)) return false;
     if (
       ![
         "input",
+        "fitWarhead",
         "buyWeapon",
         "selectWeapon",
         "buyDrone",
@@ -390,6 +401,7 @@ export class LocalCoopSimulation {
         "buyDrone",
         "buyDroneUpgrade",
         "equipDroneWeapon",
+        "fitWarhead",
         "chooseUpgrade",
         "rerollUpgrades",
       ].includes(c.type);
@@ -540,6 +552,10 @@ export class LocalCoopSimulation {
           break;
         case "equipDroneWeapon":
           accepted = g.equipSalvageWeapon(c.weapon);
+          break;
+        case "fitWarhead":
+          item = c.part;
+          accepted = g.fitWarheadPart(c.part);
           break;
         case "chooseUpgrade":
           item = c.upgrade;
