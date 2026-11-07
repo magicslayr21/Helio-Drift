@@ -168,6 +168,7 @@ export class RunSave {
     try {
       const saved = read();
       const state = saved?.state;
+      let legacyBay = false;
       if (state?.p && state.p.rangeMul === undefined)
         state.p.rangeMul = 1 + Math.min(3, Math.max(0, state.stacks?.range ?? 0)) * (0.4 / 3);
       if (state && state.campaignTethers === undefined) state.campaignTethers = [];
@@ -185,7 +186,9 @@ export class RunSave {
           typeof state.p.bonusLocks === "number" && state.p.bonusLocks >= 0
             ? state.p.bonusLocks
             : 0;
-        // Missile Bay (0.8.0): older saves start with every track at level 0
+        // Missile Bay: saves without one start at level 0; 0.8.0's five tracks fold
+        // into the single upgrade, and the rack is rebuilt below for the new slots
+        legacyBay = !!state.p.missileBay && !("level" in state.p.missileBay);
         state.p.missileBay = normalizeMissileBay(state.p.missileBay);
       }
       // Run-scoped randomness needs a seed; older runs derive one from their id.
@@ -298,6 +301,7 @@ export class RunSave {
       game.p.beamOn = false;
       game.p.missileHeld = false;
       game.clearMissileLock();
+      if (legacyBay) game.rebuildStatUpgrades();
       game.p.thrusting = false;
       game.salvageDrone.devCount = 1;
       game.salvageDrone.beamOn = false;

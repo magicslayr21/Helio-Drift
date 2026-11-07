@@ -55,7 +55,8 @@ function game() {
   };
   const g = new Game(canvas, { onHud: noop, onMode: noop });
   g.mode = "playing";
-  g.wave = 3;
+  // wave 0: missile damage scale is exactly 1, so blast numbers read as configured
+  g.wave = 0;
   g.saveRun = noop;
   g.gainXp = noop;
   g.rocks = [];
@@ -100,93 +101,90 @@ const BAY = GAME_CONFIG.missileBay;
 
 /* ------------------------------------------------------------ missile bay */
 
-test("Missile Bay prices grow 1.7× per level and are expensive", () => {
-  assert.deepEqual(
-    [0, 1, 2, 3].map((l) => missileBayPrice("velocity", l)),
-    [240, 410, 695, 1180],
-  );
-  assert.deepEqual(
-    [0, 1, 2, 3, 4].map((l) => missileBayPrice("yield", l)),
-    [300, 510, 865, 1475, 2505],
-  );
-  assert.equal(missileBayPrice("magazine", 3), null, "max level");
+test("missile damage grows with the wave like asteroid health, and with damage upgrades", () => {
   const g = game();
-  g.credits = 100;
-  assert.equal(g.buyMissileBay("yield"), false, "not enough credits");
-  assert.equal(g.buyMissileBay("warp"), false, "unknown track");
-  g.credits = 10000;
-  assert.equal(g.buyMissileBay("yield"), true);
-  assert.equal(g.credits, 10000 - 300);
-  assert.equal(g.p.missileBay.yield, 1);
+  const big = (wave) => {
+    g.wave = wave;
+    return g.makeRock(0, 0, 3, 0, 0, "none").maxHp;
+  };
+  const dmg = (wave) => {
+    g.wave = wave;
+    return g.launchMissile({ angle: 0 }).missileDmg;
+  };
+  // the missile-to-large-rock ratio holds from wave 1 to wave 25
+  const early = dmg(1) / big(1),
+    late = dmg(25) / big(25);
+  close(early, late, 1e-9);
+  assert.ok(dmg(21) > 380, `wave 21 missile ${dmg(21)}`);
+  // one missile kills a medium rock at any wave
+  for (const wave of [1, 10, 21]) {
+    g.wave = wave;
+    assert.ok(dmg(wave) >= g.makeRock(0, 0, 2, 0, 0, "none").maxHp);
+  }
+  // Hollow-Point damage upgrades carry over to missiles
+  g.wave = 0;
+  g.devSetStack("hollow", 2);
+  close(dmg(0), 60 * 1.12 * 1.12);
 });
 
-test("Velocity and Yield make every missile faster, sharper and stronger", () => {
+test("the Missile Bay is one 5-level upgrade with a fair, rising price", () => {
+  assert.deepEqual(
+    [0, 1, 2, 3, 4, 5].map((l) => missileBayPrice(l)),
+    [400, 620, 960, 1490, 2310, null],
+  );
+  const g = game();
+  g.credits = 100;
+  assert.equal(g.buyMissileBay(), false, "not enough credits");
+  g.credits = 10000;
+  assert.equal(g.buyMissileBay(), true);
+  assert.equal(g.credits, 10000 - 400);
+  assert.equal(g.p.missileBay.level, 1);
+  for (let i = 0; i < 4; i++) g.buyMissileBay();
+  assert.equal(g.p.missileBay.level, 5);
+  assert.equal(g.buyMissileBay(), false, "level 5 is the top");
+  assert.equal(g.credits, 10000 - 400 - 620 - 960 - 1490 - 2310);
+});
+
+test("every Missile Bay level improves speed, damage, recharge and lock-on together", () => {
   const g = game();
   const plain = g.launchMissile({ angle: 0 });
-  g.p.missileBay.velocity = 2;
-  g.p.missileBay.yield = 3;
-  const fast = g.launchMissile({ angle: 0 });
-  close(Math.hypot(fast.vx, fast.vy), Math.hypot(plain.vx, plain.vy) * 1.2);
-  close(fast.turn, plain.turn * 1.16);
-  close(fast.missileDmg, 42 * 1.36);
-  // payloads scale with Yield too: Cluster bomblets carry the bonus
+  g.p.missileBay.level = 5;
+  const best = g.launchMissile({ angle: 0 });
+  close(Math.hypot(best.vx, best.vy), Math.hypot(plain.vx, plain.vy) * 1.4);
+  close(best.turn, plain.turn * 1.3);
+  close(best.missileDmg, 60 * 1.6);
+  close(g.effectiveMissileRegen(), 12 * 0.9 ** 5);
+  close(g.missileChargeMul(), 1.5);
+  close(g.lockInterval(), GAME_CONFIG.salvo.lockInterval * 0.9 ** 5);
+  close(g.lockConeRange(), 700 * 1.4);
+  // payloads carry the damage bonus: Cluster bomblets scale too
   g.devFitPart("cluster");
   const target = rock(g, 400, 300);
   g.bullets = [];
   g.detonateMissile(armed(g, null, target));
-  const bomblet = g.bullets.find((b) => b.kind === "bomblet");
-  close(bomblet.extraDmg, 16 * 1.36);
+  close(g.bullets.find((b) => b.kind === "bomblet").extraDmg, 16 * 1.6);
 });
 
-test("Magazine adds rack slots past the Missile Rack cap, and survives a stat rebuild", () => {
+test("Missile Bay levels 1, 3 and 5 add rack slots past the Missile Rack cap", () => {
   const g = game();
   g.credits = 1e6;
   g.devSetStack("missileRack", 2);
   assert.equal(g.p.maxMissiles, 6);
-  for (let i = 0; i < 3; i++) assert.equal(g.buyMissileBay("magazine"), true);
-  assert.equal(g.p.maxMissiles, 9);
-  assert.equal(g.buyMissileBay("magazine"), false, "Magazine maxes at 3");
+  const racks = [];
+  for (let i = 0; i < 5; i++) {
+    g.buyMissileBay();
+    racks.push(g.p.maxMissiles);
+  }
+  assert.deepEqual(racks, [7, 7, 8, 8, 9]);
   g.rebuildStatUpgrades();
-  assert.equal(g.p.maxMissiles, 9);
-  // locks follow the bigger rack
+  assert.equal(g.p.maxMissiles, 9, "survives a stat rebuild");
   g.p.missiles = 9;
   for (let i = 0; i < 9; i++) rock(g, 560 + i * 30, 300);
   for (let t = 0; t < 2; t += DT) g.updateMissileLock(DT, true);
   assert.equal(g.p.missileLocks.length, 9);
 });
 
-test("Autoloader shortens recharge and boosts graze and kill charge", () => {
-  const g = game();
-  g.p.missiles = 1;
-  g.p.missileBay.autoloader = 2;
-  close(g.effectiveMissileRegen(), 12 * 0.88 * 0.88);
-  // a full passive missile arrives sooner
-  const seconds = g.effectiveMissileRegen();
-  for (let t = 0; t < seconds - 0.05; t += DT) g.addMissileCharge(DT / g.effectiveMissileRegen());
-  assert.equal(g.p.missiles, 1);
-  for (let t = 0; t < 0.1; t += DT) g.addMissileCharge(DT / g.effectiveMissileRegen());
-  assert.equal(g.p.missiles, 2);
-  const k = game();
-  k.p.missiles = 1;
-  k.p.missileBay.autoloader = 4;
-  k.breakRock(k.rocks.push(k.makeRock(300, 300, 1, 0, 0, "none")) - 1, 0, 0);
-  close(k.p.missileCharge, 0.03 * 1.6 * 12);
-});
-
-test("Seeker locks faster and reaches further", () => {
-  const g = game();
-  g.p.missileBay.seeker = 3;
-  close(g.lockInterval(), GAME_CONFIG.salvo.lockInterval * 0.88 ** 3);
-  close(g.lockConeRange(), 700 * 1.3);
-  // a rock at 820 px is out of reach normally, in reach with Seeker 3
-  const far = rock(g, 700, 700 - 820);
-  assert.equal(g.inLockCone(far), true);
-  const plain = game();
-  const far2 = rock(plain, 700, 700 - 820);
-  assert.equal(plain.inLockCone(far2), false);
-});
-
-test("old saves and rooms start the Missile Bay at level 0", async (t) => {
+test("a 0.8.0 save folds its five bay tracks into one level and re-derives the rack", async (t) => {
   const { RunSave } = await import("../src/game/run-save.ts");
   let data = null;
   t.mock.method(localStorage, "getItem", () => data);
@@ -197,27 +195,20 @@ test("old saves and rooms start the Missile Bay at level 0", async (t) => {
   g.wave = 4;
   new RunSave().begin(g);
   const saved = JSON.parse(data);
-  delete saved.state.p.missileBay;
-  for (const part of Object.values(saved.state.p.forge.fitted)) delete part.heat;
+  saved.state.p.missileBay = { velocity: 1, yield: 3, magazine: 2, autoloader: 0, seeker: 1 };
+  saved.state.p.maxMissiles = 6; // 4 + 2 Magazine slots under 0.8.0
+  saved.state.p.missiles = 6;
   data = JSON.stringify(saved);
   const restored = game();
   assert.equal(new RunSave().restore(restored), true);
-  assert.deepEqual(restored.p.missileBay, {
-    velocity: 0,
-    yield: 0,
-    magazine: 0,
-    autoloader: 0,
-    seeker: 0,
-  });
-  assert.ok(Object.values(restored.forgeOf().fitted).every((p) => p.heat === 0));
-  // and a bought bay survives a round trip
-  restored.p.missileBay.magazine = 2;
-  restored.rebuildStatUpgrades();
-  new RunSave().begin(restored);
-  const again = game();
-  assert.equal(new RunSave().restore(again), true);
-  assert.equal(again.p.missileBay.magazine, 2);
-  assert.equal(again.p.maxMissiles, 6);
+  assert.deepEqual(restored.p.missileBay, { level: 3 });
+  assert.equal(restored.p.maxMissiles, 6, "level 3 gives 2 rack slots");
+  // and a save with no bay starts at level 0
+  delete saved.state.p.missileBay;
+  data = JSON.stringify(saved);
+  const fresh = game();
+  assert.equal(new RunSave().restore(fresh), true);
+  assert.deepEqual(fresh.p.missileBay, { level: 0 });
 });
 
 /* ------------------------------------------------------------ catalogue */
@@ -314,15 +305,14 @@ test("rushing a temper early pays for the missing Heat", () => {
   assert.ok(g.forgeOf().fitted.trigger.heat >= 400, "a rush fills the bar to the tier");
 });
 
-test("Bay synergy: Missile Bay levels heat parts faster and cut temper prices (max 40%)", () => {
+test("Bay synergy: each Missile Bay level heats parts 10% faster and trims tempering 6%", () => {
   const part = { id: "siphon", tier: 1, heat: 400, kills: 0, spent: 620 };
-  assert.equal(temperPrice(part, 5), Math.round((310 * 0.85) / 5) * 5);
-  assert.equal(temperPrice(part, 19), Math.round((310 * 0.6) / 5) * 5, "capped at 40%");
+  assert.equal(temperPrice(part, 3), Math.round((310 * 0.82) / 5) * 5);
+  assert.equal(temperPrice(part, 5), Math.round((310 * 0.7) / 5) * 5, "30% at level 5");
   const g = game();
-  g.p.missileBay.yield = 2;
-  g.p.missileBay.velocity = 2;
+  g.p.missileBay.level = 2;
   const info = g.forgeShopInfo();
-  assert.equal(info.bayLevels, 4);
+  assert.equal(info.bayLevels, 2);
   close(info.heatBonus, 0.2);
   close(info.temperDiscount, 0.12);
   g.devFitPart("blast");
@@ -655,16 +645,16 @@ test("Feedback (Siphon III): a Full Lock salvo refunds one whole missile", () =>
 
 /* ------------------------------------------------------------ tier II and III for earlier parts */
 
-test("Blast II deals 50 in an 80 radius; Aftershock (III) follows 0.4 s later at 40%", (t) => {
+test("Blast II deals 72 in an 80 radius; Aftershock (III) follows 0.4 s later at 40%", (t) => {
   const g = game();
   const target = rock(g, 400, 300, 3, 1e6);
   g.devFitPart("blast", 3);
   const blasts = captureBlasts(g, t);
   g.detonateMissile(armed(g, null, target));
-  assert.deepEqual([blasts[0].dmg, blasts[0].r], [50, 80]);
+  assert.deepEqual([blasts[0].dmg, blasts[0].r], [72, 80]);
   for (let i = 0; i < 0.45 * 60; i++) g.updatePendingBlasts(DT);
   assert.equal(blasts.length, 2);
-  close(blasts[1].dmg, 20);
+  close(blasts[1].dmg, 72 * 0.4);
 });
 
 test("Impact II adds 10%; Breach (III) adds 40% against boss hulls", () => {
@@ -674,7 +664,7 @@ test("Impact II adds 10%; Breach (III) adds 40% against boss hulls", () => {
   g.boss.hp = g.boss.maxHp = 1e6;
   g.devFitPart("impact", 3);
   g.detonateMissile(armed(g, null, g.boss));
-  close(1e6 - g.boss.hp, 42 * 1.1 * 1.4, 1e-6);
+  close(1e6 - g.boss.hp, 60 * 1.1 * 1.4, 1e-6);
 });
 
 test("Relay II hops 3 times at 70%; Chainbreaker (III) gains 10% per hop", () => {
@@ -686,7 +676,7 @@ test("Relay II hops 3 times at 70%; Chainbreaker (III) gains 10% per hop", () =>
   Object.assign(m, { x: a.x, y: a.y });
   g.bullets = [];
   g.detonateMissile(m);
-  close(missiles(g)[0].missileDmg, 42 * 1.1);
+  close(missiles(g)[0].missileDmg, 60 * 1.1);
   const two = game();
   two.devFitPart("relay", 2);
   const v = rock(two, 300, 300, 1, 1);
@@ -719,7 +709,7 @@ test("Chain II minis carry 40%; Cascade (III) lets a mini chain once more", (t) 
   g.bullets = [];
   g.detonateMissile(m);
   const [mini] = missiles(g);
-  close(mini.missileDmg, 42 * 0.4);
+  close(mini.missileDmg, 60 * 0.4);
   assert.equal(mini.chainDepth, 1);
   g.bullets = [];
   g.detonateMissile(mini);
@@ -743,7 +733,7 @@ test("Delayed II: 0.8 s fuse at 1.8×; Detonator (III): a tap sets every charge 
   g.updateMissileLock(DT, true);
   g.updateMissileLock(DT, false);
   assert.equal(blasts.length, 1);
-  close(blasts[0].dmg, 84);
+  close(blasts[0].dmg, 120);
   assert.equal(g.p.missiles, rack, "the tap detonated instead of firing");
 });
 

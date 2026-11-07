@@ -63,8 +63,8 @@ import {
   missileBayPrice,
   missileRegenMultiplier,
   lockIntervalMultiplier,
-  MISSILE_BAY_TRACKS,
-  MISSILE_BAY_DEFS,
+  missileBayRack,
+  missileBayLines,
 } from "./balance";
 import { addKnownBlueprint, loadKnownBlueprints } from "./blueprints";
 import type {
@@ -106,7 +106,6 @@ import type {
   ForgeShopInfo,
   WarheadTier,
   MissileBay,
-  MissileBayTrack,
 } from "./types";
 import { renderSpecialist } from "./render-specialists";
 import { DEFAULT_SETTINGS } from "./preferences";
@@ -1121,58 +1120,58 @@ export class Game {
 
   /* ---- missile bay ---- */
 
-  /** Buy the next level of a Missile Bay track. */
-  buyMissileBay(track: MissileBayTrack): boolean {
-    if (!MISSILE_BAY_TRACKS.includes(track)) return false;
+  /** Buy the next Missile Bay level: every missile stat improves together. */
+  buyMissileBay(): boolean {
     const bay = this.bayOf();
-    const price = missileBayPrice(track, bay[track]);
+    const price = missileBayPrice(bay.level);
     if (price === null || this.credits < price) return false;
     this.credits -= price;
-    bay[track]++;
-    if (track === "magazine") {
-      const add = GAME_CONFIG.missileBay.magazine.rackPerLevel;
+    const rackBefore = missileBayRack(bay.level);
+    bay.level++;
+    const add = missileBayRack(bay.level) - rackBefore;
+    if (add > 0) {
       this.p.maxMissiles += add;
       this.p.missiles = Math.min(this.p.maxMissiles, this.p.missiles + add);
     }
-    const def = MISSILE_BAY_DEFS[track];
-    this.floatText(
-      this.p.x,
-      this.p.y - 30,
-      `${def.name.toUpperCase()} ${bay[track]}`,
-      def.color,
-      14,
-    );
+    this.floatText(this.p.x, this.p.y - 30, `MISSILE BAY ${bay.level}`, "#ff5ad8", 14);
     this.sound.play("buy");
     return true;
   }
 
-  /** Missile speed multiplier from Velocity. */
+  /**
+   * Missile damage grows with the wave at the same rate as asteroid health, and
+   * with the pilot's weapon damage upgrades, so salvos stay heavy late in a run.
+   */
+  missileDamageScale() {
+    return (
+      (1 + scaledWave(this.wave) * GAME_CONFIG.asteroids.hpPerScaledWave) * (this.p.damageMul ?? 1)
+    );
+  }
   missileSpeedMul() {
-    return 1 + this.bayOf().velocity * GAME_CONFIG.missileBay.velocity.speedPerLevel;
+    return 1 + this.bayOf().level * GAME_CONFIG.missileBay.speedPerLevel;
   }
   missileTurnMul() {
-    return 1 + this.bayOf().velocity * GAME_CONFIG.missileBay.velocity.turnPerLevel;
+    return 1 + this.bayOf().level * GAME_CONFIG.missileBay.turnPerLevel;
   }
-  /** Missile damage multiplier from Yield. */
   missileYieldMul() {
-    return 1 + this.bayOf().yield * GAME_CONFIG.missileBay.yield.damagePerLevel;
+    return 1 + this.bayOf().level * GAME_CONFIG.missileBay.damagePerLevel;
   }
-  /** Effective seconds per missile of passive recharge (Autoloader). */
+  /** Effective seconds per missile of passive recharge. */
   effectiveMissileRegen() {
-    return this.p.missileRegen * missileRegenMultiplier(this.bayOf().autoloader);
+    return this.p.missileRegen * missileRegenMultiplier(this.bayOf().level);
   }
-  /** Graze and kill charge multiplier (Autoloader). */
+  /** Graze and kill charge multiplier. */
   missileChargeMul() {
-    return 1 + this.bayOf().autoloader * GAME_CONFIG.missileBay.autoloader.chargePerLevel;
+    return 1 + this.bayOf().level * GAME_CONFIG.missileBay.chargePerLevel;
   }
-  /** Seconds between locks (Seeker). */
+  /** Seconds between locks. */
   lockInterval() {
-    return GAME_CONFIG.salvo.lockInterval * lockIntervalMultiplier(this.bayOf().seeker);
+    return GAME_CONFIG.salvo.lockInterval * lockIntervalMultiplier(this.bayOf().level);
   }
-  /** Lock cone length (Seeker × range upgrade). */
+  /** Lock cone length (Missile Bay × range upgrade). */
   lockConeRange() {
-    const seeker = 1 + this.bayOf().seeker * GAME_CONFIG.missileBay.seeker.conePerLevel;
-    return GAME_CONFIG.salvo.coneRange * (this.p.rangeMul ?? 1) * seeker;
+    const bay = 1 + this.bayOf().level * GAME_CONFIG.missileBay.conePerLevel;
+    return GAME_CONFIG.salvo.coneRange * (this.p.rangeMul ?? 1) * bay;
   }
 
   /* ---- catalogue, heat and tempering ---- */
@@ -1390,12 +1389,13 @@ export class Game {
       };
     };
     return {
-      bay: MISSILE_BAY_TRACKS.map((track) => ({
-        track,
-        level: bay[track],
-        max: GAME_CONFIG.missileBay[track].levels,
-        price: missileBayPrice(track, bay[track]),
-      })),
+      bay: {
+        level: bay.level,
+        max: GAME_CONFIG.missileBay.levels,
+        price: missileBayPrice(bay.level),
+        current: missileBayLines(bay.level),
+        next: bay.level < GAME_CONFIG.missileBay.levels ? missileBayLines(bay.level + 1) : null,
+      },
       bayLevels: levels,
       heatBonus: synergyHeat(levels) - 1,
       temperDiscount: synergyDiscount(levels),
@@ -4239,7 +4239,12 @@ export class Game {
       extraDmg: 0,
       // Yield (Missile Bay) multiplies the warhead; follow-ups inherit absolute damage
       missileDmg:
-        opts.dmg ?? p.blastDmg * blastDmgMul * (opts.dmgMul ?? 1) * this.missileYieldMul(),
+        opts.dmg ??
+        p.blastDmg *
+          blastDmgMul *
+          (opts.dmgMul ?? 1) *
+          this.missileYieldMul() *
+          this.missileDamageScale(),
       missileR: opts.radius ?? p.blastR * blastRMul,
       warhead: build,
       tiers,
@@ -7929,8 +7934,8 @@ export class Game {
     // restore the hull we came in with — the upgrades' one-shot heals are part
     // of the rebuild, so don't let them stack on the player for free
     p.hull = clamp(keepHull, 1, p.maxHull);
-    // Missile Bay Magazine slots ride on top of the rebuilt rack
-    p.maxMissiles += (this.bayOf().magazine ?? 0) * GAME_CONFIG.missileBay.magazine.rackPerLevel;
+    // Missile Bay rack slots ride on top of the rebuilt rack
+    p.maxMissiles += missileBayRack(this.bayOf().level);
     p.missiles = Math.min(keepMissiles, p.maxMissiles);
   }
 

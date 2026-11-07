@@ -56,7 +56,7 @@ export type MultiplayerClientMessage =
   | { type: "fitWarhead"; sequence: number; part: import("../types").WarheadPartId }
   | { type: "unlockPart"; sequence: number; part: import("../types").WarheadPartId }
   | { type: "temperPart"; sequence: number; part: import("../types").WarheadPartId }
-  | { type: "buyMissileBay"; sequence: number; track: import("../types").MissileBayTrack }
+  | { type: "buyMissileBay"; sequence: number }
   | { type: "swapBench"; sequence: number; index: number }
   | { type: "scrapBench"; sequence: number; index: number }
   | { type: "sendBench"; sequence: number; index: number }

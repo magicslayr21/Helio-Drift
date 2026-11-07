@@ -541,3 +541,84 @@
     padding-top: 0;
   }
 }
+
+/* ------------------------------------------------------------ single missile bay (0.8.1) */
+.helio-shop .forge-bay-panel {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.8fr) minmax(0, 2fr) minmax(170px, 0.7fr);
+  gap: 16px;
+  align-items: center;
+  padding: 16px;
+}
+.forge-bay-head {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 10px;
+  align-items: center;
+}
+.forge-bay-head strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.forge-bay-head small {
+  color: var(--part-color);
+  font-size: 8px;
+  letter-spacing: 0.12em;
+}
+.forge-bay-head .forge-bay-pips {
+  grid-column: 1 / -1;
+}
+.forge-bay-head .forge-bay-pips i {
+  width: 22px;
+  height: 4px;
+}
+.forge-bay-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+.forge-bay-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid #ffffff10;
+  border-top: 2px solid var(--stat-color);
+  background: #0c0f18;
+  font-size: 8.5px;
+  line-height: 1.45;
+}
+.forge-bay-stat span {
+  color: var(--stat-color);
+  font-size: 7.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.forge-bay-stat b {
+  color: #e8d7bb;
+  font-weight: 500;
+}
+.forge-bay-stat em {
+  color: #7f8190;
+  font-style: normal;
+}
+.forge-bay-stat.is-changing em {
+  color: var(--stat-color);
+}
+.helio-shop .forge-bay-buy {
+  padding: 12px;
+  font-size: 9px;
+}
+@media (max-width: 1100px) {
+  .helio-shop .forge-bay-panel {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 620px) {
+  .forge-bay-stats {
+    grid-template-columns: 1fr 1fr;
+  }
+}

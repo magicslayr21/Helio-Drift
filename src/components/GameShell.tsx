@@ -1027,7 +1027,7 @@ export default function GameShell({
                     }}
                     forge={{
                       info: gameRef.current!.forgeShopInfo(),
-                      onBay: (track) => forgeAction((g) => g.buyMissileBay(track)),
+                      onBay: () => forgeAction((g) => g.buyMissileBay()),
                       onUnlock: (id) => forgeAction((g) => g.unlockPart(id)),
                       onTemper: (id) => forgeAction((g) => g.temperPart(id)),
                       onSwap: (index) => forgeAction((g) => g.swapBench(index)),

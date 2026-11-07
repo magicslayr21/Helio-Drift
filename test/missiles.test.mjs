@@ -40,6 +40,7 @@ const { STAT_UPGRADES } = await import("../src/game/balance.ts");
 const { LocalCoopSimulation } = await import("../src/game/simulation/local-coop.ts");
 
 const SALVO = GAME_CONFIG.salvo;
+const close = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
 const missiles = (g) => g.bullets.filter((b) => b.kind === "missile");
 
 /** A quiet arena: ship at (700, 600) facing up, nothing else alive. */
@@ -52,7 +53,8 @@ function game() {
   };
   const g = new Game(canvas, { onHud: noop, onMode: noop });
   g.mode = "playing";
-  g.wave = 3;
+  // wave 0: missile damage scale is exactly 1, so blast numbers read as configured
+  g.wave = 0;
   g.saveRun = noop;
   g.gainXp = noop;
   g.rocks = [];
@@ -78,12 +80,12 @@ function hold(g, seconds, dt = 1 / 60) {
 }
 const release = (g) => g.updateMissileLock(1 / 60, false);
 
-test("the baseline rack is 4 missiles, 12 s regen and 42 / 72 per-missile blasts", () => {
+test("the baseline rack is 4 missiles, 12 s regen and 60 / 72 per-missile blasts", () => {
   const g = game();
   assert.equal(g.p.maxMissiles, 4);
   assert.equal(g.p.missiles, 4);
   assert.equal(g.p.missileRegen, 12);
-  assert.equal(g.p.blastDmg, 42);
+  assert.equal(g.p.blastDmg, 60);
   assert.equal(g.p.blastR, 72);
 });
 
@@ -192,7 +194,7 @@ test("releasing inside the Full Lock window applies ×1.25; outside it does not"
   release(inside);
   assert.equal(missiles(inside).length, 4);
   for (const b of missiles(inside)) {
-    assert.equal(b.missileDmg, 42 * 1.25);
+    assert.equal(b.missileDmg, 60 * 1.25);
     assert.equal(b.fullLock, true);
     assert.ok(Math.abs(Math.hypot(b.vx, b.vy) - SALVO.launchSpeed * 1.2) < 1e-6);
   }
@@ -205,7 +207,7 @@ test("releasing inside the Full Lock window applies ×1.25; outside it does not"
   release(late);
   assert.equal(missiles(late).length, 4);
   for (const b of missiles(late)) {
-    assert.equal(b.missileDmg, 42);
+    assert.equal(b.missileDmg, 60);
     assert.equal(b.fullLock, undefined);
   }
   assert.equal(late.salvoFlash, 0);
@@ -221,7 +223,7 @@ test("a salvo missile detonates with its own payload and its corkscrew decays to
   g.explode = (x, y, r, dmg) => blasts.push({ r, dmg });
   for (let i = 0; i < 600 && g.bullets.length; i++) g.updateBullets(1 / 60);
   assert.equal(blasts.length, 1);
-  assert.deepEqual(blasts[0], { r: 72, dmg: 42 });
+  assert.deepEqual(blasts[0], { r: 72, dmg: 60 });
   assert.ok(Math.abs(b.spiral.offset) <= SALVO.spiralAmplitude);
   // the offset follows sin(t·4π + phase) · 38 · (1 − t) and is gone at t = 1
   const free = {
@@ -368,7 +370,7 @@ test("old saves load with a 4-missile rack, no locks and no errors", async (t) =
   assert.equal(restored.p.maxMissiles, 4);
   assert.equal(restored.p.missiles, 4);
   assert.equal(restored.p.missileRegen, 12);
-  assert.equal(restored.p.blastDmg, 42);
+  assert.equal(restored.p.blastDmg, 60);
   assert.equal(restored.p.blastR, 72);
   assert.deepEqual(restored.p.missileLocks, []);
   assert.equal(restored.p.missileHoldT, -1);
@@ -426,13 +428,15 @@ test("Crossfire: both pilots' missiles on one target within 1 s deal ×1.4 and f
   strike("p1");
   g.missileClock += 0.6;
   strike("p2");
-  assert.deepEqual(blasts, [42, 42 * 1.4]);
+  // co-op waves scale missile damage; Crossfire is ×1.4 on top of whatever the blast is
+  const base = blasts[0];
+  close(blasts[1], base * 1.4);
   assert.equal(sim.state.team.overdrive, SALVO.crossfireOverdrive);
   // the same pilot twice is not Crossfire, nor is a hit outside the window
   strike("p2");
   g.missileClock += 1.5;
   strike("p1");
-  assert.deepEqual(blasts.slice(2), [42, 42]);
+  assert.deepEqual(blasts.slice(2), [base, base]);
 });
 
 test("co-op holds E across input samples and fires the salvo on release", () => {
@@ -476,7 +480,7 @@ test("rooms checkpointed before Salvo Lock restore with the new rack", () => {
   const p = restored.state.players.p1.ship;
   assert.equal(p.maxMissiles, 4);
   assert.equal(p.missiles, 4);
-  assert.equal(p.blastDmg, 42);
+  assert.equal(p.blastDmg, 60);
   assert.deepEqual(p.missileLocks, []);
   restored.stepTicks(2);
 });

@@ -54,15 +54,18 @@ export interface ForgePart {
   /** every credit spent on it (unlock and tempering): scrap refunds half */
   spent: number;
 }
-export type MissileBayTrack = "velocity" | "yield" | "magazine" | "autoloader" | "seeker";
-export type MissileBay = Record<MissileBayTrack, number>;
-
+/** Missile Bay: one upgrade (0–5) that improves every missile at once. */
+export interface MissileBay {
+  level: number;
+}
 export interface MissileBayInfo {
-  track: MissileBayTrack;
   level: number;
   max: number;
   /** price of the next level, or null at max */
   price: number | null;
+  /** what the current and next level give, as display lines */
+  current: string[];
+  next: string[] | null;
 }
 export interface ForgePartInfo {
   part: ForgePart;
@@ -88,7 +91,7 @@ export interface CatalogueEntry {
   blocked: string | null;
 }
 export interface ForgeShopInfo {
-  bay: MissileBayInfo[];
+  bay: MissileBayInfo;
   /** total Missile Bay levels and the synergy they grant */
   bayLevels: number;
   heatBonus: number;

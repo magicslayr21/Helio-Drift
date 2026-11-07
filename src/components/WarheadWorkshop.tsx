@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { MISSILE_BAY_DEFS, WARHEAD_PARTS, WARHEAD_SLOTS } from "../game/balance";
+import { WARHEAD_PARTS, WARHEAD_SLOTS } from "../game/balance";
 
 const ROMAN = { 1: "I", 2: "II", 3: "III" } as const;
 import type {
@@ -7,7 +7,6 @@ import type {
   ForgePartInfo,
   ForgeShopInfo,
   GuidanceId,
-  MissileBayTrack,
   MissileBuild,
   WarheadTier,
   PayloadId,
@@ -408,14 +407,16 @@ export function partEffect(id: WarheadPartId, tier: WarheadTier) {
   return tier === 1 ? def.effect : def.tier2;
 }
 
-/** Original marks for the Missile Bay tracks (32 × 32, stroked). */
-const BAY_PATHS: Record<MissileBayTrack, string> = {
-  velocity: "M4 12h10M2 18h12M6 24h8M14 9l14 7-14 7 3-7z",
-  yield: "M16 3l3 8 8 1-6 6 2 9-7-5-7 5 2-9-6-6 8-1z",
-  magazine: "M7 25V11l2-4 2 4v14M15 25V9l2-4 2 4v16M23 25V11l2-4 2 4v14M4 25h24",
-  autoloader: "M16 5a11 11 0 1 1-10 6M6 4v7h7M16 10v6l4 3",
-  seeker: "M16 4v6M16 22v6M4 16h6M22 16h6M10 16a6 6 0 1 0 12 0a6 6 0 1 0-12 0",
-};
+/** The Missile Bay mark: three missiles in a launch cradle. */
+const BAY_PATH = "M8 20V10l2-4 2 4v10M14 20V8l2-4 2 4v12M20 20V10l2-4 2 4v10M5 20h22l-2 6H7z";
+/** Rows of the Missile Bay stat table, matching missileBayLines() order. */
+const BAY_STATS = [
+  { label: "Damage", color: "#ff3d6e" },
+  { label: "Speed", color: "#6fe7ff" },
+  { label: "Amount", color: "#ff5ad8" },
+  { label: "Recharge", color: "#91e7b0" },
+  { label: "Lock-on", color: "#ffd166" },
+];
 
 function TierPips({ tier }: { tier: WarheadTier }) {
   return (
@@ -455,7 +456,7 @@ function HeatBar({ info, compact }: { info: ForgePartInfo; compact?: boolean }) 
 export interface WarheadForgeProps {
   info: ForgeShopInfo;
   credits: number;
-  onBay: (track: MissileBayTrack) => void;
+  onBay: () => void;
   onUnlock: (id: WarheadPartId) => void;
   onTemper: (id: WarheadPartId) => void;
   onSwap: (index: number) => void;
@@ -536,73 +537,74 @@ export function WarheadForge({
             <span className="warhead-slot-index">01</span> Missile Bay
           </p>
           <span>
-            Every missile, every run. Bay level {info.bayLevels}: parts heat{" "}
+            One upgrade for every missile. Each level also makes parts heat{" "}
             {Math.round(info.heatBonus * 100)}% faster and temper{" "}
-            {Math.round(info.temperDiscount * 100)}% cheaper.
+            {Math.round(info.temperDiscount * 100)}% cheaper (now).
           </span>
         </div>
-        <div className="forge-bay">
-          {info.bay.map((t) => {
-            const def = MISSILE_BAY_DEFS[t.track];
-            const maxed = t.price === null;
-            return (
-              <article
-                key={t.track}
-                data-bay={t.track}
-                className={`warhead-card forge-bay-card ${maxed ? "is-mastered" : ""}`}
-                style={{ "--part-color": def.color, "--rarity-color": def.color } as CSSProperties}
-              >
-                <span className="warhead-card-top">
-                  <span className="warhead-rarity">{def.tag}</span>
-                  <span className="forge-bay-pips" aria-label={`Level ${t.level} of ${t.max}`}>
-                    {Array.from({ length: t.max }, (_, i) => (
-                      <i key={i} className={i < t.level ? "is-on" : ""} />
-                    ))}
-                  </span>
+        {(() => {
+          const bay = info.bay;
+          const maxed = bay.price === null;
+          return (
+            <article
+              data-bay="missile-bay"
+              className={`warhead-card forge-bay-panel ${maxed ? "is-mastered" : ""}`}
+              style={{ "--part-color": "#ff5ad8", "--rarity-color": "#ff5ad8" } as CSSProperties}
+            >
+              <div className="forge-bay-head">
+                <span className="warhead-mark">
+                  <svg
+                    viewBox="0 0 32 32"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d={BAY_PATH} />
+                  </svg>
                 </span>
-                <span className="forge-fitted-head">
-                  <span className="warhead-mark">
-                    <svg
-                      viewBox="0 0 32 32"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      aria-hidden="true"
+                <span>
+                  <strong>Missile Bay</strong>
+                  <small>
+                    LEVEL {bay.level} / {bay.max}
+                  </small>
+                </span>
+                <span className="forge-bay-pips" aria-label={`Level ${bay.level} of ${bay.max}`}>
+                  {Array.from({ length: bay.max }, (_, i) => (
+                    <i key={i} className={i < bay.level ? "is-on" : ""} />
+                  ))}
+                </span>
+              </div>
+              <div className="forge-bay-stats">
+                {BAY_STATS.map((stat, k) => {
+                  const changing = bay.next && bay.next[k] !== bay.current[k];
+                  return (
+                    <div
+                      key={stat.label}
+                      className={`forge-bay-stat ${changing ? "is-changing" : ""}`}
+                      style={{ "--stat-color": stat.color } as CSSProperties}
                     >
-                      <path d={BAY_PATHS[t.track]} />
-                    </svg>
-                  </span>
-                  <span>
-                    <strong>{def.name}</strong>
-                    <small>
-                      LEVEL {t.level} / {t.max}
-                    </small>
-                  </span>
-                </span>
-                <span className="warhead-effect">
-                  {t.level ? def.effect(t.level) : "Not installed"}
-                  {!maxed && (
-                    <>
-                      <br />
-                      <em className="forge-next">Next: {def.effect(t.level + 1)}</em>
-                    </>
-                  )}
-                </span>
-                <button
-                  type="button"
-                  className="forge-action"
-                  data-bay-buy={t.track}
-                  disabled={disabled || maxed || credits < (t.price ?? Infinity)}
-                  onClick={() => onBay(t.track)}
-                >
-                  {maxed ? "MAXED" : `UPGRADE · ${t.price} CR`}
-                </button>
-              </article>
-            );
-          })}
-        </div>
+                      <span>{stat.label}</span>
+                      <b>{bay.level ? bay.current[k] : "—"}</b>
+                      <em>{bay.next ? `→ ${bay.next[k]}` : "MAX"}</em>
+                    </div>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                className="forge-action forge-bay-buy"
+                data-bay-buy="missile-bay"
+                disabled={disabled || maxed || credits < (bay.price ?? Infinity)}
+                onClick={onBay}
+              >
+                {maxed ? "MAXED" : `UPGRADE TO LEVEL ${bay.level + 1} · ${bay.price} CR`}
+              </button>
+            </article>
+          );
+        })()}
       </section>
 
       <section className="warhead-slot" aria-label="Fitted parts">
