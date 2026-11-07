@@ -77,8 +77,8 @@ export const GAME_CONFIG = {
     maxMissiles: 4,
     /** Passive regen: seconds per missile. Graze, kills and boss hits add the rest. */
     missileRegen: 12,
-    /** Per-missile blast. A 4-lock salvo deals 4 × 42 = 168 in total. */
-    blastDamage: 42,
+    /** Per-missile blast at wave 0; it grows with the wave like asteroid health. */
+    blastDamage: 60,
     blastRadius: 72,
     magnet: 150,
     creditChance: 0.72,
@@ -129,7 +129,7 @@ export const GAME_CONFIG = {
    */
   warheads: {
     blast: {
-      damage: [42, 50, 50],
+      damage: [60, 72, 72],
       radius: [72, 80, 80],
       aftershockDelay: 0.4,
       aftershockShare: 0.4,
@@ -204,16 +204,23 @@ export const GAME_CONFIG = {
   },
 
   /**
-   * Missile Bay (0.8.0): run-long upgrades for every missile, bought with credits.
-   * Price for the next level is round5(basePrice × priceGrowth^level).
+   * Missile Bay (0.8.1): one run-long upgrade that improves every missile at once.
+   * Level L costs round5(basePrice × priceGrowth^L).
    */
   missileBay: {
-    priceGrowth: 1.7,
-    velocity: { levels: 4, basePrice: 240, speedPerLevel: 0.1, turnPerLevel: 0.08 },
-    yield: { levels: 5, basePrice: 300, damagePerLevel: 0.12 },
-    magazine: { levels: 3, basePrice: 480, rackPerLevel: 1 },
-    autoloader: { levels: 4, basePrice: 260, regenPerLevel: 0.12, chargePerLevel: 0.15 },
-    seeker: { levels: 3, basePrice: 220, lockPerLevel: 0.12, conePerLevel: 0.1 },
+    levels: 5,
+    basePrice: 400,
+    priceGrowth: 1.55,
+    speedPerLevel: 0.08,
+    turnPerLevel: 0.06,
+    damagePerLevel: 0.12,
+    /** levels that add one rack slot (past the Missile Rack cap) */
+    rackLevels: [1, 3, 5],
+    /** recharge time and lock time are multiplied by these per level */
+    regenPerLevel: 0.1,
+    chargePerLevel: 0.1,
+    lockPerLevel: 0.1,
+    conePerLevel: 0.08,
   },
 
   /**
@@ -240,9 +247,9 @@ export const GAME_CONFIG = {
     /** benched parts keep warming at this share of the fitted parts' Heat */
     benchHeatShare: 0.5,
     /** Bay synergy: every Missile Bay level adds Heat gain and trims temper prices */
-    synergyHeatPerLevel: 0.05,
-    synergyDiscountPerLevel: 0.03,
-    synergyMaxDiscount: 0.4,
+    synergyHeatPerLevel: 0.1,
+    synergyDiscountPerLevel: 0.06,
+    synergyMaxDiscount: 0.3,
     /** Veteran parts (taken to Tier III in an earlier run): cheaper unlock, Heat head start */
     veteranUnlockShare: 0.5,
     veteranHeatShare: 0.5,

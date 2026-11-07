@@ -53,7 +53,8 @@ function game() {
   };
   const g = new Game(canvas, { onHud: noop, onMode: noop });
   g.mode = "playing";
-  g.wave = 3;
+  // wave 0: missile damage scale is exactly 1, so blast numbers read as configured
+  g.wave = 0;
   g.saveRun = noop;
   g.gainXp = noop;
   g.rocks = [];
@@ -188,13 +189,13 @@ test("old saves migrate to Blast, Direct and Impact", async (t) => {
 
 /* ------------------------------------------------------------ payloads */
 
-test("Blast: 42 damage in a 72 radius", (t) => {
+test("Blast: 60 damage in a 72 radius at wave 0", (t) => {
   const g = game();
   const target = rock(g, 400, 300);
   const blasts = captureBlasts(g, t);
   g.detonateMissile(armed(g, build(), target));
   assert.equal(blasts.length, 1);
-  assert.equal(blasts[0].dmg, 42);
+  assert.equal(blasts[0].dmg, 60);
   assert.equal(blasts[0].r, 72);
 });
 
@@ -316,7 +317,7 @@ test("Relay: a kill flies on to another lock at 60% damage, up to 2 hops", () =>
   assert.equal(hop.length, 1);
   assert.equal(hop[0].target, b.id);
   assert.equal(hop[0].hops, 1);
-  close(hop[0].missileDmg, 42 * 0.6);
+  close(hop[0].missileDmg, 60 * 0.6);
   // a hop that does not kill goes no further
   g.bullets = [];
   Object.assign(hop[0], { x: b.x, y: b.y });
@@ -414,7 +415,7 @@ test("Chain: each blast launches one mini missile at 30% damage; minis never cha
   const minis = missiles(g);
   assert.equal(minis.length, 1);
   assert.equal(minis[0].mini, true);
-  close(minis[0].missileDmg, 42 * 0.3);
+  close(minis[0].missileDmg, 60 * 0.3);
   g.bullets = [];
   g.detonateMissile(minis[0]);
   assert.equal(missiles(g).length, 0);
@@ -438,7 +439,7 @@ test("Delayed: sticks to the target and detonates after 1 s for 1.6× damage", (
   }
   assert.ok(stuckAt >= 0, "it stuck");
   assert.equal(blasts.length, 1);
-  close(blasts[0].dmg, 42 * 1.6);
+  close(blasts[0].dmg, 60 * 1.6);
 });
 
 /* ------------------------------------------------------------ co-op */
@@ -448,14 +449,13 @@ test("co-op pilots run their own Forge and Missile Bay through room commands", (
   for (const id of ["p1", "p2"]) sim.state.players[id].credits = 5000;
   const cmd = (type, playerId, sequence, extra) => ({ type, playerId, sequence, ...extra });
   assert.equal(sim.submit(cmd("unlockPart", "p1", 1, { part: "incendiary" })), true);
-  assert.equal(sim.submit(cmd("buyMissileBay", "p2", 1, { track: "yield" })), true);
-  assert.equal(sim.submit(cmd("buyMissileBay", "p2", 2, { track: "warp" })), false);
+  assert.equal(sim.submit(cmd("buyMissileBay", "p2", 1, {})), true);
   assert.equal(sim.submit(cmd("unlockPart", "p2", 2, { part: "plasma" })), false);
   sim.stepTicks(1);
   assert.equal(sim.state.players.p1.ship.missileBuild.payload, "incendiary");
   assert.deepEqual(sim.state.players.p2.ship.missileBuild, build());
-  assert.equal(sim.state.players.p2.ship.missileBay.yield, 1);
-  assert.equal(sim.state.players.p1.ship.missileBay.yield, 0);
+  assert.equal(sim.state.players.p2.ship.missileBay.level, 1);
+  assert.equal(sim.state.players.p1.ship.missileBay.level, 0);
   // a room checkpoint from before the Forge restores with three stock parts and an empty bench
   const snapshot = sim.snapshot();
   delete snapshot.players.p1.ship.forge;
@@ -465,5 +465,5 @@ test("co-op pilots run their own Forge and Missile Bay through room commands", (
   const forge = restored.state.players.p1.ship.forge;
   assert.deepEqual(restored.state.players.p1.ship.missileBuild, build());
   assert.deepEqual(forge.bench, [null, null]);
-  assert.equal(restored.state.players.p1.ship.missileBay.velocity, 0);
+  assert.equal(restored.state.players.p1.ship.missileBay.level, 0);
 });

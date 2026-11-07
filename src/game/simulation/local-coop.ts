@@ -10,7 +10,7 @@ import {
   freshForge,
   normalizeForge,
   normalizeMissileBay,
-  MISSILE_BAY_TRACKS,
+  missileBayRack,
 } from "../balance";
 import {
   applyDeveloperCommand,
@@ -146,8 +146,14 @@ export class LocalCoopSimulation {
       p.ship.forge = p.ship.forge ? normalizeForge(p.ship.forge) : freshForge();
       p.ship.missileBuild = buildOf(p.ship.forge);
       p.ship.bonusLocks ??= 0;
-      // Missile Bay (0.8.0): rooms from earlier builds start every track at level 0
+      // Missile Bay: 0.8.0's five tracks fold into the single upgrade (0.8.1); the
+      // rack is re-derived from the old Magazine slots to the new level's slots
+      const oldMagazine = Math.floor(
+        Number((p.ship.missileBay as unknown as Record<string, number> | undefined)?.magazine) || 0,
+      );
       p.ship.missileBay = normalizeMissileBay(p.ship.missileBay);
+      p.ship.maxMissiles += missileBayRack(p.ship.missileBay.level) - oldMagazine;
+      p.ship.missiles = Math.min(p.ship.missiles, p.ship.maxMissiles);
     }
     sim.game = sim.createGame();
     if (snapshot.campaign) restoreCampaignWorld(sim.game, snapshot.campaign);
@@ -386,8 +392,6 @@ export class LocalCoopSimulation {
       !isWarheadPart(command.part)
     )
       return false;
-    if (command.type === "buyMissileBay" && !MISSILE_BAY_TRACKS.includes(command.track))
-      return false;
     if (
       ["swapBench", "scrapBench", "sendBench"].includes(command.type) &&
       !(
@@ -603,8 +607,7 @@ export class LocalCoopSimulation {
           accepted = g.temperPart(c.part);
           break;
         case "buyMissileBay":
-          item = c.track;
-          accepted = g.buyMissileBay(c.track);
+          accepted = g.buyMissileBay();
           break;
         case "swapBench":
           accepted = g.swapBench(c.index);

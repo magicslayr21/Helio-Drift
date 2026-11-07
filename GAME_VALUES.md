@@ -33,30 +33,30 @@ otherwise noted. Damage and health are game units.
 
 ## Player: starting values
 
-| Stat                          |                              Starting value |
-| ----------------------------- | ------------------------------------------: |
-| Hull / maximum hull           |                                   100 / 100 |
-| Armor damage reduction        |                                          0% |
-| Thrust                        |                                         460 |
-| Maximum speed                 |                                         540 |
-| Turn rate                     |                               4.4 radians/s |
-| Fire-rate multiplier          |                                        1.0× |
-| Weapon-damage multiplier      |                                        1.0× |
-| Critical-hit chance           |                                          6% |
-| Critical-hit damage           |                                        2.2× |
-| Starting weapon               |                              Pulse, level 1 |
-| Other starting weapons        |                            Locked (level 0) |
-| Missiles / rack capacity      |                                       4 / 4 |
-| Missile regeneration          |                        1 missile every 12 s |
-| Missile blast damage / radius |                         42 / 72 per missile |
-| Pickup magnet range           |                                         150 |
-| Credit-drop chance base       | 72%, plus 7 percentage points per rock size |
-| Credit value multiplier       |                                        1.0× |
-| Life steal                    |                                          0% |
-| Collision invulnerability     |                                      0.75 s |
-| Ship collision radius         |                                          14 |
-| Normal thrust direction       |    Input-dependent; hybrid controls default |
-| Movement drag per 1/60 s      |                                       0.986 |
+| Stat                          |                                                             Starting value |
+| ----------------------------- | -------------------------------------------------------------------------: |
+| Hull / maximum hull           |                                                                  100 / 100 |
+| Armor damage reduction        |                                                                         0% |
+| Thrust                        |                                                                        460 |
+| Maximum speed                 |                                                                        540 |
+| Turn rate                     |                                                              4.4 radians/s |
+| Fire-rate multiplier          |                                                                       1.0× |
+| Weapon-damage multiplier      |                                                                       1.0× |
+| Critical-hit chance           |                                                                         6% |
+| Critical-hit damage           |                                                                       2.2× |
+| Starting weapon               |                                                             Pulse, level 1 |
+| Other starting weapons        |                                                           Locked (level 0) |
+| Missiles / rack capacity      |                                                                      4 / 4 |
+| Missile regeneration          |                                                       1 missile every 12 s |
+| Missile blast damage / radius | 60 / 72 per missile, × (1 + scaled wave × 0.13) × weapon damage multiplier |
+| Pickup magnet range           |                                                                        150 |
+| Credit-drop chance base       |                                72%, plus 7 percentage points per rock size |
+| Credit value multiplier       |                                                                       1.0× |
+| Life steal                    |                                                                         0% |
+| Collision invulnerability     |                                                                     0.75 s |
+| Ship collision radius         |                                                                         14 |
+| Normal thrust direction       |                                   Input-dependent; hybrid controls default |
+| Movement drag per 1/60 s      |                                                                      0.986 |
 
 Upgrade-derived maximum hull is 208 after six Reinforced Hull stacks. Normal
 armor tops out at 36% damage reduction after three Reactive Armor stacks. At
@@ -70,21 +70,21 @@ rate. Twin-Linked Feeder adds 1 shot and Sabot Rounds add 3 pierce.
 Hold E (or the on-screen Missile button) to paint locks; release to fire. Values live in
 `GAME_CONFIG.salvo` and `GAME_CONFIG.player`.
 
-| Value                              |                                                            Setting |
-| ---------------------------------- | -----------------------------------------------------------------: |
-| Lock cone                          |               70° total (±35°) from the nose, 700 px × range bonus |
-| Lock rate                          |                                1 lock every 0.11 s while E is held |
-| Locks per target                   |                   Large rock 2; boss any number; everything else 1 |
-| Lock ceiling                       |                              Missiles currently loaded in the rack |
-| Tap                                |        Released within 0.15 s with 0–1 locks: 1 missile at nearest |
-| Release cooldown                   |                                                             0.35 s |
-| Salvo launch                       |   ±90° from the nose, alternating sides, 380 speed, turn 6.5 rad/s |
-| Corkscrew offset                   |   `sin(t × 4π + phase) × 38 × (1 − t)`, t = normalised flight time |
-| Per-missile blast                  |                                               42 damage, 72 radius |
-| Full Lock window / bonus           |        Release within 0.3 s: ×1.25 damage, +20% speed, white flash |
-| Graze band                         |    Obstacle radius + 14 + 26 px without a hit: +12% of one missile |
-| Kill / boss main-weapon hit charge |                                                   +3% / +0.5% each |
-| Co-op Crossfire                    | Both pilots' missiles on one target within 1 s: ×1.4, +6 Overdrive |
+| Value                              |                                                              Setting |
+| ---------------------------------- | -------------------------------------------------------------------: |
+| Lock cone                          |                 70° total (±35°) from the nose, 700 px × range bonus |
+| Lock rate                          |                                  1 lock every 0.11 s while E is held |
+| Locks per target                   |                     Large rock 2; boss any number; everything else 1 |
+| Lock ceiling                       |                                Missiles currently loaded in the rack |
+| Tap                                |          Released within 0.15 s with 0–1 locks: 1 missile at nearest |
+| Release cooldown                   |                                                               0.35 s |
+| Salvo launch                       |     ±90° from the nose, alternating sides, 380 speed, turn 6.5 rad/s |
+| Corkscrew offset                   |     `sin(t × 4π + phase) × 38 × (1 − t)`, t = normalised flight time |
+| Per-missile blast                  | 60 damage × wave scale (as asteroid HP) × damage upgrades, 72 radius |
+| Full Lock window / bonus           |          Release within 0.3 s: ×1.25 damage, +20% speed, white flash |
+| Graze band                         |      Obstacle radius + 14 + 26 px without a hit: +12% of one missile |
+| Kill / boss main-weapon hit charge |                                                     +3% / +0.5% each |
+| Co-op Crossfire                    |   Both pilots' missiles on one target within 1 s: ×1.4, +6 Overdrive |
 
 ## Warhead Forge parts
 
@@ -93,7 +93,7 @@ Values live in `GAME_CONFIG.warheads` (per-tier arrays) and `GAME_CONFIG.forge`;
 
 | Part        | Slot     | Rarity  | Tier I                                       | Tier II                              | Tier III perk                                                |
 | ----------- | -------- | ------- | -------------------------------------------- | ------------------------------------ | ------------------------------------------------------------ |
-| Blast       | Payload  | Default | 42 dmg, 72 r                                 | 50 dmg, 80 r                         | Aftershock: second blast 0.4 s later at 40%                  |
+| Blast       | Payload  | Default | 60 dmg, 72 r                                 | 72 dmg, 80 r                         | Aftershock: second blast 0.4 s later at 40%                  |
 | Cluster     | Payload  | Rare    | 6 × 16 bomblets                              | 8 × 18                               | Carpet: bomblets roll on along the missile's path            |
 | Gravity     | Payload  | Rare    | 1.5 s, 160 r                                 | 2 s, 200 r                           | Crush: pulled rocks take 30 dmg/s, +10 per contact tick      |
 | EMP         | Payload  | Epic    | 3 s disable (110 r)                          | 4 s; Warden mines fizzle             | Overload: disabled enemies take +50% damage                  |
@@ -125,19 +125,17 @@ Values live in `GAME_CONFIG.warheads` (per-tier arrays) and `GAME_CONFIG.forge`;
 
 ## Missile Bay
 
-Run-long upgrades for every missile (`GAME_CONFIG.missileBay`). Next level costs
-`round5(basePrice × 1.7^level)`.
+One run-long upgrade for every missile (`GAME_CONFIG.missileBay`), 5 levels. Level L costs
+`round5(400 × 1.55^L)`: 400, 620, 960, 1,490, 2,310.
 
-| Track      | Levels | Per level                                                   | Prices                      |
-| ---------- | -----: | ----------------------------------------------------------- | --------------------------- |
-| Velocity   |      4 | +10% missile speed, +8% turning                             | 240, 410, 695, 1,180        |
-| Yield      |      5 | +12% missile damage (all payloads)                          | 300, 510, 865, 1,475, 2,505 |
-| Magazine   |      3 | +1 rack slot and lock, past the Missile Rack cap (max 9)    | 480, 815, 1,385             |
-| Autoloader |      4 | −12% recharge time (multiplicative), +15% graze/kill charge | 260, 440, 750, 1,280        |
-| Seeker     |      3 | −12% lock time (multiplicative), +10% lock range            | 220, 375, 635               |
-
-Payload damage and control scale with the shot: Full Lock, Relay hops, Chain minis and Delayed
-all multiply the payload. Chain minis carry Gravity, EMP, Solar Flare and Cryo at 50% duration.
+| Per level       | Effect                                                                   |
+| --------------- | ------------------------------------------------------------------------ |
+| Damage          | +12% (all payloads)                                                      |
+| Speed / turning | +8% / +6%                                                                |
+| Rack            | +1 slot and lock at levels 1, 3 and 5, past the Missile Rack cap (max 9) |
+| Recharge        | ×0.9 recharge time; +10% graze and kill charge                           |
+| Lock-on         | ×0.9 lock time; +8% lock range                                           |
+| Bay synergy     | +10% part Heat gain and −6% temper price per level (max −30%)            |
 
 ## Player weapons
 

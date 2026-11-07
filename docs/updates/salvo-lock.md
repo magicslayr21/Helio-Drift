@@ -347,3 +347,22 @@ merges and kill-based mastery were replaced. Part effects and the tier table are
   blueprint offers are dropped, and the Missile Bay starts at level 0.
 - **Co-op:** the `buyBlueprint` and `buyMastery` commands are replaced by `unlockPart`,
   `temperPart` and `buyMissileBay`.
+
+## Follow-up: missile damage scaling and a single Missile Bay (`0.8.1-alpha.1`)
+
+- **Why missiles felt weak:** missile damage was a flat 42 all run, while asteroid health grows
+  with the wave. At wave 21 a large rock has 530 HP, so a full 4-missile salvo (168) took about
+  a third of one. Missiles also ignored weapon damage upgrades.
+- **Fix:** each missile now deals `60 × (1 + scaledWave × 0.13) × damageMul`. The wave factor is
+  the same one asteroid health uses, and `damageMul` comes from the Hollow-Point upgrades. Blast
+  Tier II is 72. Payload effects scale with the shot's power, so they grow too. The missile to
+  large-rock ratio is now the same at every wave: one missile does about 73% of a large rock
+  and always kills a medium one.
+- **One Missile Bay:** the five tracks become a single 5-level upgrade priced
+  `round5(400 × 1.55^L)`. Each level gives +12% damage, +8% speed, +6% turn, ×0.9 recharge,
+  +10% charge, ×0.9 lock time and +8% range. Levels 1, 3 and 5 each add a rack slot.
+- **Bay synergy:** retuned for 5 levels to +10% Heat and −6% temper price per level, capped at
+  30% off.
+- **Saves and rooms from 0.8.0:** the five tracks fold into one level, the highest any track had
+  reached. The rack is then rebuilt for the new level's slots.
+- **Co-op:** `buyMissileBay` no longer takes a track.

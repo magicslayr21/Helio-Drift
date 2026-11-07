@@ -15,7 +15,6 @@ import type {
   StatUpgrade,
   BuildTiers,
   MissileBay,
-  MissileBayTrack,
   Forge,
   ForgePart,
   GuidanceId,
@@ -274,14 +273,12 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     rarity: GAME_CONFIG.statUpgrades.missileRack.rarity,
     weight: GAME_CONFIG.statUpgrades.missileRack.weight,
     max: GAME_CONFIG.statUpgrades.missileRack.max,
-    desc: "+1 missile rack slot and +1 lock per salvo. Loads the new slot now. Max 6 (Magazine adds more).",
+    desc: "+1 missile rack slot and +1 lock per salvo. Loads the new slot now. Max 6 (the Missile Bay adds more).",
     apply: (g) => {
       const add = GAME_CONFIG.statUpgrades.missileRack.rackPerStack;
       const before = g.p.maxMissiles;
       // Magazine levels from the Missile Bay sit on top of the Missile Rack cap
-      const cap =
-        GAME_CONFIG.salvo.maxRack +
-        (g.p.missileBay?.magazine ?? 0) * GAME_CONFIG.missileBay.magazine.rackPerLevel;
+      const cap = GAME_CONFIG.salvo.maxRack + missileBayRack(g.p.missileBay?.level ?? 0);
       g.p.maxMissiles = Math.min(cap, g.p.maxMissiles + add);
       g.p.missiles = Math.min(g.p.maxMissiles, g.p.missiles + (g.p.maxMissiles - before));
     },
@@ -317,8 +314,8 @@ export const WARHEAD_PARTS: Record<WarheadPartId, WarheadPartDef> = {
     slot: "payload",
     name: "Blast",
     rarity: "default",
-    effect: `${W.blast.damage[0]} damage in a ${W.blast.radius[0]} radius.`,
-    tier2: `${W.blast.damage[1]} damage in an ${W.blast.radius[1]} radius.`,
+    effect: `${W.blast.damage[0]} damage in a ${W.blast.radius[0]} radius, growing every wave.`,
+    tier2: `${W.blast.damage[1]} damage in an ${W.blast.radius[1]} radius, growing every wave.`,
     perk: {
       name: "Aftershock",
       text: `A second blast ${W.blast.aftershockDelay} s later at ${pct(W.blast.aftershockShare)}.`,
@@ -519,9 +516,8 @@ export const heatForTier = (id: WarheadPartId, tier: 2 | 3) =>
 /** Scrap returns half of every credit spent on the part. */
 export const scrapValue = (part: ForgePart) => Math.floor(part.spent * F.scrapShare);
 
-/** Bay synergy: total Missile Bay levels → Heat gain multiplier and temper discount. */
-export const bayLevels = (bay: MissileBay) =>
-  MISSILE_BAY_TRACKS.reduce((sum, t) => sum + (bay[t] ?? 0), 0);
+/** Bay synergy: the Missile Bay level → Heat gain multiplier and temper discount. */
+export const bayLevels = (bay: MissileBay) => bay?.level ?? 0;
 export const synergyHeat = (levels: number) => 1 + levels * F.synergyHeatPerLevel;
 export const synergyDiscount = (levels: number) =>
   Math.min(F.synergyMaxDiscount, levels * F.synergyDiscountPerLevel);
@@ -608,91 +604,49 @@ export const tiersOf = (forge: Forge): BuildTiers => ({
 
 /* ------------------------------------------------------------ missile bay */
 
-export const MISSILE_BAY_TRACKS: MissileBayTrack[] = [
-  "velocity",
-  "yield",
-  "magazine",
-  "autoloader",
-  "seeker",
-];
+/** Rack slots the Missile Bay adds at a level (past the Missile Rack cap). */
+export const missileBayRack = (level: number) => BAY.rackLevels.filter((l) => l <= level).length;
+/** Recharge time multiplier: each level cuts the remaining time by 10%. */
+export const missileRegenMultiplier = (level: number) => (1 - BAY.regenPerLevel) ** level;
+/** Lock interval multiplier: each level cuts the remaining time by 10%. */
+export const lockIntervalMultiplier = (level: number) => (1 - BAY.lockPerLevel) ** level;
 
-export const MISSILE_BAY_DEFS: Record<
-  MissileBayTrack,
-  { name: string; tag: string; color: string; perLevel: string; effect: (level: number) => string }
-> = {
-  velocity: {
-    name: "Velocity",
-    tag: "Speed",
-    color: "#6fe7ff",
-    perLevel: `+${BAY.velocity.speedPerLevel * 100}% missile speed, +${BAY.velocity.turnPerLevel * 100}% turning`,
-    effect: (l) =>
-      `+${Math.round(l * BAY.velocity.speedPerLevel * 100)}% speed · +${Math.round(l * BAY.velocity.turnPerLevel * 100)}% turn`,
-  },
-  yield: {
-    name: "Yield",
-    tag: "Damage",
-    color: "#ff3d6e",
-    perLevel: `+${BAY.yield.damagePerLevel * 100}% missile damage`,
-    effect: (l) => `+${Math.round(l * BAY.yield.damagePerLevel * 100)}% damage`,
-  },
-  magazine: {
-    name: "Magazine",
-    tag: "Amount",
-    color: "#ff5ad8",
-    perLevel: `+${BAY.magazine.rackPerLevel} rack slot and lock (past the Missile Rack cap)`,
-    effect: (l) => `+${l * BAY.magazine.rackPerLevel} rack`,
-  },
-  autoloader: {
-    name: "Autoloader",
-    tag: "Recharge",
-    color: "#91e7b0",
-    perLevel: `−${BAY.autoloader.regenPerLevel * 100}% recharge time, +${BAY.autoloader.chargePerLevel * 100}% graze and kill charge`,
-    effect: (l) =>
-      `−${Math.round((1 - missileRegenMultiplier(l)) * 100)}% recharge · +${Math.round(l * BAY.autoloader.chargePerLevel * 100)}% charge`,
-  },
-  seeker: {
-    name: "Seeker",
-    tag: "Lock-on",
-    color: "#ffd166",
-    perLevel: `−${BAY.seeker.lockPerLevel * 100}% lock time, +${BAY.seeker.conePerLevel * 100}% lock range`,
-    effect: (l) =>
-      `−${Math.round((1 - lockIntervalMultiplier(l)) * 100)}% lock time · +${Math.round(l * BAY.seeker.conePerLevel * 100)}% range`,
-  },
-};
-
-/** Recharge time multiplier: each Autoloader level cuts the remaining time by 12%. */
-export function missileRegenMultiplier(level: number) {
-  return (1 - BAY.autoloader.regenPerLevel) ** level;
-}
-/** Lock interval multiplier: each Seeker level cuts the remaining time by 12%. */
-export function lockIntervalMultiplier(level: number) {
-  return (1 - BAY.seeker.lockPerLevel) ** level;
+/** What a Missile Bay level gives, as display lines. */
+export function missileBayLines(level: number): string[] {
+  const pct = (n: number) => `${Math.round(n * 100)}%`;
+  return [
+    `+${pct(level * BAY.damagePerLevel)} damage`,
+    `+${pct(level * BAY.speedPerLevel)} speed · +${pct(level * BAY.turnPerLevel)} turn`,
+    `+${missileBayRack(level)} rack`,
+    `−${pct(1 - missileRegenMultiplier(level))} recharge · +${pct(level * BAY.chargePerLevel)} charge`,
+    `−${pct(1 - lockIntervalMultiplier(level))} lock time · +${pct(level * BAY.conePerLevel)} range`,
+  ];
 }
 
-export const freshMissileBay = (): MissileBay => ({
-  velocity: 0,
-  yield: 0,
-  magazine: 0,
-  autoloader: 0,
-  seeker: 0,
-});
+export const freshMissileBay = (): MissileBay => ({ level: 0 });
 
+/**
+ * Repair a Missile Bay from a save or room. 0.8.0 had five separate tracks; they
+ * fold into the single upgrade at the highest level any track had reached.
+ */
 export function normalizeMissileBay(raw: unknown): MissileBay {
-  const bay = freshMissileBay();
-  if (!raw || typeof raw !== "object") return bay;
-  for (const t of MISSILE_BAY_TRACKS) {
-    const v = (raw as Record<string, unknown>)[t];
-    if (typeof v === "number" && Number.isFinite(v))
-      bay[t] = Math.max(0, Math.min(BAY[t].levels, Math.floor(v)));
-  }
-  return bay;
+  if (!raw || typeof raw !== "object") return freshMissileBay();
+  const r = raw as Record<string, unknown>;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.floor(v) : 0);
+  const level =
+    "level" in r
+      ? num(r.level)
+      : Math.max(
+          0,
+          ...["velocity", "yield", "magazine", "autoloader", "seeker"].map((k) => num(r[k])),
+        );
+  return { level: Math.max(0, Math.min(BAY.levels, level)) };
 }
 
-/** Price of the next level of a track, or null at max. */
-export function missileBayPrice(track: MissileBayTrack, level: number): number | null {
-  const def = BAY[track];
-  if (level >= def.levels) return null;
-  return round5(def.basePrice * BAY.priceGrowth ** level);
+/** Price of the next Missile Bay level, or null at max. */
+export function missileBayPrice(level: number): number | null {
+  if (level >= BAY.levels) return null;
+  return round5(BAY.basePrice * BAY.priceGrowth ** level);
 }
 
 /** A small, stable 32-bit hash (used for seeding run-scoped randomness). */

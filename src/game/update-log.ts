@@ -1,5 +1,30 @@
 export const UPDATE_LOG = [
   {
+    version: "0.8.1-alpha.1",
+    date: "2026-11-07",
+    title: "Heavy ordnance",
+    sections: [
+      {
+        title: "MISSILES",
+        items: [
+          "Missile damage now grows every wave at the same rate as asteroid health, so a missile does as much to a late-game rock as an early one. Missiles used to stay at 42 damage all run.",
+          "Base missile damage rises from 42 to 60: one missile kills a medium rock at any wave, and a full salvo can clear several large ones.",
+          "Weapon damage upgrades such as Hollow-Point Payload now boost missiles too, along with every payload (bomblets, fire, shards and the rest).",
+        ],
+      },
+      {
+        title: "MISSILE BAY",
+        items: [
+          "The five Missile Bay tracks are now one 5-level Missile Bay upgrade that improves everything at once.",
+          "Each level gives +12% damage, +8% speed, +6% turning, 10% faster recharge, +10% graze and kill charge, 10% faster locks and +8% lock range. Levels 1, 3 and 5 add a rack slot (up to 9).",
+          "Prices: 400, 620, 960, 1,490 and 2,310 credits.",
+          "Each level also makes parts heat 10% faster and temper 6% cheaper.",
+          "Saves from 0.8.0 keep the highest level any old track had reached.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.8.0-alpha.1",
     date: "2026-11-07",
     title: "Missile bay",

@@ -694,7 +694,7 @@ try {
       shopTabs.some((tab) => tab.toLowerCase().includes(title.toLowerCase())),
       true,
     );
-  // 0.8.0: the Missiles tab opens the Warhead Forge: Missile Bay, fitted parts and the
+  // 0.8.1: the Missiles tab opens the Warhead Forge: Missile Bay, fitted parts and the
   // catalogue. Unlocking a part fits it and a Bay level applies, each charging its
   // price; weapons and the drone are untouched. Everything is restored afterwards.
   const forgeBefore = await evaluate(
@@ -716,7 +716,7 @@ try {
   await waitFor(
     cdp,
     campaign,
-    "document.querySelectorAll('.helio-shop [data-forge-slot]').length === 3 && document.querySelectorAll('.helio-shop [data-bay]').length === 5 && document.querySelectorAll('.helio-shop [data-unlock]').length === 14",
+    "document.querySelectorAll('.helio-shop [data-forge-slot]').length === 3 && document.querySelectorAll('.helio-shop [data-bay]').length === 1 && document.querySelectorAll('.helio-shop [data-unlock]').length === 14",
     "Warhead Forge slots, Missile Bay and catalogue",
   );
   const topUp = await evaluate(
@@ -755,17 +755,17 @@ try {
   await evaluate(
     cdp,
     campaign,
-    "document.querySelector('.helio-shop [data-bay-buy=yield]').click()",
+    "document.querySelector('.helio-shop [data-bay-buy=missile-bay]').click()",
   );
   await waitFor(
     cdp,
     campaign,
-    "window.__campaignUpgradeGame.p.missileBay.yield === 1",
-    "Yield level 1",
+    "window.__campaignUpgradeGame.p.missileBay.level === 1",
+    "Missile Bay level 1",
   );
   assert.equal(
     await evaluate(cdp, campaign, "window.__campaignUpgradeGame.credits"),
-    topUp - 150 - 300,
+    topUp - 150 - 400,
   );
   const after = JSON.parse(
     await evaluate(

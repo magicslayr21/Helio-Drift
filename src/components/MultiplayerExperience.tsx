@@ -1237,7 +1237,7 @@ function CoopShop({
           }}
           forge={{
             info: presentation.forgeShopInfo(),
-            onBay: (track) => send({ type: "buyMissileBay", track }),
+            onBay: () => send({ type: "buyMissileBay" }),
             onUnlock: (part) => send({ type: "unlockPart", part }),
             onTemper: (part) => send({ type: "temperPart", part }),
             onSwap: (index) => send({ type: "swapBench", index }),
