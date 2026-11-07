@@ -259,7 +259,7 @@ export function ShopScreen({
           <ShopIcon id="missiles" />
           <span>
             <strong>Missiles</strong>
-            <small>Warhead Forge / Blueprints</small>
+            <small>Missile Bay / Warhead Forge</small>
           </span>
           <i>03</i>
         </button>

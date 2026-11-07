@@ -10,6 +10,7 @@ import {
   freshForge,
   hashSeed,
   normalizeForge,
+  normalizeMissileBay,
 } from "./balance";
 
 export interface SavedLeaderboardRun {
@@ -184,8 +185,10 @@ export class RunSave {
           typeof state.p.bonusLocks === "number" && state.p.bonusLocks >= 0
             ? state.p.bonusLocks
             : 0;
+        // Missile Bay (0.8.0): older saves start with every track at level 0
+        state.p.missileBay = normalizeMissileBay(state.p.missileBay);
       }
-      // The blueprint shop stream needs a seed; older runs derive one from their id.
+      // Run-scoped randomness needs a seed; older runs derive one from their id.
       if (state && typeof state.runSeed !== "number") state.runSeed = hashSeed(saved!.id);
       // New modules default to unpurchased in saves from earlier alpha releases.
       if (state?.salvageDrone?.upgrades && state.salvageDrone.upgrades.shield === undefined)
@@ -295,7 +298,6 @@ export class RunSave {
       game.p.beamOn = false;
       game.p.missileHeld = false;
       game.clearMissileLock();
-      game.ensureBlueprintOffers();
       game.p.thrusting = false;
       game.salvageDrone.devCount = 1;
       game.salvageDrone.beamOn = false;

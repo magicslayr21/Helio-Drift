@@ -203,18 +203,49 @@ export const GAME_CONFIG = {
     miniControlDuration: 0.5,
   },
 
-  /** Warhead Forge (0.7.2): blueprint offers, merges, mastery, bench and scrap. */
+  /**
+   * Missile Bay (0.8.0): run-long upgrades for every missile, bought with credits.
+   * Price for the next level is round5(basePrice × priceGrowth^level).
+   */
+  missileBay: {
+    priceGrowth: 1.7,
+    velocity: { levels: 4, basePrice: 240, speedPerLevel: 0.1, turnPerLevel: 0.08 },
+    yield: { levels: 5, basePrice: 300, damagePerLevel: 0.12 },
+    magazine: { levels: 3, basePrice: 480, rackPerLevel: 1 },
+    autoloader: { levels: 4, basePrice: 260, regenPerLevel: 0.12, chargePerLevel: 0.15 },
+    seeker: { levels: 3, basePrice: 220, lockPerLevel: 0.12, conePerLevel: 0.1 },
+  },
+
+  /**
+   * Warhead Forge (0.8.0): a catalogue of every part, unlocked by wave. Parts earn
+   * Heat from the damage their warheads deal; tempering to the next tier is cheap
+   * once the Heat bar is full, or can be rushed early for a surcharge.
+   */
   forge: {
-    offers: 3,
-    epicWave: 6,
-    /** list prices; default parts are priced as common */
+    /** waves from which each rarity can be unlocked */
+    unlockWave: { default: 0, common: 0, rare: 3, epic: 6 },
+    /** unlock prices; default parts are priced as common */
     prices: { default: 150, common: 150, rare: 320, epic: 620 },
-    /** roll weights, in line with the weapon shop (common 1, rare 0.7, epic 0.4) */
-    weights: { default: 1, common: 1, rare: 0.7, epic: 0.4 },
-    knownBlueprintWeight: 2,
-    mergeShare: 0.6,
-    masteryPriceMultiplier: 1.55,
-    masteryKills: { default: 150, common: 150, rare: 120, epic: 90 },
+    /** total Heat needed to temper to Tier II and Tier III */
+    heatToTier: {
+      default: [600, 1800],
+      common: [600, 1800],
+      rare: [500, 1500],
+      epic: [400, 1200],
+    },
+    /** temper price as a share of the unlock price: Tier II, Tier III */
+    temperShare: [0.5, 1.5],
+    /** rushing pays extra for the missing share of Heat: price × (1 + 1.5 × missing) */
+    rushSurcharge: 1.5,
+    /** benched parts keep warming at this share of the fitted parts' Heat */
+    benchHeatShare: 0.5,
+    /** Bay synergy: every Missile Bay level adds Heat gain and trims temper prices */
+    synergyHeatPerLevel: 0.05,
+    synergyDiscountPerLevel: 0.03,
+    synergyMaxDiscount: 0.4,
+    /** Veteran parts (taken to Tier III in an earlier run): cheaper unlock, Heat head start */
+    veteranUnlockShare: 0.5,
+    veteranHeatShare: 0.5,
     benchSlots: 2,
     scrapShare: 0.5,
   },

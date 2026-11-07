@@ -443,39 +443,27 @@ test("Delayed: sticks to the target and detonates after 1 s for 1.6× damage", (
 
 /* ------------------------------------------------------------ co-op */
 
-test("co-op pilots run their own Forge through room commands", () => {
+test("co-op pilots run their own Forge and Missile Bay through room commands", () => {
   const sim = new LocalCoopSimulation({ seed: 3, callsigns: ["Alpha", "Bravo"] });
-  const g = sim.game;
-  for (const id of ["p1", "p2"]) {
-    sim.state.players[id].credits = 5000;
-    g.bindPilot(id);
-    g.ensureBlueprintOffers();
-    g.releasePilot();
-  }
-  const offers = (id) => sim.state.players[id].ship.forge.offers.map((o) => o.id);
-  assert.equal(offers("p1").length, 3);
-  assert.notDeepEqual(offers("p1"), offers("p2"), "each pilot has their own offers");
-  const command = (playerId, sequence, extra) => ({
-    type: "buyBlueprint",
-    playerId,
-    sequence,
-    ...extra,
-  });
-  assert.equal(sim.submit(command("p1", 1, { index: 0 })), true);
-  assert.equal(sim.submit(command("p2", 1, { index: 7 })), false, "index out of range");
+  for (const id of ["p1", "p2"]) sim.state.players[id].credits = 5000;
+  const cmd = (type, playerId, sequence, extra) => ({ type, playerId, sequence, ...extra });
+  assert.equal(sim.submit(cmd("unlockPart", "p1", 1, { part: "incendiary" })), true);
+  assert.equal(sim.submit(cmd("buyMissileBay", "p2", 1, { track: "yield" })), true);
+  assert.equal(sim.submit(cmd("buyMissileBay", "p2", 2, { track: "warp" })), false);
+  assert.equal(sim.submit(cmd("unlockPart", "p2", 2, { part: "plasma" })), false);
   sim.stepTicks(1);
-  const bought = offers("p1")[0];
-  const slot = WARHEAD_PARTS[bought].slot;
-  assert.equal(sim.state.players.p1.ship.forge.fitted[slot].id, bought);
-  assert.equal(sim.state.players.p1.ship.missileBuild[slot], bought);
+  assert.equal(sim.state.players.p1.ship.missileBuild.payload, "incendiary");
   assert.deepEqual(sim.state.players.p2.ship.missileBuild, build());
+  assert.equal(sim.state.players.p2.ship.missileBay.yield, 1);
+  assert.equal(sim.state.players.p1.ship.missileBay.yield, 0);
   // a room checkpoint from before the Forge restores with three stock parts and an empty bench
   const snapshot = sim.snapshot();
   delete snapshot.players.p1.ship.forge;
   delete snapshot.players.p1.ship.missileBuild;
+  delete snapshot.players.p1.ship.missileBay;
   const restored = LocalCoopSimulation.restore(snapshot);
   const forge = restored.state.players.p1.ship.forge;
   assert.deepEqual(restored.state.players.p1.ship.missileBuild, build());
   assert.deepEqual(forge.bench, [null, null]);
-  assert.ok(Object.values(forge.fitted).every((part) => part.tier === 1));
+  assert.equal(restored.state.players.p1.ship.missileBay.velocity, 0);
 });

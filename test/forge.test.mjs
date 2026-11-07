@@ -4,7 +4,7 @@ import { registerHooks } from "node:module";
 import { existsSync, readFileSync } from "node:fs";
 import ts from "typescript";
 
-// Warhead Forge (0.7.2): blueprints, merges, mastery, bench, scrap and the four new parts.
+// Warhead Forge (0.8.0): Missile Bay, catalogue, Heat tempering, bench, scrap and the parts.
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier.startsWith(".") && context.parentURL) {
@@ -36,8 +36,9 @@ globalThis.requestAnimationFrame = () => 0;
 globalThis.cancelAnimationFrame = noop;
 const { Game } = await import("../src/game/engine.ts");
 const { GAME_CONFIG } = await import("../src/game/game-config.ts");
-const { WARHEAD_PARTS, rollBlueprintOffers, partPrice, mergePrice, masteryPrice, masteryKills } =
-  await import("../src/game/balance.ts");
+const { WARHEAD_PARTS, partPrice, heatForTier, temperPrice, missileBayPrice } = await import(
+  "../src/game/balance.ts"
+);
 const { LocalCoopSimulation } = await import("../src/game/simulation/local-coop.ts");
 
 const W = GAME_CONFIG.warheads;
@@ -95,235 +96,253 @@ const captureBlasts = (g, t) => {
 };
 
 const F = GAME_CONFIG.forge;
-/** Force a specific offer list for a test. */
-function offer(g, ...ids) {
-  const f = g.forgeOf();
-  f.offerWave = g.wave;
-  f.offers = ids.map((id) => ({ id, sold: false }));
-}
+const BAY = GAME_CONFIG.missileBay;
 
-/* ------------------------------------------------------------ prices and thresholds */
+/* ------------------------------------------------------------ missile bay */
 
-test("list prices, merge prices and Tier III prices follow the spec", () => {
-  assert.equal(partPrice("incendiary"), 150);
-  assert.equal(partPrice("cryo"), 320);
-  assert.equal(partPrice("siphon"), 620);
-  assert.equal(partPrice("blast"), 150, "default parts are priced as common");
-  assert.equal(mergePrice("cryo"), 192);
+test("Missile Bay prices grow 1.7× per level and are expensive", () => {
   assert.deepEqual(
-    ["blast", "corkscrew", "orbit", "relay"].map(masteryPrice),
-    [360, 360, 770, 1490],
+    [0, 1, 2, 3].map((l) => missileBayPrice("velocity", l)),
+    [240, 410, 695, 1180],
   );
-  assert.deepEqual(["emp", "cryo", "proximity", "impact"].map(masteryKills), [90, 120, 150, 150]);
-});
-
-/* ------------------------------------------------------------ offers */
-
-test("the same seed produces the same blueprint offers", () => {
-  const roll = (seed, wave = 8, rolls = 0) =>
-    rollBlueprintOffers({ seed, wave, rolls, owned: [] }).map((o) => o.id);
-  assert.deepEqual(roll(1234), roll(1234));
-  assert.deepEqual(roll(1234, 9, 2), roll(1234, 9, 2));
-  assert.notDeepEqual(
-    [roll(1), roll(2), roll(3), roll(4)].map(String),
-    [roll(1), roll(1), roll(1), roll(1)].map(String),
+  assert.deepEqual(
+    [0, 1, 2, 3, 4].map((l) => missileBayPrice("yield", l)),
+    [300, 510, 865, 1475, 2505],
   );
-  // and through two separate games sharing a run seed
-  const a = game(),
-    b = game();
-  a.runSeed = b.runSeed = 99;
-  a.wave = b.wave = 7;
-  a.ensureBlueprintOffers();
-  b.ensureBlueprintOffers();
-  assert.equal(a.forgeOf().offers.length, 3);
-  assert.deepEqual(a.forgeOf().offers, b.forgeOf().offers);
-});
-
-test("epic blueprints appear only from wave 6, and defaults only as merges", () => {
-  for (let seed = 0; seed < 200; seed++) {
-    const early = rollBlueprintOffers({ seed, wave: 5, rolls: 0, owned: [] });
-    assert.ok(early.every((o) => WARHEAD_PARTS[o.id].rarity !== "epic"));
-    assert.ok(early.every((o) => WARHEAD_PARTS[o.id].rarity !== "default"));
-    assert.equal(new Set(early.map((o) => o.id)).size, early.length, "offers are distinct");
-  }
-  let epics = 0;
-  for (let seed = 0; seed < 200; seed++)
-    epics += rollBlueprintOffers({ seed, wave: 6, rolls: 0, owned: [] }).filter(
-      (o) => WARHEAD_PARTS[o.id].rarity === "epic",
-    ).length;
-  assert.ok(epics > 50);
-});
-
-test("Known blueprints appear twice as often; Daily Flare ignores them", () => {
-  const count = (known) => {
-    let n = 0;
-    for (let seed = 0; seed < 3000; seed++)
-      n += rollBlueprintOffers({ seed, wave: 3, rolls: 0, owned: [], known }).some(
-        (o) => o.id === "cryo",
-      )
-        ? 1
-        : 0;
-    return n;
-  };
-  const base = count([]),
-    known = count(["cryo"]);
-  assert.ok(known > base * 1.3, `${known} vs ${base}`);
+  assert.equal(missileBayPrice("magazine", 3), null, "max level");
   const g = game();
-  globalThis.localStorage = {
-    getItem: () => JSON.stringify({ version: 1, known: ["cryo"] }),
-    setItem: noop,
-    removeItem: noop,
-  };
-  assert.deepEqual(g.knownBlueprints(), ["cryo"]);
-  g.dailyFlare = true;
-  assert.deepEqual(g.knownBlueprints(), []);
-  globalThis.localStorage = { getItem: () => null, setItem: noop, removeItem: noop };
+  g.credits = 100;
+  assert.equal(g.buyMissileBay("yield"), false, "not enough credits");
+  assert.equal(g.buyMissileBay("warp"), false, "unknown track");
+  g.credits = 10000;
+  assert.equal(g.buyMissileBay("yield"), true);
+  assert.equal(g.credits, 10000 - 300);
+  assert.equal(g.p.missileBay.yield, 1);
 });
 
-test("the paid reroll refreshes the blueprint offers together with the upgrade rack", () => {
+test("Velocity and Yield make every missile faster, sharper and stronger", () => {
   const g = game();
-  g.credits = 1000;
-  g.rerollCost = 40;
-  g.wave = 8;
-  g.ensureBlueprintOffers();
-  const before = g
-    .forgeOf()
-    .offers.map((o) => o.id)
-    .join();
-  g.choices = g.rollChoices();
-  const choicesBefore = g.choices;
-  assert.equal(g.rerollChoices(), 40);
-  assert.equal(g.credits, 960);
-  assert.notEqual(g.choices, choicesBefore);
-  assert.equal(g.forgeOf().offerRolls, 1);
-  // a reroll with no level-up waiting refreshes offers but never grants upgrade cards
-  g.choices = [];
-  g.rerollChoices();
-  assert.deepEqual(g.choices, []);
-  assert.equal(g.forgeOf().offerRolls, 2);
-  assert.equal(typeof before, "string");
+  const plain = g.launchMissile({ angle: 0 });
+  g.p.missileBay.velocity = 2;
+  g.p.missileBay.yield = 3;
+  const fast = g.launchMissile({ angle: 0 });
+  close(Math.hypot(fast.vx, fast.vy), Math.hypot(plain.vx, plain.vy) * 1.2);
+  close(fast.turn, plain.turn * 1.16);
+  close(fast.missileDmg, 42 * 1.36);
+  // payloads scale with Yield too: Cluster bomblets carry the bonus
+  g.devFitPart("cluster");
+  const target = rock(g, 400, 300);
+  g.bullets = [];
+  g.detonateMissile(armed(g, null, target));
+  const bomblet = g.bullets.find((b) => b.kind === "bomblet");
+  close(bomblet.extraDmg, 16 * 1.36);
 });
 
-/* ------------------------------------------------------------ buying */
-
-test("buying fits the part at once and the replaced part moves to the bench", () => {
+test("Magazine adds rack slots past the Missile Rack cap, and survives a stat rebuild", () => {
   const g = game();
+  g.credits = 1e6;
+  g.devSetStack("missileRack", 2);
+  assert.equal(g.p.maxMissiles, 6);
+  for (let i = 0; i < 3; i++) assert.equal(g.buyMissileBay("magazine"), true);
+  assert.equal(g.p.maxMissiles, 9);
+  assert.equal(g.buyMissileBay("magazine"), false, "Magazine maxes at 3");
+  g.rebuildStatUpgrades();
+  assert.equal(g.p.maxMissiles, 9);
+  // locks follow the bigger rack
+  g.p.missiles = 9;
+  for (let i = 0; i < 9; i++) rock(g, 560 + i * 30, 300);
+  for (let t = 0; t < 2; t += DT) g.updateMissileLock(DT, true);
+  assert.equal(g.p.missileLocks.length, 9);
+});
+
+test("Autoloader shortens recharge and boosts graze and kill charge", () => {
+  const g = game();
+  g.p.missiles = 1;
+  g.p.missileBay.autoloader = 2;
+  close(g.effectiveMissileRegen(), 12 * 0.88 * 0.88);
+  // a full passive missile arrives sooner
+  const seconds = g.effectiveMissileRegen();
+  for (let t = 0; t < seconds - 0.05; t += DT) g.addMissileCharge(DT / g.effectiveMissileRegen());
+  assert.equal(g.p.missiles, 1);
+  for (let t = 0; t < 0.1; t += DT) g.addMissileCharge(DT / g.effectiveMissileRegen());
+  assert.equal(g.p.missiles, 2);
+  const k = game();
+  k.p.missiles = 1;
+  k.p.missileBay.autoloader = 4;
+  k.breakRock(k.rocks.push(k.makeRock(300, 300, 1, 0, 0, "none")) - 1, 0, 0);
+  close(k.p.missileCharge, 0.03 * 1.6 * 12);
+});
+
+test("Seeker locks faster and reaches further", () => {
+  const g = game();
+  g.p.missileBay.seeker = 3;
+  close(g.lockInterval(), GAME_CONFIG.salvo.lockInterval * 0.88 ** 3);
+  close(g.lockConeRange(), 700 * 1.3);
+  // a rock at 820 px is out of reach normally, in reach with Seeker 3
+  const far = rock(g, 700, 700 - 820);
+  assert.equal(g.inLockCone(far), true);
+  const plain = game();
+  const far2 = rock(plain, 700, 700 - 820);
+  assert.equal(plain.inLockCone(far2), false);
+});
+
+test("old saves and rooms start the Missile Bay at level 0", async (t) => {
+  const { RunSave } = await import("../src/game/run-save.ts");
+  let data = null;
+  t.mock.method(localStorage, "getItem", () => data);
+  t.mock.method(localStorage, "setItem", (_key, value) => {
+    data = value;
+  });
+  const g = game();
+  g.wave = 4;
+  new RunSave().begin(g);
+  const saved = JSON.parse(data);
+  delete saved.state.p.missileBay;
+  for (const part of Object.values(saved.state.p.forge.fitted)) delete part.heat;
+  data = JSON.stringify(saved);
+  const restored = game();
+  assert.equal(new RunSave().restore(restored), true);
+  assert.deepEqual(restored.p.missileBay, {
+    velocity: 0,
+    yield: 0,
+    magazine: 0,
+    autoloader: 0,
+    seeker: 0,
+  });
+  assert.ok(Object.values(restored.forgeOf().fitted).every((p) => p.heat === 0));
+  // and a bought bay survives a round trip
+  restored.p.missileBay.magazine = 2;
+  restored.rebuildStatUpgrades();
+  new RunSave().begin(restored);
+  const again = game();
+  assert.equal(new RunSave().restore(again), true);
+  assert.equal(again.p.missileBay.magazine, 2);
+  assert.equal(again.p.maxMissiles, 6);
+});
+
+/* ------------------------------------------------------------ catalogue */
+
+test("every non-stock part is in the catalogue, gated by wave", () => {
+  const g = game();
+  g.wave = 1;
+  const info = g.forgeShopInfo();
+  assert.equal(info.catalogue.length, 14, "17 parts minus 3 stock parts");
+  const entry = (id) => info.catalogue.find((e) => e.id === id);
+  assert.equal(entry("incendiary").locked, false);
+  assert.equal(entry("cryo").blocked, "WAVE 3");
+  assert.equal(entry("siphon").blocked, "WAVE 6");
+  g.wave = 6;
+  assert.equal(g.unlockBlocked("siphon"), null);
+});
+
+test("unlocking fits the part at once; the replaced part moves to the bench", () => {
+  const g = game();
+  g.wave = 7;
   g.credits = 2000;
-  offer(g, "cryo", "corkscrew", "siphon");
-  assert.equal(g.buyBlueprint(0), true);
+  assert.equal(g.unlockPart("cryo"), true);
   assert.equal(g.credits, 2000 - 320);
   assert.equal(g.forgeOf().fitted.payload.id, "cryo");
   assert.equal(g.p.missileBuild.payload, "cryo");
-  // the stock Blast was untouched, so it is simply discarded (it can be refitted free)
+  // the untouched stock Blast is discarded (it can always be refitted free)
   assert.deepEqual(g.forgeOf().bench, [null, null]);
-  assert.equal(g.buyBlueprint(0), false, "sold");
-  offer(g, "solarFlare");
-  assert.equal(g.buyBlueprint(0), true);
+  assert.equal(g.unlockPart("cryo"), false, "already owned");
+  assert.equal(g.unlockPart("solarFlare"), true);
   assert.equal(g.forgeOf().bench[0].id, "cryo", "a bought part goes to the bench");
   assert.equal(g.forgeOf().bench[0].spent, 320);
 });
 
-test("a full bench blocks buying a part that would need it", () => {
+test("a full bench blocks unlocking a part that would need it", () => {
   const g = game();
+  g.wave = 9;
   g.credits = 5000;
-  const f = g.forgeOf();
-  f.bench = [
-    { id: "gravity", tier: 1, kills: 0, spent: 320 },
-    { id: "emp", tier: 1, kills: 0, spent: 620 },
+  g.forgeOf().bench = [
+    { id: "gravity", tier: 1, heat: 0, kills: 0, spent: 320 },
+    { id: "emp", tier: 1, heat: 0, kills: 0, spent: 620 },
   ];
   g.devFitPart("cluster");
   g.forgeOf().fitted.payload.spent = 320;
-  offer(g, "incendiary");
-  assert.equal(g.blueprintBlocked(0), "BENCH FULL");
-  assert.equal(g.buyBlueprint(0), false);
+  assert.equal(g.unlockBlocked("incendiary"), "BENCH FULL");
+  assert.equal(g.unlockPart("incendiary"), false);
   assert.equal(g.credits, 5000);
 });
 
-/* ------------------------------------------------------------ merge, mastery, scrap */
+/* ------------------------------------------------------------ heat and tempering */
 
-test("a merge raises Tier I to II and charges 60% of list price", () => {
+test("damage dealt by a part's warheads heats it; benched parts warm at half rate", () => {
   const g = game();
-  g.credits = 2000;
-  offer(g, "cryo");
-  g.buyBlueprint(0);
-  offer(g, "cryo");
-  const info = g.forgeShopInfo().offers[0];
-  assert.equal(info.merge, true);
-  assert.equal(info.price, Math.round(320 * 0.6));
-  const credits = g.credits;
-  assert.equal(g.buyBlueprint(0), true);
-  assert.equal(g.credits, credits - 192);
-  assert.equal(g.forgeOf().fitted.payload.tier, 2);
-  assert.equal(g.forgeOf().fitted.payload.spent, 320 + 192);
-  // Tier II parts are not offered again
-  const owned = g.ownedParts();
-  for (let seed = 0; seed < 100; seed++)
-    assert.ok(
-      !rollBlueprintOffers({ seed, wave: 9, rolls: 0, owned }).some((o) => o.id === "cryo"),
-    );
+  g.devFitPart("blast");
+  g.forgeOf().bench[0] = { id: "cryo", tier: 1, heat: 0, kills: 0, spent: 320 };
+  const target = rock(g, 400, 300, 3, 1e6);
+  g.detonateMissile(armed(g, null, target));
+  const heat = g.forgeOf().fitted.payload.heat;
+  assert.ok(heat > 25, `heated by ${heat}`);
+  close(g.forgeOf().fitted.guidance.heat, heat, 1e-6);
+  close(g.forgeOf().bench[0].heat, heat * 0.5, 1e-6);
+  // other weapons do not heat warhead parts
+  g.hitRock(0, 50, 0, 0, false);
+  close(g.forgeOf().fitted.payload.heat, heat, 1e-6);
 });
 
-test("stock parts merge too: a Blast offer appears only as a merge", () => {
-  const owned = game().ownedParts();
-  let seen = 0;
-  for (let seed = 0; seed < 400; seed++)
-    seen += rollBlueprintOffers({ seed, wave: 3, rolls: 0, owned }).some((o) => o.id === "blast")
-      ? 1
-      : 0;
-  assert.ok(seen > 0);
+test("tempering with a full Heat bar costs 50% (II) and 150% (III) of the unlock price", () => {
   const g = game();
-  g.credits = 500;
-  offer(g, "blast");
-  assert.equal(g.forgeShopInfo().offers[0].price, 90);
-  assert.equal(g.buyBlueprint(0), true);
+  g.credits = 10000;
+  g.devFitPart("cryo", 1, heatForTier("cryo", 2));
+  assert.equal(heatForTier("cryo", 2), 500);
+  assert.equal(g.forgeShopInfo().fitted.payload.temperReady, true);
+  assert.equal(g.temperPriceFor("cryo"), 160);
+  assert.equal(g.temperPart("cryo"), true);
   assert.equal(g.forgeOf().fitted.payload.tier, 2);
-});
-
-test("Tier III stays unavailable until the kill threshold is reached", () => {
-  const g = game();
-  g.credits = 5000;
-  g.devFitPart("cryo", 2, 0);
-  const need = masteryKills("cryo");
-  assert.equal(need, 120);
-  assert.equal(g.buyMastery("cryo"), false);
-  // kills only count when this part's warhead lands the final hit
-  g.warheadCredit = { payload: "cryo", guidance: "direct", trigger: "impact" };
-  for (let i = 0; i < need - 1; i++) g.creditWarheadKill();
-  assert.equal(g.forgeShopInfo().fitted.payload.masteryReady, false);
-  assert.equal(g.buyMastery("cryo"), false);
-  g.creditWarheadKill();
-  g.warheadCredit = null;
-  assert.equal(g.forgeOf().fitted.payload.kills, need);
-  assert.equal(g.forgeShopInfo().fitted.payload.masteryReady, true);
-  assert.ok(g.texts.some((t) => t.text === "MASTERY READY"));
-  assert.equal(g.buyMastery("cryo"), true);
-  assert.equal(g.credits, 5000 - 770);
+  assert.equal(g.credits, 10000 - 160);
+  g.forgeOf().fitted.payload.heat = heatForTier("cryo", 3);
+  assert.equal(g.temperPriceFor("cryo"), 480);
+  assert.equal(g.temperPart("cryo"), true);
   assert.equal(g.forgeOf().fitted.payload.tier, 3);
+  assert.equal(g.forgeOf().fitted.payload.spent, 160 + 480);
+  assert.equal(g.temperPart("cryo"), false, "Tier III is the top");
 });
 
-test("kills by other weapons, or by a part that is not fitted, never count", () => {
+test("rushing a temper early pays for the missing Heat", () => {
+  const part = (heat) => ({ id: "siphon", tier: 1, heat, kills: 0, spent: 620 });
+  assert.equal(temperPrice(part(400), 0), 310, "full bar: half of 620");
+  assert.equal(temperPrice(part(200), 0), 545, "half the Heat: +75%");
+  assert.equal(temperPrice(part(0), 0), 775, "from cold: 2.5×");
   const g = game();
-  g.devFitPart("cryo", 2);
-  g.creditWarheadKill(); // a pulse-cannon kill: no warhead credit
-  g.warheadCredit = { payload: "blast", guidance: "direct", trigger: "impact" };
-  g.creditWarheadKill(); // an old Blast missile still in flight after the refit
-  g.warheadCredit = null;
-  assert.equal(g.forgeOf().fitted.payload.kills, 0);
-  assert.equal(g.forgeOf().fitted.guidance.kills, 1, "Direct was fitted on that missile");
-  // a real rock kill by a missile blast credits every fitted part of that warhead
-  g.devFitPart("blast", 1);
-  g.devFitPart("direct", 1);
-  const r = rock(g, 300, 300, 1, 1);
-  const m = g.launchMissile({ angle: 0, target: r.id });
-  Object.assign(m, { x: r.x, y: r.y });
-  g.detonateMissile(m);
-  assert.ok(!g.rocks.includes(r), "the blast killed the rock");
-  assert.equal(g.forgeOf().fitted.payload.kills, 1, "Blast got the kill");
-  assert.equal(g.forgeOf().fitted.guidance.kills, 1, "and so did Direct");
-  assert.equal(g.warheadCredit, null, "credit never leaks past the detonation");
+  g.credits = 775;
+  g.devFitPart("siphon", 1, 0);
+  assert.equal(g.temperPart("siphon"), true);
+  assert.equal(g.forgeOf().fitted.trigger.tier, 2);
+  assert.ok(g.forgeOf().fitted.trigger.heat >= 400, "a rush fills the bar to the tier");
 });
 
-test("a part taken to Tier III becomes a Known blueprint in the profile record", () => {
+test("Bay synergy: Missile Bay levels heat parts faster and cut temper prices (max 40%)", () => {
+  const part = { id: "siphon", tier: 1, heat: 400, kills: 0, spent: 620 };
+  assert.equal(temperPrice(part, 5), Math.round((310 * 0.85) / 5) * 5);
+  assert.equal(temperPrice(part, 19), Math.round((310 * 0.6) / 5) * 5, "capped at 40%");
+  const g = game();
+  g.p.missileBay.yield = 2;
+  g.p.missileBay.velocity = 2;
+  const info = g.forgeShopInfo();
+  assert.equal(info.bayLevels, 4);
+  close(info.heatBonus, 0.2);
+  close(info.temperDiscount, 0.12);
+  g.devFitPart("blast");
+  g.warheadCredit = g.p.missileBuild;
+  g.creditWarheadHeat(100);
+  g.warheadCredit = null;
+  close(g.forgeOf().fitted.payload.heat, 120);
+});
+
+test("TEMPER READY appears when a part's Heat bar fills", () => {
+  const g = game();
+  g.devFitPart("blast", 1, 590);
+  g.warheadCredit = g.p.missileBuild;
+  g.creditWarheadHeat(20);
+  g.warheadCredit = null;
+  assert.ok(g.texts.some((t) => t.text === "TEMPER READY"));
+  assert.equal(g.snapshot().mastery[0].ready, true);
+});
+
+test("Veteran parts (mastered in an earlier run) unlock at half price with a Heat head start", () => {
   const writes = {};
   globalThis.localStorage = {
     getItem: (k) => writes[k] ?? null,
@@ -334,42 +353,60 @@ test("a part taken to Tier III becomes a Known blueprint in the profile record",
   };
   const g = game();
   g.credits = 5000;
-  g.devFitPart("orbit", 2, 120);
-  assert.equal(g.buyMastery("orbit"), true);
+  g.devFitPart("orbit", 2, heatForTier("orbit", 3));
+  assert.equal(g.temperPart("orbit"), true);
   assert.deepEqual(JSON.parse(writes["helios-blueprints-v1"]).known, ["orbit"]);
   assert.equal(writes["helios-run-v1"], undefined, "kept apart from the run save");
+  // next run
+  const next = game();
+  next.wave = 4;
+  next.credits = 1000;
+  const entry = next.forgeShopInfo().catalogue.find((e) => e.id === "orbit");
+  assert.equal(entry.veteran, true);
+  assert.equal(entry.price, 160);
+  assert.equal(next.unlockPart("orbit"), true);
+  assert.equal(next.credits, 1000 - 160);
+  assert.equal(next.forgeOf().fitted.guidance.heat, heatForTier("orbit", 2) * 0.5);
+  // Daily Flare ignores Veteran parts
+  next.dailyFlare = true;
+  assert.equal(next.unlockPrice("orbit"), partPrice("orbit"));
   globalThis.localStorage = { getItem: () => null, setItem: noop, removeItem: noop };
 });
 
-test("scrapping refunds exactly 50% of total spent, including merges and mastery", () => {
+test("scrapping refunds exactly 50% of total spent, including tempering", () => {
   const g = game();
   g.credits = 0;
   g.forgeOf().bench = [
-    { id: "relay", tier: 3, kills: 90, spent: 620 + 372 + 1490 },
-    { id: "cryo", tier: 2, kills: 4, spent: 320 + 192 },
+    { id: "relay", tier: 3, heat: 1200, kills: 90, spent: 620 + 310 + 930 },
+    { id: "cryo", tier: 2, heat: 500, kills: 4, spent: 320 + 160 },
   ];
-  assert.equal(g.forgeShopInfo().bench[0].scrap, 1241);
+  assert.equal(g.forgeShopInfo().bench[0].scrap, 930);
   assert.equal(g.scrapBench(0), true);
-  assert.equal(g.credits, 1241);
+  assert.equal(g.credits, 930);
   assert.equal(g.scrapBench(1), true);
-  assert.equal(g.credits, 1241 + 256);
+  assert.equal(g.credits, 930 + 240);
   assert.deepEqual(g.forgeOf().bench, [null, null]);
   assert.equal(g.scrapBench(0), false);
 });
 
-test("swapping between bench and Workshop is free and keeps tier and kills", () => {
+test("swapping between bench and slots is free and keeps tier and Heat", () => {
   const g = game();
   g.credits = 100;
-  g.devFitPart("cluster", 2, 33);
+  g.devFitPart("cluster", 2, 900);
   g.forgeOf().fitted.payload.spent = 512;
-  g.forgeOf().bench[1] = { id: "gravity", tier: 1, kills: 7, spent: 320 };
+  g.forgeOf().bench[1] = { id: "gravity", tier: 1, heat: 70, kills: 7, spent: 320 };
   assert.equal(g.swapBench(1), true);
   assert.equal(g.credits, 100);
-  assert.deepEqual(g.forgeOf().fitted.payload, { id: "gravity", tier: 1, kills: 7, spent: 320 });
-  assert.deepEqual(g.forgeOf().bench[1], { id: "cluster", tier: 2, kills: 33, spent: 512 });
+  assert.deepEqual(g.forgeOf().fitted.payload, {
+    id: "gravity",
+    tier: 1,
+    heat: 70,
+    kills: 7,
+    spent: 320,
+  });
+  assert.equal(g.forgeOf().bench[1].heat, 900);
   assert.equal(g.p.missileBuild.payload, "gravity");
-  // and the stock part refits for free, benching the bought one
-  assert.equal(g.fitWarheadPart("blast"), true);
+  assert.equal(g.fitWarheadPart("blast"), true, "stock parts refit for free");
   assert.equal(g.forgeOf().fitted.payload.id, "blast");
   assert.equal(g.forgeOf().bench[0].id, "gravity");
 });
@@ -385,17 +422,17 @@ test("old saves migrate to three Tier I default parts with an empty bench", asyn
   g.wave = 4;
   new RunSave().begin(g);
   const saved = JSON.parse(data);
-  // a 0.7.1 save: a free-fitted Cluster and no forge, run seed or bonus locks
   saved.state.p.missileBuild = { payload: "cluster", guidance: "orbit", trigger: "delayed" };
   delete saved.state.p.forge;
   delete saved.state.p.bonusLocks;
+  delete saved.state.p.missileBay;
   delete saved.state.runSeed;
   data = JSON.stringify(saved);
   const restored = game();
   assert.equal(new RunSave().restore(restored), true);
   const f = restored.forgeOf();
   assert.deepEqual(
-    Object.values(f.fitted).map((p) => [p.id, p.tier, p.kills, p.spent]),
+    Object.values(f.fitted).map((p) => [p.id, p.tier, p.heat, p.spent]),
     [
       ["blast", 1, 0, 0],
       ["direct", 1, 0, 0],
@@ -405,8 +442,31 @@ test("old saves migrate to three Tier I default parts with an empty bench", asyn
   assert.deepEqual(f.bench, [null, null]);
   assert.deepEqual(restored.p.missileBuild, build());
   assert.equal(restored.p.bonusLocks, 0);
-  assert.equal(typeof restored.runSeed, "number");
-  assert.equal(f.offers.length, 3, "the restored wave has its offers");
+});
+
+test("a 0.7.2 save keeps its parts and tiers, with any blueprint offers dropped", async (t) => {
+  const { RunSave } = await import("../src/game/run-save.ts");
+  let data = null;
+  t.mock.method(localStorage, "getItem", () => data);
+  t.mock.method(localStorage, "setItem", (_key, value) => {
+    data = value;
+  });
+  const g = game();
+  g.wave = 9;
+  g.devFitPart("cryo", 2);
+  new RunSave().begin(g);
+  const saved = JSON.parse(data);
+  Object.assign(saved.state.p.forge, {
+    offers: [{ id: "relay", sold: false }],
+    offerWave: 9,
+    offerRolls: 1,
+  });
+  data = JSON.stringify(saved);
+  const restored = game();
+  assert.equal(new RunSave().restore(restored), true);
+  assert.equal(restored.forgeOf().fitted.payload.id, "cryo");
+  assert.equal(restored.forgeOf().fitted.payload.tier, 2);
+  assert.equal(restored.forgeOf().offers, undefined);
 });
 
 /* ------------------------------------------------------------ new parts */
@@ -574,7 +634,7 @@ test("Siphon refunds 8% per enemy hit and never more than 1 missile per salvo", 
     g.detonateMissile(b);
   }
   close(g.siphonSalvos[7], 1);
-  assert.ok(g.siphonSalvos[7] <= F.offers && g.siphonSalvos[7] <= 1 + 1e-9);
+  assert.ok(g.siphonSalvos[7] <= 1 + 1e-9);
   // a new salvo has its own cap
   const c = g.launchMissile({ angle: 0, salvo: 8 });
   Object.assign(c, { x: 400, y: 300 });

@@ -9,6 +9,8 @@ import {
   buildOf,
   freshForge,
   normalizeForge,
+  normalizeMissileBay,
+  MISSILE_BAY_TRACKS,
 } from "../balance";
 import {
   applyDeveloperCommand,
@@ -37,7 +39,14 @@ export interface LocalCoopOptions {
 
 /** Room clock and commands around the ORIGINAL campaign, not a second combat engine. */
 /** Warhead Forge loadout commands: allowed during the shared pause like other shop actions. */
-const FORGE_COMMANDS = ["buyBlueprint", "buyMastery", "swapBench", "scrapBench", "sendBench"];
+const FORGE_COMMANDS = [
+  "unlockPart",
+  "temperPart",
+  "buyMissileBay",
+  "swapBench",
+  "scrapBench",
+  "sendBench",
+];
 
 export class LocalCoopSimulation {
   state: CoopMatchState;
@@ -137,6 +146,8 @@ export class LocalCoopSimulation {
       p.ship.forge = p.ship.forge ? normalizeForge(p.ship.forge) : freshForge();
       p.ship.missileBuild = buildOf(p.ship.forge);
       p.ship.bonusLocks ??= 0;
+      // Missile Bay (0.8.0): rooms from earlier builds start every track at level 0
+      p.ship.missileBay = normalizeMissileBay(p.ship.missileBay);
     }
     sim.game = sim.createGame();
     if (snapshot.campaign) restoreCampaignWorld(sim.game, snapshot.campaign);
@@ -369,12 +380,16 @@ export class LocalCoopSimulation {
     )
       return false;
     if (
-      (command.type === "fitWarhead" || command.type === "buyMastery") &&
+      (command.type === "fitWarhead" ||
+        command.type === "unlockPart" ||
+        command.type === "temperPart") &&
       !isWarheadPart(command.part)
     )
       return false;
+    if (command.type === "buyMissileBay" && !MISSILE_BAY_TRACKS.includes(command.track))
+      return false;
     if (
-      ["buyBlueprint", "swapBench", "scrapBench", "sendBench"].includes(command.type) &&
+      ["swapBench", "scrapBench", "sendBench"].includes(command.type) &&
       !(
         Number.isInteger((command as { index: number }).index) &&
         (command as { index: number }).index >= 0 &&
@@ -579,12 +594,17 @@ export class LocalCoopSimulation {
           item = c.part;
           accepted = g.fitWarheadPart(c.part);
           break;
-        case "buyBlueprint":
-          accepted = g.buyBlueprint(c.index);
-          break;
-        case "buyMastery":
+        case "unlockPart":
           item = c.part;
-          accepted = g.buyMastery(c.part);
+          accepted = g.unlockPart(c.part);
+          break;
+        case "temperPart":
+          item = c.part;
+          accepted = g.temperPart(c.part);
+          break;
+        case "buyMissileBay":
+          item = c.track;
+          accepted = g.buyMissileBay(c.track);
           break;
         case "swapBench":
           accepted = g.swapBench(c.index);
@@ -618,8 +638,7 @@ export class LocalCoopSimulation {
           }
           break;
         case "rerollUpgrades":
-          // one paid reroll refreshes the level-up rack and the blueprint offers together
-          accepted = g.rerollChoices() !== null;
+          accepted = g.choices.length > 0 && g.rerollChoices() !== null;
           break;
         case "activateOverdrive":
           if (

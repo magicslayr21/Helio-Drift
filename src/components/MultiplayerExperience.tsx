@@ -534,6 +534,7 @@ export function MultiplayerExperience({
             onClose={() => setShopOpen(false)}
             send={sendCommand}
             teammateCallsign={teammate?.callsign ?? "teammate"}
+            wave={state?.campaign?.wave ?? state?.team.wave ?? 0}
           />
         )}
         {devOpen && developerSession && (
@@ -1179,6 +1180,7 @@ function CoopShop({
   onClose,
   send,
   teammateCallsign,
+  wave,
 }: {
   player: AuthoritativeSnapshot["state"]["players"][CoopPlayerId];
   paused: boolean;
@@ -1186,6 +1188,7 @@ function CoopShop({
   onClose: () => void;
   send: (message: UiCommand) => boolean;
   teammateCallsign: string;
+  wave: number;
 }) {
   // Presentation only: reuse campaign shop statistics without advancing either simulation.
   const presentation = useMemo(
@@ -1197,6 +1200,7 @@ function CoopShop({
   presentation.credits = player.credits;
   presentation.stacks = { ...player.upgrades };
   presentation.rerollCost = player.campaign?.rerollCost ?? 0;
+  presentation.wave = wave;
   const weapons = WEAPON_ORDER.map((id) => presentation.weaponShopInfo(id));
   const drone = presentation.salvageShopInfo();
 
@@ -1233,12 +1237,12 @@ function CoopShop({
           }}
           forge={{
             info: presentation.forgeShopInfo(),
-            onBuy: (index) => send({ type: "buyBlueprint", index }),
-            onMastery: (part) => send({ type: "buyMastery", part }),
+            onBay: (track) => send({ type: "buyMissileBay", track }),
+            onUnlock: (part) => send({ type: "unlockPart", part }),
+            onTemper: (part) => send({ type: "temperPart", part }),
             onSwap: (index) => send({ type: "swapBench", index }),
             onScrap: (index) => send({ type: "scrapBench", index }),
             onFitStock: (part) => send({ type: "fitWarhead", part }),
-            onReroll: () => send({ type: "rerollUpgrades" }),
             onSend: (index) => send({ type: "sendBench", index }),
             teammate: teammateCallsign,
           }}

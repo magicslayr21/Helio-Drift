@@ -47,50 +47,61 @@ export type BuildTiers = Record<WarheadSlot, WarheadTier>;
 export interface ForgePart {
   id: WarheadPartId;
   tier: WarheadTier;
-  /** kills landed by this part's warheads while it was fitted */
+  /** Heat earned from the damage this part's warheads dealt (cumulative) */
+  heat: number;
+  /** kills landed by this part's warheads while it was fitted (shown as a stat) */
   kills: number;
-  /** every credit spent on it (blueprint, merge, mastery): scrap refunds half */
+  /** every credit spent on it (unlock and tempering): scrap refunds half */
   spent: number;
 }
-/** A blueprint for sale this wave. */
-export interface BlueprintOffer {
-  id: WarheadPartId;
-  sold: boolean;
-}
-/** What the Missiles tab shows for one offer. */
-export interface BlueprintOfferInfo {
-  index: number;
-  id: WarheadPartId;
-  price: number;
-  merge: boolean;
-  sold: boolean;
-  /** why it cannot be bought right now, if anything other than credits */
-  blocked: string | null;
+export type MissileBayTrack = "velocity" | "yield" | "magazine" | "autoloader" | "seeker";
+export type MissileBay = Record<MissileBayTrack, number>;
+
+export interface MissileBayInfo {
+  track: MissileBayTrack;
+  level: number;
+  max: number;
+  /** price of the next level, or null at max */
+  price: number | null;
 }
 export interface ForgePartInfo {
   part: ForgePart;
-  /** kills needed for Tier III */
-  need: number;
-  /** Tier III is available to buy */
-  masteryReady: boolean;
-  masteryPrice: number;
+  /** total Heat for the next tier (null at Tier III) */
+  nextHeat: number | null;
+  /** Heat for the current tier's start, for drawing the bar */
+  prevHeat: number;
+  /** price to temper to the next tier right now (rush included), or null at Tier III */
+  temperPrice: number | null;
+  /** true when the Heat bar is full and tempering costs the base price */
+  temperReady: boolean;
   scrap: number;
 }
+export interface CatalogueEntry {
+  id: WarheadPartId;
+  /** wave from which it can be unlocked */
+  unlockWave: number;
+  locked: boolean;
+  owned: boolean;
+  veteran: boolean;
+  price: number;
+  /** why it cannot be unlocked (apart from credits), or null */
+  blocked: string | null;
+}
 export interface ForgeShopInfo {
+  bay: MissileBayInfo[];
+  /** total Missile Bay levels and the synergy they grant */
+  bayLevels: number;
+  heatBonus: number;
+  temperDiscount: number;
   fitted: Record<WarheadSlot, ForgePartInfo>;
   bench: (ForgePartInfo | null)[];
-  offers: BlueprintOfferInfo[];
-  rerollCost: number;
+  catalogue: CatalogueEntry[];
   /** stock parts that can be fitted free (their slot holds a bought part) */
   stock: WarheadPartId[];
 }
 export interface Forge {
   fitted: Record<WarheadSlot, ForgePart>;
   bench: (ForgePart | null)[];
-  offers: BlueprintOffer[];
-  /** offers are rolled once per wave and again on every paid reroll */
-  offerWave: number;
-  offerRolls: number;
 }
 export type WarheadPartId = PayloadId | GuidanceId | TriggerId;
 export interface MissileBuild {
@@ -146,6 +157,8 @@ export interface Player {
   forge: Forge;
   /** Boomerang Return Fire (III): extra locks granted to the next salvo. */
   bonusLocks: number;
+  /** Missile Bay: levels bought in each run-long missile upgrade track. */
+  missileBay: MissileBay;
   magnet: number;
   creditChance: number;
   creditValue: number;
@@ -179,13 +192,14 @@ export interface Hud {
   missiles: number;
   maxMissiles: number;
   missileBuild: MissileBuild;
-  /** mastery progress of each fitted part, for the bar under the rack */
+  /** Heat progress of each fitted part toward its next tier, for the bar under the rack */
   mastery: {
     slot: WarheadSlot;
     id: WarheadPartId;
     tier: WarheadTier;
-    kills: number;
-    need: number;
+    /** 0–1 toward the next tier (1 at Tier III) */
+    progress: number;
+    ready: boolean;
   }[];
   missileCharge: number;
   heat: number;
@@ -324,7 +338,7 @@ export interface Bullet {
   itano?: boolean;
   /** Chain Cascade (III): how many more times this mini may chain. */
   chainDepth?: number;
-  /** Shards and bomblets credit mastery to the warhead that made them. */
+  /** Shards and bomblets credit Heat and kills to the warhead that made them. */
   sourceWarhead?: MissileBuild;
   /** Chain mini missile: smaller, and never chains again. */
   mini?: boolean;

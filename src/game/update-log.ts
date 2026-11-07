@@ -1,5 +1,45 @@
 export const UPDATE_LOG = [
   {
+    version: "0.8.0-alpha.1",
+    date: "2026-11-07",
+    title: "Missile bay",
+    sections: [
+      {
+        title: "MISSILE BAY",
+        items: [
+          "New Missile Bay in the Missiles tab: run-long upgrades for every missile, priced to matter late in a run.",
+          "Velocity: +10% missile speed and +8% turning per level (4 levels).",
+          "Yield: +12% missile damage per level, carried into every payload (5 levels).",
+          "Magazine: +1 rack slot and lock per level, past the Missile Rack cap, up to 9 (3 levels).",
+          "Autoloader: −12% recharge time and +15% graze and kill charge per level (4 levels).",
+          "Seeker: −12% lock time and +10% lock range per level (3 levels).",
+        ],
+      },
+      {
+        title: "FORGE",
+        items: [
+          "Blueprint offers, merges and kill mastery are replaced by a full catalogue: every part is always on sale. Rare parts open at wave 3 and epic parts at wave 6.",
+          "Parts earn Heat from the damage their warheads deal. With a full Heat bar, tempering to Tier II costs 50% of the unlock price and Tier III costs 150%.",
+          "Rush a temper early by paying for the missing Heat, up to 2.5× from cold.",
+          "Bay synergy: every Missile Bay level makes all parts heat 5% faster and temper 3% cheaper (up to 40% off).",
+          "Benched parts keep warming at half the fitted rate.",
+          "Veteran parts, taken to Tier III in an earlier run, unlock at half price with half a Heat bar already filled.",
+          "The level-up reroll no longer refreshes parts.",
+        ],
+      },
+      {
+        title: "HUD",
+        items: [
+          "The bar under the missile rack shows each fitted part's Heat toward its next tier; TEMPER READY appears when a bar fills.",
+        ],
+      },
+      {
+        title: "CO-OP",
+        items: ["Each pilot has their own Missile Bay, catalogue unlocks and tempering."],
+      },
+    ],
+  },
+  {
     version: "0.7.2-alpha.1",
     date: "2026-11-06",
     title: "Warhead forge",
