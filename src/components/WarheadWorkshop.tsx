@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { DEFAULT_MISSILE_BUILD, WARHEAD_PARTS, WARHEAD_SLOTS } from "../game/balance";
+import { MISSILE_BAY_DEFS, WARHEAD_PARTS, WARHEAD_SLOTS } from "../game/balance";
 
 const ROMAN = { 1: "I", 2: "II", 3: "III" } as const;
 import type {
@@ -7,12 +7,12 @@ import type {
   ForgePartInfo,
   ForgeShopInfo,
   GuidanceId,
+  MissileBayTrack,
   MissileBuild,
   WarheadTier,
   PayloadId,
   TriggerId,
   WarheadPartId,
-  WarheadSlot,
 } from "../game/types";
 import "./WarheadWorkshop.css";
 
@@ -402,11 +402,20 @@ function Trigger({ id, color }: { id: TriggerId; color: string }) {
 
 /* ------------------------------------------------------------ forge */
 
-/** What a part does at a tier: Tier I, Tier II, or Tier II plus its perk. */
+/** What a part does at a tier: Tier I, or the Tier II values (Tier III adds the perk). */
 export function partEffect(id: WarheadPartId, tier: WarheadTier) {
   const def = WARHEAD_PARTS[id];
   return tier === 1 ? def.effect : def.tier2;
 }
+
+/** Original marks for the Missile Bay tracks (32 × 32, stroked). */
+const BAY_PATHS: Record<MissileBayTrack, string> = {
+  velocity: "M4 12h10M2 18h12M6 24h8M14 9l14 7-14 7 3-7z",
+  yield: "M16 3l3 8 8 1-6 6 2 9-7-5-7 5 2-9-6-6 8-1z",
+  magazine: "M7 25V11l2-4 2 4v14M15 25V9l2-4 2 4v16M23 25V11l2-4 2 4v14M4 25h24",
+  autoloader: "M16 5a11 11 0 1 1-10 6M6 4v7h7M16 10v6l4 3",
+  seeker: "M16 4v6M16 22v6M4 16h6M22 16h6M10 16a6 6 0 1 0 12 0a6 6 0 1 0-12 0",
+};
 
 function TierPips({ tier }: { tier: WarheadTier }) {
   return (
@@ -419,16 +428,23 @@ function TierPips({ tier }: { tier: WarheadTier }) {
   );
 }
 
-function MasteryBar({ info }: { info: ForgePartInfo }) {
-  const { part, need } = info;
-  const done = part.tier === 3;
-  const frac = done ? 1 : Math.min(1, part.kills / need);
+/** Heat toward the next tier; full bars glow, Tier III bars are gold. */
+function HeatBar({ info, compact }: { info: ForgePartInfo; compact?: boolean }) {
+  const { part, nextHeat, prevHeat, temperReady } = info;
+  const done = nextHeat === null;
+  const frac = done ? 1 : Math.min(1, Math.max(0, (part.heat - prevHeat) / (nextHeat - prevHeat)));
   return (
-    <div className={`forge-mastery ${done ? "is-done" : ""}`}>
-      <span>
-        {done ? "MASTERED" : part.tier === 1 ? "KILLS · MERGE TO II" : "MASTERY"}
-        <b>{done ? part.kills : `${Math.min(part.kills, need)} / ${need}`}</b>
-      </span>
+    <div className={`forge-mastery ${done ? "is-done" : ""} ${temperReady ? "is-ready" : ""}`}>
+      {!compact && (
+        <span>
+          {done
+            ? "MASTERED"
+            : temperReady
+              ? "HEAT FULL · TEMPER READY"
+              : `HEAT → TIER ${ROMAN[(part.tier + 1) as WarheadTier]}`}
+          <b>{done ? `${part.kills} kills` : `${Math.floor(part.heat)} / ${nextHeat}`}</b>
+        </span>
+      )}
       <i>
         <em style={{ width: `${frac * 100}%` }} />
       </i>
@@ -439,12 +455,12 @@ function MasteryBar({ info }: { info: ForgePartInfo }) {
 export interface WarheadForgeProps {
   info: ForgeShopInfo;
   credits: number;
-  onBuy: (index: number) => void;
-  onMastery: (id: WarheadPartId) => void;
+  onBay: (track: MissileBayTrack) => void;
+  onUnlock: (id: WarheadPartId) => void;
+  onTemper: (id: WarheadPartId) => void;
   onSwap: (index: number) => void;
   onScrap: (index: number) => void;
   onFitStock: (id: WarheadPartId) => void;
-  onReroll?: () => void;
   /** co-op: hand a bench part to the teammate */
   onSend?: (index: number) => void;
   teammate?: string;
@@ -452,18 +468,18 @@ export interface WarheadForgeProps {
 }
 
 /**
- * The Warhead Forge: three fitted slots with tier and mastery, this wave's
- * blueprint offers (merges ribboned), and a two-slot bench.
+ * The Warhead Forge: Missile Bay upgrades for every missile, the three fitted
+ * parts with Heat and tempering, the full catalogue, and a two-slot bench.
  */
 export function WarheadForge({
   info,
   credits,
-  onBuy,
-  onMastery,
+  onBay,
+  onUnlock,
+  onTemper,
   onSwap,
   onScrap,
   onFitStock,
-  onReroll,
   onSend,
   teammate,
   disabled,
@@ -483,6 +499,21 @@ export function WarheadForge({
       "--part-color": WARHEAD_PARTS[id].color,
       "--rarity-color": RARITY_COLOR[WARHEAD_PARTS[id].rarity],
     }) as CSSProperties;
+  const temperButton = (entry: ForgePartInfo) => {
+    if (entry.temperPrice === null) return null;
+    const next = ROMAN[(entry.part.tier + 1) as WarheadTier];
+    return (
+      <button
+        type="button"
+        className={`forge-action ${entry.temperReady ? "forge-action--mastery" : "forge-action--rush"}`}
+        data-forge-temper={entry.part.id}
+        disabled={disabled || credits < entry.temperPrice}
+        onClick={() => onTemper(entry.part.id)}
+      >
+        {entry.temperReady ? `TEMPER → ${next}` : `RUSH → ${next}`} · {entry.temperPrice} CR
+      </button>
+    );
+  };
   return (
     <div className="warhead-workshop">
       <div className="warhead-hero">
@@ -492,26 +523,100 @@ export function WarheadForge({
             FORGE THE WARHEAD<span>.</span>
           </h3>
           <p>
-            Buy blueprints, merge duplicates to Tier II, then master a part with kills to unlock its
-            Tier III perk. Parts reset each run; mastered parts become Known blueprints.
+            Upgrade every missile in the Missile Bay, unlock parts from the catalogue, and temper
+            them as they heat up from the damage they deal. Rush a temper early for a surcharge.
           </p>
         </div>
         <WarheadSchematic build={build} tiers={tiers} />
       </div>
 
+      <section className="warhead-slot" aria-label="Missile Bay">
+        <div className="shop-section-heading">
+          <p>
+            <span className="warhead-slot-index">01</span> Missile Bay
+          </p>
+          <span>
+            Every missile, every run. Bay level {info.bayLevels}: parts heat{" "}
+            {Math.round(info.heatBonus * 100)}% faster and temper{" "}
+            {Math.round(info.temperDiscount * 100)}% cheaper.
+          </span>
+        </div>
+        <div className="forge-bay">
+          {info.bay.map((t) => {
+            const def = MISSILE_BAY_DEFS[t.track];
+            const maxed = t.price === null;
+            return (
+              <article
+                key={t.track}
+                data-bay={t.track}
+                className={`warhead-card forge-bay-card ${maxed ? "is-mastered" : ""}`}
+                style={{ "--part-color": def.color, "--rarity-color": def.color } as CSSProperties}
+              >
+                <span className="warhead-card-top">
+                  <span className="warhead-rarity">{def.tag}</span>
+                  <span className="forge-bay-pips" aria-label={`Level ${t.level} of ${t.max}`}>
+                    {Array.from({ length: t.max }, (_, i) => (
+                      <i key={i} className={i < t.level ? "is-on" : ""} />
+                    ))}
+                  </span>
+                </span>
+                <span className="forge-fitted-head">
+                  <span className="warhead-mark">
+                    <svg
+                      viewBox="0 0 32 32"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d={BAY_PATHS[t.track]} />
+                    </svg>
+                  </span>
+                  <span>
+                    <strong>{def.name}</strong>
+                    <small>
+                      LEVEL {t.level} / {t.max}
+                    </small>
+                  </span>
+                </span>
+                <span className="warhead-effect">
+                  {t.level ? def.effect(t.level) : "Not installed"}
+                  {!maxed && (
+                    <>
+                      <br />
+                      <em className="forge-next">Next: {def.effect(t.level + 1)}</em>
+                    </>
+                  )}
+                </span>
+                <button
+                  type="button"
+                  className="forge-action"
+                  data-bay-buy={t.track}
+                  disabled={disabled || maxed || credits < (t.price ?? Infinity)}
+                  onClick={() => onBay(t.track)}
+                >
+                  {maxed ? "MAXED" : `UPGRADE · ${t.price} CR`}
+                </button>
+              </article>
+            );
+          })}
+        </div>
+      </section>
+
       <section className="warhead-slot" aria-label="Fitted parts">
         <div className="shop-section-heading">
           <p>
-            <span className="warhead-slot-index">01</span> Fitted
+            <span className="warhead-slot-index">02</span> Fitted
           </p>
-          <span>Every missile in your rack launches with these three parts.</span>
+          <span>Damage dealt by these parts' warheads heats them toward the next tier.</span>
         </div>
         <div className="forge-fitted">
           {WARHEAD_SLOTS.map((slot) => {
             const entry = info.fitted[slot];
             const { part } = entry;
             const def = WARHEAD_PARTS[part.id];
-            const canMaster = entry.masteryReady && credits >= entry.masteryPrice && !disabled;
             return (
               <article
                 key={slot}
@@ -536,18 +641,8 @@ export function WarheadForge({
                 <span className={`forge-perk ${part.tier === 3 ? "is-on" : ""}`}>
                   <b>{def.perk.name}</b> {def.perk.text}
                 </span>
-                <MasteryBar info={entry} />
-                {entry.masteryReady && (
-                  <button
-                    type="button"
-                    className="forge-action forge-action--mastery"
-                    data-forge-mastery={part.id}
-                    disabled={!canMaster}
-                    onClick={() => onMastery(part.id)}
-                  >
-                    MASTER → III · {entry.masteryPrice} CR
-                  </button>
-                )}
+                <HeatBar info={entry} />
+                {temperButton(entry)}
               </article>
             );
           })}
@@ -570,71 +665,72 @@ export function WarheadForge({
         )}
       </section>
 
-      <section className="warhead-slot" aria-label="Blueprint offers">
+      <section className="warhead-slot" aria-label="Catalogue">
         <div className="shop-section-heading">
           <p>
-            <span className="warhead-slot-index">02</span> Blueprints
+            <span className="warhead-slot-index">03</span> Catalogue
           </p>
-          <span>Three offers each wave. Buying fits the part; the old one goes to the bench.</span>
+          <span>
+            Every part, always on sale. Rare parts open at wave 3, epic at wave 6. Unlocking fits
+            it; the old part goes to the bench.
+          </span>
         </div>
-        <div className="forge-offers">
-          {info.offers.map((offer) => {
-            const def = WARHEAD_PARTS[offer.id];
-            const owned = offer.merge;
-            const affordable = credits >= offer.price;
-            const can = !offer.sold && !offer.blocked && affordable && !disabled;
-            return (
-              <button
-                type="button"
-                key={`${offer.index}-${offer.id}`}
-                data-blueprint={offer.index}
-                data-blueprint-part={offer.id}
-                className={`warhead-card forge-offer ${offer.sold ? "is-sold" : ""} ${owned ? "is-merge" : ""}`}
-                style={partStyle(offer.id)}
-                disabled={!can}
-                onClick={() => onBuy(offer.index)}
-              >
-                {owned && !offer.sold && <span className="forge-ribbon">MERGE → II</span>}
-                <span className="warhead-card-top">
-                  <span className="warhead-rarity">{def.rarity}</span>
-                  {!owned && <small>{def.slot}</small>}
-                </span>
-                <span className="warhead-mark">
-                  <WarheadPartIcon id={offer.id} />
-                </span>
-                <strong>{def.name}</strong>
-                <span className="warhead-effect">{owned ? def.tier2 : def.effect}</span>
-                <span className="warhead-fit">
-                  {offer.sold
-                    ? "SOLD"
-                    : offer.blocked
-                      ? offer.blocked
-                      : `${owned ? "MERGE" : "BUY & FIT"} · ${offer.price} CR`}
-                </span>
-              </button>
-            );
-          })}
-          {!info.offers.length && <p className="forge-empty">No blueprints this wave.</p>}
-        </div>
-        {onReroll && (
-          <button
-            type="button"
-            className="forge-chip forge-reroll"
-            data-forge-reroll
-            disabled={disabled || credits < info.rerollCost}
-            onClick={onReroll}
-          >
-            ↻ Reroll offers{info.rerollCost ? ` · ${info.rerollCost} CR` : " · free"}
-          </button>
-        )}
+        {WARHEAD_SLOTS.map((slot) => (
+          <div key={slot} className="forge-catalogue-row">
+            <span className="forge-catalogue-slot">{slot}</span>
+            <div className="forge-catalogue">
+              {info.catalogue
+                .filter((entry) => WARHEAD_PARTS[entry.id].slot === slot)
+                .map((entry) => {
+                  const def = WARHEAD_PARTS[entry.id];
+                  const can = !entry.blocked && credits >= entry.price && !disabled;
+                  return (
+                    <button
+                      type="button"
+                      key={entry.id}
+                      data-unlock={entry.id}
+                      className={`warhead-card forge-offer ${entry.owned ? "is-sold" : ""} ${entry.locked ? "is-locked" : ""}`}
+                      style={partStyle(entry.id)}
+                      disabled={!can}
+                      title={def.effect}
+                      onClick={() => onUnlock(entry.id)}
+                    >
+                      {entry.veteran && !entry.owned && (
+                        <span className="forge-ribbon">VETERAN −50%</span>
+                      )}
+                      <span className="warhead-card-top">
+                        <span className="warhead-rarity">{def.rarity}</span>
+                      </span>
+                      <span className="forge-fitted-head">
+                        <span className="warhead-mark">
+                          <WarheadPartIcon id={entry.id} />
+                        </span>
+                        <strong>{def.name}</strong>
+                      </span>
+                      <span className="warhead-effect">{def.effect}</span>
+                      <span className="warhead-fit">
+                        {entry.owned
+                          ? "OWNED"
+                          : entry.blocked
+                            ? entry.blocked
+                            : `UNLOCK · ${entry.price} CR`}
+                      </span>
+                    </button>
+                  );
+                })}
+            </div>
+          </div>
+        ))}
       </section>
 
       <section className="warhead-slot" aria-label="Bench">
         <div className="shop-section-heading">
           <p>
-            <span className="warhead-slot-index">03</span> Bench
+            <span className="warhead-slot-index">04</span> Bench
           </p>
-          <span>Benched parts keep their tier and kills. Swapping is free.</span>
+          <span>
+            Benched parts keep their tier and warm at half the fitted rate. Swaps are free.
+          </span>
         </div>
         <div className="forge-bench">
           {info.bench.map((entry, index) =>
@@ -658,6 +754,7 @@ export function WarheadForge({
                     <small>{entry.part.kills} kills</small>
                   </span>
                 </span>
+                <HeatBar info={entry} />
                 <span className="forge-bench-actions">
                   <button
                     type="button"
@@ -668,6 +765,7 @@ export function WarheadForge({
                   >
                     Swap in
                   </button>
+                  {temperButton(entry)}
                   <button
                     type="button"
                     className="forge-action forge-action--scrap"
@@ -701,6 +799,3 @@ export function WarheadForge({
     </div>
   );
 }
-
-/** Stock part for a slot, for callers that want the free refit by slot. */
-export const stockFor = (slot: WarheadSlot) => DEFAULT_MISSILE_BUILD[slot];

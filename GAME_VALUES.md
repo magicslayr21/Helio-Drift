@@ -111,15 +111,30 @@ Values live in `GAME_CONFIG.warheads` (per-tier arrays) and `GAME_CONFIG.forge`;
 | Delayed     | Trigger  | Rare    | 1 s, 1.6×                                    | 0.8 s, 1.8×                          | Detonator: tap E to set off stuck charges at 2×              |
 | Siphon      | Trigger  | Epic    | 8% charge per hit, 1 missile per salvo       | 12%, +1 hull per kill                | Feedback: Full Lock salvos refund one whole missile          |
 
-| Forge value                   |                                                                      Setting |
-| ----------------------------- | ---------------------------------------------------------------------------: |
-| Offers                        |      3 per wave, seeded by run seed, wave and reroll count; epic from wave 6 |
-| Roll weights                  | Common 1, rare 0.7, epic 0.4; Known blueprints ×2 (not in Daily Flare/co-op) |
-| List price                    |                                     Common and stock 150, rare 320, epic 620 |
-| Merge (Tier I → II)           |                                                            60% of list price |
-| Mastery kills (Tier II → III) |                                      Epic 90, rare 120, common and stock 150 |
-| Tier III price                |                                     round5(price × 1.55²): 360 / 770 / 1,490 |
-| Bench / scrap                 |                                2 slots, free swaps / 50% of everything spent |
+| Forge value              |                                                                                Setting |
+| ------------------------ | -------------------------------------------------------------------------------------: |
+| Catalogue                |               Every non-stock part always for sale; rare from wave 3, epic from wave 6 |
+| Unlock price             |                                      Common 150, rare 320, epic 620 (stock parts free) |
+| Heat to Tier II / III    |                       Common and stock 600 / 1,800; rare 500 / 1,500; epic 400 / 1,200 |
+| Heat source              |    Damage dealt by the part's warheads while fitted; benched parts warm at 50% of that |
+| Temper price (full Heat) |                                             Tier II 50% of unlock price, Tier III 150% |
+| Rush                     |                     price × (1 + 1.5 × missing Heat share): up to 2.5× from a cold bar |
+| Bay synergy              |                      Per Missile Bay level: +5% Heat gain, −3% temper price (max −40%) |
+| Veteran parts            | Taken to Tier III in an earlier run: unlock at 50%, start with 50% of the Tier II Heat |
+| Bench / scrap            |                                          2 slots, free swaps / 50% of everything spent |
+
+## Missile Bay
+
+Run-long upgrades for every missile (`GAME_CONFIG.missileBay`). Next level costs
+`round5(basePrice × 1.7^level)`.
+
+| Track      | Levels | Per level                                                   | Prices                      |
+| ---------- | -----: | ----------------------------------------------------------- | --------------------------- |
+| Velocity   |      4 | +10% missile speed, +8% turning                             | 240, 410, 695, 1,180        |
+| Yield      |      5 | +12% missile damage (all payloads)                          | 300, 510, 865, 1,475, 2,505 |
+| Magazine   |      3 | +1 rack slot and lock, past the Missile Rack cap (max 9)    | 480, 815, 1,385             |
+| Autoloader |      4 | −12% recharge time (multiplicative), +15% graze/kill charge | 260, 440, 750, 1,280        |
+| Seeker     |      3 | −12% lock time (multiplicative), +10% lock range            | 220, 375, 635               |
 
 Payload damage and control scale with the shot: Full Lock, Relay hops, Chain minis and Delayed
 all multiply the payload. Chain minis carry Gravity, EMP, Solar Flare and Cryo at 50% duration.
@@ -359,7 +374,7 @@ core radius (12–18 px depending on boss); leaving that core resets partial exp
 | Twin-Linked Feeder     |          1 | Rare / 0.7           | +1 projectile per projectile volley                            |
 | Sabot Rounds           |          3 | Rare / 0.7           | +1 projectile pierce                                           |
 | Targeting Optics       |          5 | Common / 1.0         | +7 percentage points critical chance; critical multiplier 2.2× |
-| Missile Rack           |          2 | Common / 1.0         | +1 rack slot and +1 lock per salvo; maximum rack 6             |
+| Missile Rack           |          2 | Common / 1.0         | +1 rack slot and +1 lock per salvo; maximum rack 6 (+Magazine) |
 
 ## Salvage drone
 

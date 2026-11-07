@@ -4,7 +4,6 @@ import { RUN_PACING } from "./simulation/campaign";
 import { GAME_CONFIG } from "./game-config";
 import type { CoopEvent, CoopMatchState, CoopPlayerId } from "./simulation/coop-types";
 import type { Boss, Bullet, Mode, WeaponId, Rock, Pickup } from "./types";
-import { hashSeed } from "./balance";
 
 export const PILOTS = ["p1", "p2"] as const;
 export const isHostileShot = (b: Bullet) => ["enemy", "wardenOrb", "wardenShard"].includes(b.kind);
@@ -408,10 +407,6 @@ export class CoopCampaign extends Game {
   }
   override specialPilotId() {
     return this.activeId;
-  }
-  /** Each pilot has their own Forge: offers come from the room seed and the pilot id. */
-  override blueprintSeed() {
-    return hashSeed(this.match.seed, this.activeId);
   }
   override pilotAccent() {
     return PILOT_ACCENTS[this.activeId];

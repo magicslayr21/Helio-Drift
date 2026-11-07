@@ -129,25 +129,24 @@ export function PlayerStatus({ hud }: { hud: Hud }) {
               </span>
             ))}
           </div>
-          {/* Warhead mastery: one thin bar per fitted part, gold once mastered */}
-          <div className="mt-1 flex h-[3px] gap-1" aria-label="Warhead mastery">
+          {/* Warhead Heat: one thin bar per fitted part toward its next tier, gold once Tier III */}
+          <div className="mt-1 flex h-[3px] gap-1" aria-label="Warhead heat">
             {(hud.mastery ?? []).map((m) => (
               <span
                 key={m.slot}
                 className="flex-1 bg-white/10"
-                title={`${WARHEAD_PARTS[m.id].name} · Tier ${m.tier} · ${Math.min(m.kills, m.need)}/${m.need} kills`}
+                title={`${WARHEAD_PARTS[m.id].name} · Tier ${m.tier}${m.tier < 3 ? ` · ${Math.round(m.progress * 100)}% heat${m.ready ? " · temper ready" : ""}` : " · mastered"}`}
               >
                 <span
                   className="block h-full transition-[width] duration-300"
                   style={{
-                    width: `${m.tier === 3 ? 100 : Math.min(1, m.kills / m.need) * 100}%`,
+                    width: `${m.progress * 100}%`,
                     background:
                       m.tier === 3
                         ? "linear-gradient(90deg,#ffe7a0,#ffb03a)"
-                        : m.tier === 2 && m.kills >= m.need
+                        : m.ready
                           ? "#ffcf6a"
                           : WARHEAD_PARTS[m.id].color,
-                    opacity: m.tier === 1 ? 0.45 : 1,
                   }}
                 />
               </span>

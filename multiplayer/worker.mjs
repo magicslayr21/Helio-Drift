@@ -49,7 +49,9 @@ const WARHEAD_PARTS = new Set([
   "siphon",
 ]);
 // Warhead Forge loadout commands that address an offer or bench slot by index.
-const FORGE_INDEX_COMMANDS = new Set(["buyBlueprint", "swapBench", "scrapBench", "sendBench"]);
+const FORGE_INDEX_COMMANDS = new Set(["swapBench", "scrapBench", "sendBench"]);
+// Missile Bay tracks (src/game/balance.ts MISSILE_BAY_TRACKS).
+const MISSILE_BAY_TRACKS = new Set(["velocity", "yield", "magazine", "autoloader", "seeker"]);
 
 class RequestError extends Error {
   constructor(status, message) {
@@ -641,8 +643,9 @@ export class MatchRoom {
       case "buyDroneUpgrade":
       case "equipDroneWeapon":
       case "fitWarhead":
-      case "buyBlueprint":
-      case "buyMastery":
+      case "unlockPart":
+      case "temperPart":
+      case "buyMissileBay":
       case "swapBench":
       case "scrapBench":
       case "sendBench":
@@ -814,7 +817,15 @@ export class MatchRoom {
       if (!Number.isInteger(message.index) || message.index < 0 || message.index > 2)
         return this.sendError(socket, "invalid_command", "Forge slot is invalid.");
       command.index = message.index;
-    } else if (message.type === "fitWarhead" || message.type === "buyMastery") {
+    } else if (message.type === "buyMissileBay") {
+      if (!MISSILE_BAY_TRACKS.has(message.track))
+        return this.sendError(socket, "invalid_command", "Missile Bay track is invalid.");
+      command.track = message.track;
+    } else if (
+      message.type === "fitWarhead" ||
+      message.type === "unlockPart" ||
+      message.type === "temperPart"
+    ) {
       if (!WARHEAD_PARTS.has(message.part))
         return this.sendError(socket, "invalid_command", "Warhead part is invalid.");
       command.part = message.part;

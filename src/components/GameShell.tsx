@@ -1027,12 +1027,12 @@ export default function GameShell({
                     }}
                     forge={{
                       info: gameRef.current!.forgeShopInfo(),
-                      onBuy: (index) => forgeAction((g) => g.buyBlueprint(index)),
-                      onMastery: (id) => forgeAction((g) => g.buyMastery(id)),
+                      onBay: (track) => forgeAction((g) => g.buyMissileBay(track)),
+                      onUnlock: (id) => forgeAction((g) => g.unlockPart(id)),
+                      onTemper: (id) => forgeAction((g) => g.temperPart(id)),
                       onSwap: (index) => forgeAction((g) => g.swapBench(index)),
                       onScrap: (index) => forgeAction((g) => g.scrapBench(index)),
                       onFitStock: (id) => forgeAction((g) => g.fitWarheadPart(id)),
-                      onReroll: () => forgeAction((g) => g.rerollChoices() !== null),
                     }}
                     notice="FLIGHT PAUSED · INSTALL YOUR NEXT ADVANTAGE"
                   />

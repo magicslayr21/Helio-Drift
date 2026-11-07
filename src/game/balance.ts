@@ -13,8 +13,9 @@ import type {
   SalvageUpgradeId,
   SectorTheme,
   StatUpgrade,
-  BlueprintOffer,
   BuildTiers,
+  MissileBay,
+  MissileBayTrack,
   Forge,
   ForgePart,
   GuidanceId,
@@ -273,11 +274,15 @@ export const STAT_UPGRADES: StatUpgrade[] = [
     rarity: GAME_CONFIG.statUpgrades.missileRack.rarity,
     weight: GAME_CONFIG.statUpgrades.missileRack.weight,
     max: GAME_CONFIG.statUpgrades.missileRack.max,
-    desc: "+1 missile rack slot and +1 lock per salvo. Loads the new slot now. Max 6.",
+    desc: "+1 missile rack slot and +1 lock per salvo. Loads the new slot now. Max 6 (Magazine adds more).",
     apply: (g) => {
       const add = GAME_CONFIG.statUpgrades.missileRack.rackPerStack;
       const before = g.p.maxMissiles;
-      g.p.maxMissiles = Math.min(GAME_CONFIG.salvo.maxRack, g.p.maxMissiles + add);
+      // Magazine levels from the Missile Bay sit on top of the Missile Rack cap
+      const cap =
+        GAME_CONFIG.salvo.maxRack +
+        (g.p.missileBay?.magazine ?? 0) * GAME_CONFIG.missileBay.magazine.rackPerLevel;
+      g.p.maxMissiles = Math.min(cap, g.p.maxMissiles + add);
       g.p.missiles = Math.min(g.p.maxMissiles, g.p.missiles + (g.p.maxMissiles - before));
     },
   },
@@ -501,21 +506,47 @@ export function normalizeMissileBuild(build: unknown): MissileBuild {
 /* ------------------------------------------------------------ warhead forge */
 
 const F = GAME_CONFIG.forge;
+const BAY = GAME_CONFIG.missileBay;
 const round5 = (n: number) => Math.round(n / 5) * 5;
 
-/** The blueprint's list price (default parts are priced as common). */
+/** Unlock price (default parts are priced as common). */
 export const partPrice = (id: WarheadPartId) => F.prices[WARHEAD_PARTS[id].rarity];
-/** Tier I → II merge: 60% of list price. */
-export const mergePrice = (id: WarheadPartId) => Math.round(partPrice(id) * F.mergeShare);
-/** Tier II → III mastery: round5(price × 1.55²). */
-export const masteryPrice = (id: WarheadPartId) =>
-  round5(partPrice(id) * F.masteryPriceMultiplier ** 2);
-/** Kills needed before Tier III unlocks: 90 epic, 120 rare, 150 common and default. */
-export const masteryKills = (id: WarheadPartId) => F.masteryKills[WARHEAD_PARTS[id].rarity];
+/** Wave from which a part can be unlocked. */
+export const partUnlockWave = (id: WarheadPartId) => F.unlockWave[WARHEAD_PARTS[id].rarity];
+/** Total Heat needed to reach a tier (2 or 3). */
+export const heatForTier = (id: WarheadPartId, tier: 2 | 3) =>
+  F.heatToTier[WARHEAD_PARTS[id].rarity][tier - 2];
 /** Scrap returns half of every credit spent on the part. */
 export const scrapValue = (part: ForgePart) => Math.floor(part.spent * F.scrapShare);
 
-export const stockPart = (id: WarheadPartId): ForgePart => ({ id, tier: 1, kills: 0, spent: 0 });
+/** Bay synergy: total Missile Bay levels → Heat gain multiplier and temper discount. */
+export const bayLevels = (bay: MissileBay) =>
+  MISSILE_BAY_TRACKS.reduce((sum, t) => sum + (bay[t] ?? 0), 0);
+export const synergyHeat = (levels: number) => 1 + levels * F.synergyHeatPerLevel;
+export const synergyDiscount = (levels: number) =>
+  Math.min(F.synergyMaxDiscount, levels * F.synergyDiscountPerLevel);
+
+/**
+ * Price to temper a part to its next tier. With a full Heat bar it costs the base
+ * share of the unlock price; earlier, the missing Heat is paid for as a surcharge.
+ * Missile Bay synergy trims the result. Null at Tier III.
+ */
+export function temperPrice(part: ForgePart, levels: number): number | null {
+  if (part.tier >= 3) return null;
+  const next = (part.tier + 1) as 2 | 3;
+  const base = partPrice(part.id) * F.temperShare[next - 2];
+  const need = heatForTier(part.id, next);
+  const missing = Math.max(0, 1 - part.heat / need);
+  return round5(base * (1 + F.rushSurcharge * missing) * (1 - synergyDiscount(levels)));
+}
+
+export const stockPart = (id: WarheadPartId): ForgePart => ({
+  id,
+  tier: 1,
+  heat: 0,
+  kills: 0,
+  spent: 0,
+});
 
 export function freshForge(): Forge {
   return {
@@ -525,9 +556,6 @@ export function freshForge(): Forge {
       trigger: stockPart(DEFAULT_MISSILE_BUILD.trigger),
     },
     bench: Array.from({ length: F.benchSlots }, () => null),
-    offers: [],
-    offerWave: -1,
-    offerRolls: 0,
   };
 }
 
@@ -537,7 +565,13 @@ function normalizePart(raw: unknown, slot?: WarheadSlot): ForgePart | null {
   if (!isWarheadPart(r.id) || (slot && WARHEAD_PARTS[r.id].slot !== slot)) return null;
   const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0);
   const tier = r.tier === 2 || r.tier === 3 ? r.tier : 1;
-  return { id: r.id, tier, kills: Math.floor(num(r.kills)), spent: Math.floor(num(r.spent)) };
+  return {
+    id: r.id,
+    tier,
+    heat: num(r.heat),
+    kills: Math.floor(num(r.kills)),
+    spent: Math.floor(num(r.spent)),
+  };
 }
 
 /** Repair a forge from a save or room checkpoint; anything unreadable becomes the stock forge. */
@@ -550,7 +584,6 @@ export function normalizeForge(raw: unknown): Forge {
     unknown
   >;
   const bench = Array.isArray(r.bench) ? r.bench : [];
-  const offers = Array.isArray(r.offers) ? r.offers : [];
   return {
     fitted: {
       payload: normalizePart(fitted.payload, "payload") ?? fresh.fitted.payload,
@@ -558,13 +591,6 @@ export function normalizeForge(raw: unknown): Forge {
       trigger: normalizePart(fitted.trigger, "trigger") ?? fresh.fitted.trigger,
     },
     bench: Array.from({ length: F.benchSlots }, (_, i) => normalizePart(bench[i])),
-    offers: offers
-      .filter((o): o is BlueprintOffer => !!o && isWarheadPart((o as BlueprintOffer).id))
-      .slice(0, F.offers)
-      .map((o) => ({ id: o.id, sold: Boolean(o.sold) })),
-    offerWave: typeof r.offerWave === "number" && Number.isFinite(r.offerWave) ? r.offerWave : -1,
-    offerRolls:
-      typeof r.offerRolls === "number" && Number.isFinite(r.offerRolls) ? r.offerRolls : 0,
   };
 }
 
@@ -580,7 +606,96 @@ export const tiersOf = (forge: Forge): BuildTiers => ({
   trigger: forge.fitted.trigger.tier,
 });
 
-/** A small, stable 32-bit hash for deriving per-wave offer seeds. */
+/* ------------------------------------------------------------ missile bay */
+
+export const MISSILE_BAY_TRACKS: MissileBayTrack[] = [
+  "velocity",
+  "yield",
+  "magazine",
+  "autoloader",
+  "seeker",
+];
+
+export const MISSILE_BAY_DEFS: Record<
+  MissileBayTrack,
+  { name: string; tag: string; color: string; perLevel: string; effect: (level: number) => string }
+> = {
+  velocity: {
+    name: "Velocity",
+    tag: "Speed",
+    color: "#6fe7ff",
+    perLevel: `+${BAY.velocity.speedPerLevel * 100}% missile speed, +${BAY.velocity.turnPerLevel * 100}% turning`,
+    effect: (l) =>
+      `+${Math.round(l * BAY.velocity.speedPerLevel * 100)}% speed · +${Math.round(l * BAY.velocity.turnPerLevel * 100)}% turn`,
+  },
+  yield: {
+    name: "Yield",
+    tag: "Damage",
+    color: "#ff3d6e",
+    perLevel: `+${BAY.yield.damagePerLevel * 100}% missile damage`,
+    effect: (l) => `+${Math.round(l * BAY.yield.damagePerLevel * 100)}% damage`,
+  },
+  magazine: {
+    name: "Magazine",
+    tag: "Amount",
+    color: "#ff5ad8",
+    perLevel: `+${BAY.magazine.rackPerLevel} rack slot and lock (past the Missile Rack cap)`,
+    effect: (l) => `+${l * BAY.magazine.rackPerLevel} rack`,
+  },
+  autoloader: {
+    name: "Autoloader",
+    tag: "Recharge",
+    color: "#91e7b0",
+    perLevel: `−${BAY.autoloader.regenPerLevel * 100}% recharge time, +${BAY.autoloader.chargePerLevel * 100}% graze and kill charge`,
+    effect: (l) =>
+      `−${Math.round((1 - missileRegenMultiplier(l)) * 100)}% recharge · +${Math.round(l * BAY.autoloader.chargePerLevel * 100)}% charge`,
+  },
+  seeker: {
+    name: "Seeker",
+    tag: "Lock-on",
+    color: "#ffd166",
+    perLevel: `−${BAY.seeker.lockPerLevel * 100}% lock time, +${BAY.seeker.conePerLevel * 100}% lock range`,
+    effect: (l) =>
+      `−${Math.round((1 - lockIntervalMultiplier(l)) * 100)}% lock time · +${Math.round(l * BAY.seeker.conePerLevel * 100)}% range`,
+  },
+};
+
+/** Recharge time multiplier: each Autoloader level cuts the remaining time by 12%. */
+export function missileRegenMultiplier(level: number) {
+  return (1 - BAY.autoloader.regenPerLevel) ** level;
+}
+/** Lock interval multiplier: each Seeker level cuts the remaining time by 12%. */
+export function lockIntervalMultiplier(level: number) {
+  return (1 - BAY.seeker.lockPerLevel) ** level;
+}
+
+export const freshMissileBay = (): MissileBay => ({
+  velocity: 0,
+  yield: 0,
+  magazine: 0,
+  autoloader: 0,
+  seeker: 0,
+});
+
+export function normalizeMissileBay(raw: unknown): MissileBay {
+  const bay = freshMissileBay();
+  if (!raw || typeof raw !== "object") return bay;
+  for (const t of MISSILE_BAY_TRACKS) {
+    const v = (raw as Record<string, unknown>)[t];
+    if (typeof v === "number" && Number.isFinite(v))
+      bay[t] = Math.max(0, Math.min(BAY[t].levels, Math.floor(v)));
+  }
+  return bay;
+}
+
+/** Price of the next level of a track, or null at max. */
+export function missileBayPrice(track: MissileBayTrack, level: number): number | null {
+  const def = BAY[track];
+  if (level >= def.levels) return null;
+  return round5(def.basePrice * BAY.priceGrowth ** level);
+}
+
+/** A small, stable 32-bit hash (used for seeding run-scoped randomness). */
 export function hashSeed(...parts: (number | string)[]): number {
   let h = 2166136261 >>> 0;
   for (const part of parts) {
@@ -593,58 +708,6 @@ export function hashSeed(...parts: (number | string)[]): number {
     h = Math.imul(h, 16777619) >>> 0;
   }
   return h >>> 0;
-}
-
-/**
- * Roll this wave's blueprint offers from the seeded shop stream: the same seed,
- * wave and reroll count always give the same offers, whatever else the run did.
- * Owned parts already at Tier II or III are never offered again; an owned
- * Tier I part (default parts included) comes back as a merge.
- */
-export function rollBlueprintOffers(opts: {
-  seed: number;
-  wave: number;
-  rolls: number;
-  owned: ForgePart[];
-  known?: Iterable<WarheadPartId>;
-}): BlueprintOffer[] {
-  let state = hashSeed(opts.seed, opts.wave, opts.rolls);
-  const next = () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let v = state;
-    v = Math.imul(v ^ (v >>> 15), v | 1);
-    v ^= v + Math.imul(v ^ (v >>> 7), v | 61);
-    return ((v ^ (v >>> 14)) >>> 0) / 4294967296;
-  };
-  const known = new Set(opts.known ?? []);
-  const owned = new Map(opts.owned.map((p) => [p.id, p.tier]));
-  const pool = (Object.keys(WARHEAD_PARTS) as WarheadPartId[])
-    .filter((id) => {
-      const def = WARHEAD_PARTS[id];
-      const tier = owned.get(id);
-      if (tier !== undefined) return tier === 1;
-      if (def.rarity === "default") return false;
-      return def.rarity !== "epic" || opts.wave >= F.epicWave;
-    })
-    .map((id) => ({
-      id,
-      weight: F.weights[WARHEAD_PARTS[id].rarity] * (known.has(id) ? F.knownBlueprintWeight : 1),
-    }));
-  const offers: BlueprintOffer[] = [];
-  while (offers.length < F.offers && pool.length) {
-    const total = pool.reduce((sum, e) => sum + e.weight, 0);
-    let roll = next() * total;
-    let index = pool.length - 1;
-    for (let i = 0; i < pool.length; i++) {
-      roll -= pool[i].weight;
-      if (roll <= 0) {
-        index = i;
-        break;
-      }
-    }
-    offers.push({ id: pool.splice(index, 1)[0].id, sold: false });
-  }
-  return offers;
 }
 
 /* ------------------------------------------------------------ salvage drone */
@@ -910,6 +973,7 @@ export function freshPlayer(): Player {
     missileBuild: { ...DEFAULT_MISSILE_BUILD },
     forge: freshForge(),
     bonusLocks: 0,
+    missileBay: freshMissileBay(),
     magnet: GAME_CONFIG.player.magnet,
     creditChance: GAME_CONFIG.player.creditChance,
     creditValue: GAME_CONFIG.player.creditValue,

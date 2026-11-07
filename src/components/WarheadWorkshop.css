@@ -459,3 +459,85 @@
     animation: none;
   }
 }
+
+/* ------------------------------------------------------------ missile bay & catalogue (0.8.0) */
+.forge-bay {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+.forge-bay-pips {
+  display: inline-flex;
+  gap: 3px;
+}
+.forge-bay-pips i {
+  width: 8px;
+  height: 3px;
+  background: #ffffff1c;
+}
+.forge-bay-pips i.is-on {
+  background: var(--part-color);
+  box-shadow: 0 0 5px var(--part-color);
+}
+.forge-next {
+  color: var(--part-color);
+  font-style: normal;
+  opacity: 0.85;
+}
+.helio-shop .forge-action--rush {
+  color: #ffb3a0;
+  border-color: #ff916855;
+  background: #ff91680d;
+}
+.forge-mastery.is-ready em {
+  background: #ffcf6a;
+  box-shadow: 0 0 8px #ffcf6a;
+}
+.forge-catalogue-row {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  margin-bottom: 10px;
+}
+.forge-catalogue-slot {
+  padding-top: 12px;
+  color: #ff8ae4;
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.forge-catalogue {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+}
+.forge-catalogue .warhead-card {
+  padding: 10px;
+}
+.forge-catalogue .forge-fitted-head strong {
+  font-size: 10px;
+}
+.forge-catalogue .warhead-effect {
+  font-size: 8.5px;
+}
+.helio-shop .forge-offer.is-locked {
+  opacity: 0.4;
+  background: repeating-linear-gradient(135deg, #ffffff03 0 1px, transparent 1px 9px), #0e1119;
+}
+@media (max-width: 1100px) {
+  .forge-bay {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 620px) {
+  .forge-bay {
+    grid-template-columns: 1fr 1fr;
+  }
+  .forge-catalogue-row {
+    grid-template-columns: 1fr;
+  }
+  .forge-catalogue-slot {
+    padding-top: 0;
+  }
+}

@@ -266,12 +266,23 @@ export type CoopCommand =
       sequence: number;
       part: import("../types").WarheadPartId;
     }
-  | { type: "buyBlueprint"; playerId: CoopPlayerId; sequence: number; index: number }
   | {
-      type: "buyMastery";
+      type: "unlockPart";
       playerId: CoopPlayerId;
       sequence: number;
       part: import("../types").WarheadPartId;
+    }
+  | {
+      type: "temperPart";
+      playerId: CoopPlayerId;
+      sequence: number;
+      part: import("../types").WarheadPartId;
+    }
+  | {
+      type: "buyMissileBay";
+      playerId: CoopPlayerId;
+      sequence: number;
+      track: import("../types").MissileBayTrack;
     }
   | { type: "swapBench"; playerId: CoopPlayerId; sequence: number; index: number }
   | { type: "scrapBench"; playerId: CoopPlayerId; sequence: number; index: number }

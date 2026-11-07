@@ -50,13 +50,21 @@ import {
   normalizeForge,
   buildOf,
   tiersOf,
-  masteryKills,
-  masteryPrice,
-  mergePrice,
   partPrice,
+  partUnlockWave,
+  heatForTier,
+  temperPrice,
   scrapValue,
   stockPart,
-  rollBlueprintOffers,
+  bayLevels,
+  synergyHeat,
+  synergyDiscount,
+  freshMissileBay,
+  missileBayPrice,
+  missileRegenMultiplier,
+  lockIntervalMultiplier,
+  MISSILE_BAY_TRACKS,
+  MISSILE_BAY_DEFS,
 } from "./balance";
 import { addKnownBlueprint, loadKnownBlueprints } from "./blueprints";
 import type {
@@ -97,6 +105,8 @@ import type {
   ForgePartInfo,
   ForgeShopInfo,
   WarheadTier,
+  MissileBay,
+  MissileBayTrack,
 } from "./types";
 import { renderSpecialist } from "./render-specialists";
 import { DEFAULT_SETTINGS } from "./preferences";
@@ -368,7 +378,9 @@ export class Game {
   }
   pickupCollected(_pickup: Pickup) {}
   loseRockHp(rock: Rock, amount: number) {
+    const before = rock.hp;
     rock.hp -= this.absorbSupportShield(rock, amount * this.markMultiplier(rock));
+    this.creditWarheadHeat(Math.min(before, before - rock.hp));
   }
   addBullet(...bullets: Bullet[]) {
     this.bullets.push(...bullets);
@@ -1056,12 +1068,14 @@ export class Game {
     return p.forge;
   }
 
-  /** Seed for this pilot's blueprint offers (co-op mixes in the pilot id). */
-  blueprintSeed(): number {
-    return this.runSeed >>> 0;
+  /** The bound pilot's Missile Bay levels. */
+  bayOf(): MissileBay {
+    const p = this.p;
+    if (!p.missileBay) p.missileBay = freshMissileBay();
+    return p.missileBay;
   }
 
-  /** Known blueprints weight this run's offers, except in Daily Flare and co-op rooms. */
+  /** Veteran parts (taken to Tier III in an earlier run); never in Daily Flare or co-op rooms. */
   knownBlueprints(): WarheadPartId[] {
     if (this.dailyFlare || this.cooperative) return [];
     return loadKnownBlueprints();
@@ -1084,25 +1098,14 @@ export class Game {
     this.p.missileBuild = buildOf(this.forgeOf());
   }
 
-  /** Offers are rolled once per wave from the seeded shop stream (and again on a reroll). */
-  ensureBlueprintOffers(force = false) {
-    const f = this.forgeOf();
-    if (!force && f.offerWave === this.wave && f.offers.length) return;
-    if (f.offerWave !== this.wave) f.offerRolls = 0;
-    f.offerWave = this.wave;
-    f.offers = rollBlueprintOffers({
-      seed: this.blueprintSeed(),
-      wave: this.wave,
-      rolls: f.offerRolls,
-      owned: this.ownedParts(),
-      known: this.knownBlueprints(),
-    });
-  }
-
   /** A stock part nobody paid for or used can simply be discarded on a refit. */
   isFreshStock(part: ForgePart) {
     return (
-      WARHEAD_PARTS[part.id].rarity === "default" && part.tier === 1 && !part.spent && !part.kills
+      WARHEAD_PARTS[part.id].rarity === "default" &&
+      part.tier === 1 &&
+      !part.spent &&
+      !part.kills &&
+      !part.heat
     );
   }
 
@@ -1116,86 +1119,189 @@ export class Game {
     return true;
   }
 
-  /** Why an offer cannot be bought (apart from credits), or null. */
-  blueprintBlocked(index: number): string | null {
-    const f = this.forgeOf();
-    const offer = f.offers[index];
-    if (!offer) return "NO OFFER";
-    if (offer.sold) return "SOLD";
-    const owned = this.ownedPart(offer.id);
-    if (owned) return owned.tier === 1 ? null : "OWNED";
-    const current = f.fitted[WARHEAD_PARTS[offer.id].slot];
-    if (!this.isFreshStock(current) && !f.bench.includes(null)) return "BENCH FULL";
-    return null;
-  }
+  /* ---- missile bay ---- */
 
-  blueprintPrice(index: number): number {
-    const offer = this.forgeOf().offers[index];
-    if (!offer) return Infinity;
-    return this.ownedPart(offer.id) ? mergePrice(offer.id) : partPrice(offer.id);
-  }
-
-  /**
-   * Buy a blueprint offer. A new part is fitted at once and the part it replaces
-   * moves to the bench; an offer for a part you own at Tier I merges it to Tier II
-   * for 60% of list price.
-   */
-  buyBlueprint(index: number): boolean {
-    this.ensureBlueprintOffers();
-    const f = this.forgeOf();
-    const offer = f.offers[index];
-    if (!offer || this.blueprintBlocked(index)) return false;
-    const price = this.blueprintPrice(index);
-    if (this.credits < price) return false;
-    const owned = this.ownedPart(offer.id);
-    if (owned) {
-      owned.tier = 2;
-      owned.spent += price;
-      this.floatText(
-        this.p.x,
-        this.p.y - 30,
-        `${WARHEAD_PARTS[offer.id].name.toUpperCase()} II`,
-        WARHEAD_PARTS[offer.id].color,
-        14,
-      );
-      if (owned.kills >= masteryKills(owned.id)) this.announceMastery(owned.id);
-    } else {
-      const slot = WARHEAD_PARTS[offer.id].slot;
-      if (!this.benchPart(f.fitted[slot])) return false;
-      f.fitted[slot] = { id: offer.id, tier: 1, kills: 0, spent: price };
-    }
+  /** Buy the next level of a Missile Bay track. */
+  buyMissileBay(track: MissileBayTrack): boolean {
+    if (!MISSILE_BAY_TRACKS.includes(track)) return false;
+    const bay = this.bayOf();
+    const price = missileBayPrice(track, bay[track]);
+    if (price === null || this.credits < price) return false;
     this.credits -= price;
-    offer.sold = true;
-    this.syncForge();
+    bay[track]++;
+    if (track === "magazine") {
+      const add = GAME_CONFIG.missileBay.magazine.rackPerLevel;
+      this.p.maxMissiles += add;
+      this.p.missiles = Math.min(this.p.maxMissiles, this.p.missiles + add);
+    }
+    const def = MISSILE_BAY_DEFS[track];
+    this.floatText(
+      this.p.x,
+      this.p.y - 30,
+      `${def.name.toUpperCase()} ${bay[track]}`,
+      def.color,
+      14,
+    );
     this.sound.play("buy");
     return true;
   }
 
-  /** Tier II → III: unlocked by kills, bought in the Missiles tab. */
-  buyMastery(id: WarheadPartId): boolean {
-    const part = isWarheadPart(id) ? this.ownedPart(id) : undefined;
-    if (!part || part.tier !== 2 || part.kills < masteryKills(id)) return false;
-    const price = masteryPrice(id);
+  /** Missile speed multiplier from Velocity. */
+  missileSpeedMul() {
+    return 1 + this.bayOf().velocity * GAME_CONFIG.missileBay.velocity.speedPerLevel;
+  }
+  missileTurnMul() {
+    return 1 + this.bayOf().velocity * GAME_CONFIG.missileBay.velocity.turnPerLevel;
+  }
+  /** Missile damage multiplier from Yield. */
+  missileYieldMul() {
+    return 1 + this.bayOf().yield * GAME_CONFIG.missileBay.yield.damagePerLevel;
+  }
+  /** Effective seconds per missile of passive recharge (Autoloader). */
+  effectiveMissileRegen() {
+    return this.p.missileRegen * missileRegenMultiplier(this.bayOf().autoloader);
+  }
+  /** Graze and kill charge multiplier (Autoloader). */
+  missileChargeMul() {
+    return 1 + this.bayOf().autoloader * GAME_CONFIG.missileBay.autoloader.chargePerLevel;
+  }
+  /** Seconds between locks (Seeker). */
+  lockInterval() {
+    return GAME_CONFIG.salvo.lockInterval * lockIntervalMultiplier(this.bayOf().seeker);
+  }
+  /** Lock cone length (Seeker × range upgrade). */
+  lockConeRange() {
+    const seeker = 1 + this.bayOf().seeker * GAME_CONFIG.missileBay.seeker.conePerLevel;
+    return GAME_CONFIG.salvo.coneRange * (this.p.rangeMul ?? 1) * seeker;
+  }
+
+  /* ---- catalogue, heat and tempering ---- */
+
+  /** Total Missile Bay levels: the Bay synergy behind Heat gain and temper discounts. */
+  bayLevelTotal() {
+    return bayLevels(this.bayOf());
+  }
+
+  /** Unlock price, with the Veteran discount for parts mastered in an earlier run. */
+  unlockPrice(id: WarheadPartId) {
+    const veteran = this.knownBlueprints().includes(id);
+    return Math.round(partPrice(id) * (veteran ? GAME_CONFIG.forge.veteranUnlockShare : 1));
+  }
+
+  /** Why a part cannot be unlocked right now (apart from credits), or null. */
+  unlockBlocked(id: WarheadPartId): string | null {
+    if (!isWarheadPart(id)) return "UNKNOWN";
+    if (this.ownedPart(id)) return "OWNED";
+    if (WARHEAD_PARTS[id].rarity === "default") return "STOCK";
+    const wave = partUnlockWave(id);
+    if (this.wave < wave) return `WAVE ${wave}`;
+    const f = this.forgeOf();
+    const current = f.fitted[WARHEAD_PARTS[id].slot];
+    if (!this.isFreshStock(current) && !f.bench.includes(null)) return "BENCH FULL";
+    return null;
+  }
+
+  /**
+   * Unlock a part from the catalogue: it is fitted at once and the part it
+   * replaces goes to the bench. Veteran parts start with a Heat head start.
+   */
+  unlockPart(id: WarheadPartId): boolean {
+    if (this.unlockBlocked(id)) return false;
+    const price = this.unlockPrice(id);
     if (this.credits < price) return false;
+    const f = this.forgeOf();
+    const slot = WARHEAD_PARTS[id].slot;
+    if (!this.benchPart(f.fitted[slot])) return false;
+    const veteran = this.knownBlueprints().includes(id);
+    f.fitted[slot] = {
+      id,
+      tier: 1,
+      heat: veteran ? heatForTier(id, 2) * GAME_CONFIG.forge.veteranHeatShare : 0,
+      kills: 0,
+      spent: price,
+    };
     this.credits -= price;
-    part.tier = 3;
-    part.spent += price;
-    this.recordKnownBlueprint(id);
     this.syncForge();
     this.floatText(
       this.p.x,
       this.p.y - 30,
-      `${WARHEAD_PARTS[id].perk.name.toUpperCase()} UNLOCKED`,
+      `${WARHEAD_PARTS[id].name.toUpperCase()} UNLOCKED`,
       WARHEAD_PARTS[id].color,
       14,
     );
-    this.sound.play("levelup");
+    this.sound.play("buy");
     return true;
   }
 
-  /** A Tier III part becomes a Known blueprint in the pilot's profile. */
+  /** Price to temper an owned part right now (rush included), or null. */
+  temperPriceFor(id: WarheadPartId): number | null {
+    const part = this.ownedPart(id);
+    return part ? temperPrice(part, this.bayLevelTotal()) : null;
+  }
+
+  /**
+   * Temper an owned part to its next tier. A full Heat bar makes it cheap; an
+   * early temper pays a surcharge for the missing Heat. Tier III records a
+   * Veteran part in the pilot's profile.
+   */
+  temperPart(id: WarheadPartId): boolean {
+    const part = isWarheadPart(id) ? this.ownedPart(id) : undefined;
+    if (!part) return false;
+    const price = temperPrice(part, this.bayLevelTotal());
+    if (price === null || this.credits < price) return false;
+    this.credits -= price;
+    part.tier = (part.tier + 1) as WarheadTier;
+    part.spent += price;
+    // a rushed temper fills the bar to the tier it reached
+    part.heat = Math.max(part.heat, heatForTier(id, part.tier as 2 | 3));
+    if (part.tier === 3) this.recordKnownBlueprint(id);
+    this.syncForge();
+    const def = WARHEAD_PARTS[id];
+    this.floatText(
+      this.p.x,
+      this.p.y - 30,
+      part.tier === 3 ? `${def.perk.name.toUpperCase()} UNLOCKED` : `${def.name.toUpperCase()} II`,
+      def.color,
+      14,
+    );
+    this.sound.play(part.tier === 3 ? "levelup" : "buy");
+    return true;
+  }
+
+  /** A Tier III part becomes a Veteran part in the pilot's profile. */
   recordKnownBlueprint(id: WarheadPartId) {
     if (!this.cooperative && !this.dailyFlare) addKnownBlueprint(id);
+  }
+
+  /**
+   * Heat: damage landed by a warhead warms every fitted part of that warhead,
+   * and benched parts warm at half rate. Missile Bay levels speed it up.
+   */
+  creditWarheadHeat(amount: number) {
+    const build = this.warheadCredit;
+    if (!build || !(amount > 0)) return;
+    const gain = amount * synergyHeat(this.bayLevelTotal());
+    const f = this.forgeOf();
+    for (const slot of WARHEAD_SLOTS) {
+      const part = f.fitted[slot];
+      if (part.id !== build[slot]) continue;
+      this.warmPart(part, gain);
+    }
+    for (const part of f.bench)
+      if (part) this.warmPart(part, gain * GAME_CONFIG.forge.benchHeatShare);
+  }
+
+  warmPart(part: ForgePart, gain: number) {
+    if (part.tier >= 3) return;
+    const need = heatForTier(part.id, (part.tier + 1) as 2 | 3);
+    const before = part.heat;
+    part.heat += gain;
+    if (before < need && part.heat >= need) this.announceTemperReady(part.id);
+  }
+
+  announceTemperReady(id: WarheadPartId) {
+    this.floatText(this.p.x, this.p.y - 46, "TEMPER READY", WARHEAD_PARTS[id].color, 13);
+    this.sound.play("levelup");
   }
 
   /** Swap a bench part into its slot; the fitted part takes its bench slot. Free. */
@@ -1239,10 +1345,7 @@ export class Game {
     return true;
   }
 
-  /**
-   * Fit a part you own: a bench part swaps in, a stock part is refitted free.
-   * Parts you do not own are bought as blueprints instead.
-   */
+  /** Fit a part you own: a bench part swaps in, a stock part is refitted free. */
   fitWarheadPart(id: WarheadPartId): boolean {
     if (!isWarheadPart(id)) return false;
     const f = this.forgeOf();
@@ -1254,9 +1357,9 @@ export class Game {
   }
 
   /** Developer console and tests: install a part at a tier, bypassing the shop. */
-  devFitPart(id: WarheadPartId, tier: WarheadTier = 1, kills = 0): boolean {
+  devFitPart(id: WarheadPartId, tier: WarheadTier = 1, heat = 0): boolean {
     if (!isWarheadPart(id)) return false;
-    this.forgeOf().fitted[WARHEAD_PARTS[id].slot] = { id, tier, kills, spent: 0 };
+    this.forgeOf().fitted[WARHEAD_PARTS[id].slot] = { id, tier, heat, kills: 0, spent: 0 };
     this.syncForge();
     return true;
   }
@@ -1272,29 +1375,47 @@ export class Game {
   /** Everything the Missiles tab needs. */
   forgeShopInfo(): ForgeShopInfo {
     const f = this.forgeOf();
-    const info = (part: ForgePart): ForgePartInfo => ({
-      part: { ...part },
-      need: masteryKills(part.id),
-      masteryReady: part.tier === 2 && part.kills >= masteryKills(part.id),
-      masteryPrice: masteryPrice(part.id),
-      scrap: scrapValue(part),
-    });
+    const bay = this.bayOf();
+    const levels = this.bayLevelTotal();
+    const known = new Set(this.knownBlueprints());
+    const info = (part: ForgePart): ForgePartInfo => {
+      const next = part.tier >= 3 ? null : heatForTier(part.id, (part.tier + 1) as 2 | 3);
+      return {
+        part: { ...part },
+        nextHeat: next,
+        prevHeat: part.tier === 1 ? 0 : heatForTier(part.id, part.tier as 2 | 3),
+        temperPrice: temperPrice(part, levels),
+        temperReady: next !== null && part.heat >= next,
+        scrap: scrapValue(part),
+      };
+    };
     return {
+      bay: MISSILE_BAY_TRACKS.map((track) => ({
+        track,
+        level: bay[track],
+        max: GAME_CONFIG.missileBay[track].levels,
+        price: missileBayPrice(track, bay[track]),
+      })),
+      bayLevels: levels,
+      heatBonus: synergyHeat(levels) - 1,
+      temperDiscount: synergyDiscount(levels),
       fitted: {
         payload: info(f.fitted.payload),
         guidance: info(f.fitted.guidance),
         trigger: info(f.fitted.trigger),
       },
       bench: f.bench.map((p) => (p ? info(p) : null)),
-      offers: f.offers.map((offer, index) => ({
-        index,
-        id: offer.id,
-        price: this.blueprintPrice(index),
-        merge: Boolean(this.ownedPart(offer.id)),
-        sold: offer.sold,
-        blocked: this.blueprintBlocked(index),
-      })),
-      rerollCost: this.rerollCost,
+      catalogue: (Object.keys(WARHEAD_PARTS) as WarheadPartId[])
+        .filter((id) => WARHEAD_PARTS[id].rarity !== "default")
+        .map((id) => ({
+          id,
+          unlockWave: partUnlockWave(id),
+          locked: this.wave < partUnlockWave(id),
+          owned: Boolean(this.ownedPart(id)),
+          veteran: known.has(id),
+          price: this.unlockPrice(id),
+          blocked: this.unlockBlocked(id),
+        })),
       stock: WARHEAD_SLOTS.filter((slot) => f.fitted[slot].id !== DEFAULT_MISSILE_BUILD[slot]).map(
         (slot) => DEFAULT_MISSILE_BUILD[slot],
       ),
@@ -1513,12 +1634,14 @@ export class Game {
       missileBuild: normalizeMissileBuild(p.missileBuild),
       mastery: WARHEAD_SLOTS.map((slot) => {
         const part = this.forgeOf().fitted[slot];
+        const next = part.tier >= 3 ? null : heatForTier(part.id, (part.tier + 1) as 2 | 3);
+        const prev = part.tier === 1 ? 0 : heatForTier(part.id, part.tier as 2 | 3);
         return {
           slot,
           id: part.id,
           tier: part.tier,
-          kills: part.kills,
-          need: masteryKills(part.id),
+          progress: next === null ? 1 : clamp((part.heat - prev) / (next - prev), 0, 1),
+          ready: next !== null && part.heat >= next,
         };
       }),
       missileCharge:
@@ -1658,7 +1781,8 @@ export class Game {
 
     // missiles: hold E to paint locks, release to fire the salvo; tap for one missile
     this.updateMissileLock(dt, !!k["e"]);
-    if (p.missiles < p.maxMissiles) this.addMissileCharge(dt / p.missileRegen);
+    // Autoloader shortens the passive recharge
+    if (p.missiles < p.maxMissiles) this.addMissileCharge(dt / this.effectiveMissileRegen());
     else p.missileCharge = 0;
 
     this.comboTimer -= dt;
@@ -3179,7 +3303,7 @@ export class Game {
     else if (kind === "drone") this.damageDrone(idx, dmg, crit);
     else {
       this.damageBoss(dmg, crit);
-      this.addMissileCharge(GAME_CONFIG.salvo.bossHitCharge);
+      this.addMissileCharge(GAME_CONFIG.salvo.bossHitCharge * this.missileChargeMul());
     }
     if (p.leech > 0) p.hull = Math.min(p.maxHull, p.hull + dmg * p.leech);
     if (b.kind === "flak") {
@@ -3874,7 +3998,7 @@ export class Game {
     if (this.boss) {
       if (this.boss.id === id) {
         this.damageBoss(real, crit);
-        this.addMissileCharge(GAME_CONFIG.salvo.bossHitCharge);
+        this.addMissileCharge(GAME_CONFIG.salvo.bossHitCharge * this.missileChargeMul());
         return;
       }
       if (this.boss.hole && this.boss.hole.id === id) {
@@ -3907,7 +4031,7 @@ export class Game {
     const p = this.p;
     const cfg = GAME_CONFIG.salvo;
     const d = Math.hypot(t.x - p.x, t.y - p.y);
-    if (d - t.r > cfg.coneRange * (p.rangeMul ?? 1)) return false;
+    if (d - t.r > this.lockConeRange()) return false;
     // A big target counts once its rim crosses the cone edge, not only its centre.
     const rim = d > t.r ? Math.asin(clamp(t.r / d, 0, 1)) * 0.5 : Math.PI;
     return (
@@ -3940,7 +4064,7 @@ export class Game {
     if (key && !p.missileHeld && playing) {
       p.missileHoldT = 0;
       p.missileLocks = [];
-      p.missileLockT = cfg.lockInterval;
+      p.missileLockT = this.lockInterval();
       p.fullLockAt = -1;
     }
     p.missileHeld = key;
@@ -3959,8 +4083,8 @@ export class Game {
         const t = this.pickLockTarget();
         if (t) {
           p.missileLocks.push(t.id);
-          p.missileLockT += cfg.lockInterval;
-          if (p.missileLockT <= 0) p.missileLockT = cfg.lockInterval;
+          p.missileLockT += this.lockInterval();
+          if (p.missileLockT <= 0) p.missileLockT = this.lockInterval();
           this.sound.play("lock");
         } else p.missileLockT = 0;
       }
@@ -4024,7 +4148,7 @@ export class Game {
     if (!((obj.grazeArm ?? 0) & bit)) return;
     obj.grazed = (obj.grazed ?? 0) | bit;
     if (this.p.hull <= 0) return;
-    this.addMissileCharge(cfg.grazeCharge);
+    this.addMissileCharge(cfg.grazeCharge * this.missileChargeMul());
     this.sound.play("graze");
     this.floatText(this.p.x, this.p.y + 30, "GRAZE", this.pilotAccent(), 10);
   }
@@ -4078,7 +4202,10 @@ export class Game {
           ? this.tierValue(W.direct.speedMultiplier, tiers.guidance)
           : 1;
     const speed =
-      (opts.mini ? W.chain.speed : cfg.launchSpeed) * (opts.speedMul ?? 1) * guidanceSpeed;
+      (opts.mini ? W.chain.speed : cfg.launchSpeed) *
+      (opts.speedMul ?? 1) *
+      guidanceSpeed *
+      this.missileSpeedMul();
     // Blast's own tiers raise the warhead's base damage and radius
     const blastDmgMul =
       build.payload === "blast"
@@ -4105,12 +4232,14 @@ export class Game {
       color: this.cooperative ? this.pilotAccent() : WARHEAD_PARTS[build.payload].color,
       hitIds: new Set(),
       target: opts.target,
-      turn: cfg.turn,
+      turn: cfg.turn * this.missileTurnMul(),
       bounces: 0,
       fuse: 0,
       extra: 0,
       extraDmg: 0,
-      missileDmg: opts.dmg ?? p.blastDmg * blastDmgMul * (opts.dmgMul ?? 1),
+      // Yield (Missile Bay) multiplies the warhead; follow-ups inherit absolute damage
+      missileDmg:
+        opts.dmg ?? p.blastDmg * blastDmgMul * (opts.dmgMul ?? 1) * this.missileYieldMul(),
       missileR: opts.radius ?? p.blastR * blastRMul,
       warhead: build,
       tiers,
@@ -4126,7 +4255,7 @@ export class Game {
         returning: false,
       };
     if (build.guidance === "direct" && tiers.guidance >= 3)
-      missile.turn = cfg.turn * W.direct.leadTurnMultiplier;
+      missile.turn = cfg.turn * this.missileTurnMul() * W.direct.leadTurnMultiplier;
     const amp =
       build.guidance === "corkscrew"
         ? this.tierValue(W.corkscrew.spiralMultiplier, tiers.guidance)
@@ -5077,10 +5206,7 @@ export class Game {
     }
   }
 
-  /**
-   * A kill landed by a warhead (missile blast, bomblet, shard, burn or aftershock)
-   * counts toward the mastery of every part of that warhead still fitted.
-   */
+  /** A kill landed by a warhead counts on every part of that warhead still fitted. */
   creditWarheadKill(mark?: Rock["sunburn"], x = 0, y = 0) {
     if (mark) this.prominenceFlare(x, y, mark);
     const build = this.warheadCredit;
@@ -5090,7 +5216,6 @@ export class Game {
       const part = forge.fitted[slot];
       if (part.id !== build[slot]) continue;
       part.kills++;
-      if (part.tier === 2 && part.kills === masteryKills(part.id)) this.announceMastery(part.id);
     }
     // Siphon Tier II+: +1 hull per kill
     const trigger = forge.fitted.trigger;
@@ -5098,11 +5223,6 @@ export class Game {
       const heal = this.tierValue(GAME_CONFIG.warheads.siphon.hullPerKill, trigger.tier);
       this.p.hull = Math.min(this.p.maxHull, this.p.hull + heal);
     }
-  }
-
-  announceMastery(id: WarheadPartId) {
-    this.floatText(this.p.x, this.p.y - 46, "MASTERY READY", WARHEAD_PARTS[id].color, 13);
-    this.sound.play("levelup");
   }
 
   hitRock(index: number, dmg: number, vx: number, vy: number, crit: boolean) {
@@ -5126,7 +5246,9 @@ export class Game {
   damageDrone(index: number, dmg: number, crit: boolean, quiet = false) {
     const d = this.drones[index];
     if (!d) return;
+    const hpBefore = d.hp;
     d.hp -= this.absorbSupportShield(d, dmg * this.markMultiplier(d));
+    this.creditWarheadHeat(Math.min(hpBefore, hpBefore - d.hp));
     d.flash = 1;
     if (!quiet) {
       this.burst(d.x, d.y, crit ? 10 : 6, crit ? AMBER_HOT : ICE);
@@ -5142,7 +5264,9 @@ export class Game {
    * (the vanish, the two ambushes and the return) has finished.
    */
   loseBossHp(bo: Boss, amount: number) {
+    const hpBefore = bo.hp;
     bo.hp -= amount * this.markMultiplier(bo);
+    this.creditWarheadHeat(Math.min(hpBefore, hpBefore - bo.hp));
     if (!bo.mk6 || bo.movement.mk6RaidDone) return;
     const floor = bo.maxHp * 0.5;
     if (bo.hp >= floor) return;
@@ -5207,7 +5331,7 @@ export class Game {
     this.rocks.splice(index, 1);
     this.combo++;
     this.comboTimer = 4;
-    this.addMissileCharge(GAME_CONFIG.salvo.killCharge);
+    this.addMissileCharge(GAME_CONFIG.salvo.killCharge * this.missileChargeMul());
     this.creditWarheadKill(r.sunburn, r.x, r.y);
 
     // meteorites: cheap to kill, rich to salvage, never split
@@ -5406,7 +5530,7 @@ export class Game {
     this.gainXp((heavy ? 120 : 60) * this.xpScale());
     this.combo++;
     this.comboTimer = 4;
-    this.addMissileCharge(GAME_CONFIG.salvo.killCharge);
+    this.addMissileCharge(GAME_CONFIG.salvo.killCharge * this.missileChargeMul());
   }
 
   /**
@@ -5518,18 +5642,13 @@ export class Game {
     return picked;
   }
 
-  /**
-   * Spend credits to reroll: the level-up rack (if one is waiting) and this
-   * wave's blueprint offers refresh together. The price rises every time.
-   */
+  /** spend credits to reroll the rack — the price rises every time */
   rerollChoices(): number | null {
     if (this.credits < this.rerollCost) return null;
     const paid = this.rerollCost;
     this.credits -= this.rerollCost;
     this.rerollCost = Math.round(this.rerollCost * 1.8);
-    if (this.choices.length) this.choices = this.rollChoices();
-    this.forgeOf().offerRolls++;
-    this.ensureBlueprintOffers(true);
+    this.choices = this.rollChoices();
     this.sound.play("buy");
     return paid;
   }
@@ -6084,8 +6203,6 @@ export class Game {
       if (spawned) this.bannerSub += ` · +${spawned} SPIKER${spawned > 1 ? "S" : ""}`;
     }
     this.p.missiles = Math.min(this.p.maxMissiles, this.p.missiles + 1);
-    // every pilot gets this wave's blueprint offers from the seeded shop stream
-    this.forEachPilot(() => this.ensureBlueprintOffers());
     this.sound.play("wave");
     // Between-wave salvage is generous enough that a player can afford the
     // armory early: by the MK1 boss (wave 5) this alone totals ~760 CR.
@@ -7812,6 +7929,8 @@ export class Game {
     // restore the hull we came in with — the upgrades' one-shot heals are part
     // of the rebuild, so don't let them stack on the player for free
     p.hull = clamp(keepHull, 1, p.maxHull);
+    // Missile Bay Magazine slots ride on top of the rebuilt rack
+    p.maxMissiles += (this.bayOf().magazine ?? 0) * GAME_CONFIG.missileBay.magazine.rackPerLevel;
     p.missiles = Math.min(keepMissiles, p.maxMissiles);
   }
 
@@ -7972,7 +8091,7 @@ export class Game {
     else this.gainXp(xpGain);
     this.combo++;
     this.comboTimer = 4;
-    this.addMissileCharge(GAME_CONFIG.salvo.killCharge);
+    this.addMissileCharge(GAME_CONFIG.salvo.killCharge * this.missileChargeMul());
     for (let i = 0; i < 5; i++) {
       this.rings.push({
         x: b.x + this.rnd(-b.r * 0.4, b.r * 0.4),
@@ -8484,7 +8603,7 @@ export class Game {
   renderLockCone(ctx: CanvasRenderingContext2D, color: string) {
     const p = this.p;
     const cfg = GAME_CONFIG.salvo;
-    const range = cfg.coneRange * (p.rangeMul ?? 1);
+    const range = this.lockConeRange();
     const half = cfg.coneHalfAngle;
     const grow = clamp(p.missileHoldT / 0.12, 0, 1);
     const r = range * (0.35 + 0.65 * grow);

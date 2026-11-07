@@ -694,13 +694,14 @@ try {
       shopTabs.some((tab) => tab.toLowerCase().includes(title.toLowerCase())),
       true,
     );
-  // 0.7.2: the Missiles tab opens the Warhead Forge. Buying a blueprint fits the part
-  // and charges its price; weapons and the drone are untouched. The forge and credits
-  // are restored afterwards so the rest of this run is unaffected.
+  // 0.8.0: the Missiles tab opens the Warhead Forge: Missile Bay, fitted parts and the
+  // catalogue. Unlocking a part fits it and a Bay level applies, each charging its
+  // price; weapons and the drone are untouched. Everything is restored afterwards.
   const forgeBefore = await evaluate(
     cdp,
     campaign,
     `JSON.stringify({credits:window.__campaignUpgradeGame.credits,forge:window.__campaignUpgradeGame.p.forge,
+      bay:window.__campaignUpgradeGame.p.missileBay,
       weapons:window.__campaignUpgradeGame.p.weapons,drone:window.__campaignUpgradeGame.salvageDrone})`,
   );
   assert.equal(
@@ -715,14 +716,13 @@ try {
   await waitFor(
     cdp,
     campaign,
-    "document.querySelectorAll('.helio-shop [data-forge-slot]').length === 3 && document.querySelectorAll('.helio-shop [data-blueprint]').length === 3",
-    "Warhead Forge slots and blueprint offers",
+    "document.querySelectorAll('.helio-shop [data-forge-slot]').length === 3 && document.querySelectorAll('.helio-shop [data-bay]').length === 5 && document.querySelectorAll('.helio-shop [data-unlock]').length === 14",
+    "Warhead Forge slots, Missile Bay and catalogue",
   );
-  const bought = await evaluate(
+  const topUp = await evaluate(
     cdp,
     campaign,
-    `(() => {const g=window.__campaignUpgradeGame;g.credits=Math.max(g.credits,2000);
-      return {id:g.p.forge.offers[0].id,credits:g.credits,price:g.blueprintPrice(0)};})()`,
+    "(() => {const g=window.__campaignUpgradeGame;g.credits=Math.max(g.credits,3000);return g.credits;})()",
   );
   // nudge React to re-render with the topped-up credits, then buy from the UI
   await evaluate(
@@ -738,23 +738,34 @@ try {
   await waitFor(
     cdp,
     campaign,
-    "!document.querySelector('.helio-shop [data-blueprint=\"0\"]').disabled",
-    "affordable blueprint offer",
+    "!document.querySelector('.helio-shop [data-unlock=incendiary]').disabled",
+    "affordable catalogue part",
   );
   await evaluate(
     cdp,
     campaign,
-    "document.querySelector('.helio-shop [data-blueprint=\"0\"]').click()",
+    "document.querySelector('.helio-shop [data-unlock=incendiary]').click()",
   );
   await waitFor(
     cdp,
     campaign,
-    `Object.values(window.__campaignUpgradeGame.p.forge.fitted).some(p => p.id === ${JSON.stringify(bought.id)})`,
-    "bought blueprint fitted",
+    "window.__campaignUpgradeGame.p.forge.fitted.payload.id === 'incendiary'",
+    "unlocked part fitted",
+  );
+  await evaluate(
+    cdp,
+    campaign,
+    "document.querySelector('.helio-shop [data-bay-buy=yield]').click()",
+  );
+  await waitFor(
+    cdp,
+    campaign,
+    "window.__campaignUpgradeGame.p.missileBay.yield === 1",
+    "Yield level 1",
   );
   assert.equal(
     await evaluate(cdp, campaign, "window.__campaignUpgradeGame.credits"),
-    bought.credits - bought.price,
+    topUp - 150 - 300,
   );
   const after = JSON.parse(
     await evaluate(
@@ -768,7 +779,7 @@ try {
   await evaluate(
     cdp,
     campaign,
-    `(() => {const g=window.__campaignUpgradeGame;const b=${forgeBefore};g.credits=b.credits;g.p.forge=b.forge;g.syncForge();})()`,
+    `(() => {const g=window.__campaignUpgradeGame;const b=${forgeBefore};g.credits=b.credits;g.p.forge=b.forge;g.p.missileBay=b.bay;g.syncForge();})()`,
   );
   await evaluate(
     cdp,
@@ -1019,7 +1030,7 @@ try {
     "shop close restores pending choices",
   );
   console.info(
-    "[shop readiness] eight weapon icons and stat comparisons, three tabs, warhead forge blueprints, purchases, upgrades, receipts, max level, credit limits, drone mounts and preserved level-up choices passed",
+    "[shop readiness] eight weapon icons and stat comparisons, three tabs, warhead forge catalogue and missile bay, purchases, upgrades, receipts, max level, credit limits, drone mounts and preserved level-up choices passed",
   );
   await cdp.send(
     "Emulation.setEmulatedMedia",

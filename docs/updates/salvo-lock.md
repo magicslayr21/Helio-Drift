@@ -313,3 +313,37 @@ Decisions taken while building Phase 1:
   needs a free slot on their bench. Forge actions also work during a shared pause.
 - **`devFitPart(id, tier, kills)`** installs a part directly, for the developer console and the
   tests.
+
+## Follow-up: Missile Bay and the Forge rework (`0.8.0-alpha.1`)
+
+After Phase 3 shipped, the economy was redesigned on request. The Phase 3 blueprint offers,
+merges and kill-based mastery were replaced. Part effects and the tier table are unchanged.
+
+- **Missile Bay:** five run-long tracks that improve every missile.
+  - Velocity: speed and turning.
+  - Yield: damage, carried into every payload.
+  - Magazine: rack slots past the Missile Rack cap, up to 9.
+  - Autoloader: recharge time, plus graze and kill charge.
+  - Seeker: lock time and lock range.
+
+  Prices are `round5(basePrice × 1.7^level)` and climb into the thousands. The Bay is meant
+  for late-run credits.
+
+- **Catalogue instead of offers:** every part is always for sale, gated only by wave (rare
+  parts from wave 3, epic from wave 6). There is no randomness and no reroll for parts. The
+  level-up reroll is back to rerolling upgrade cards only.
+- **Heat instead of kills:** a part earns Heat equal to the damage its warheads deal while it
+  is fitted. Bomblets, shards, burns, Crush and Aftershock all count.
+- **Tempering:** with a full Heat bar, Tier II costs 50% of the unlock price and Tier III costs
+  150%.
+- **Rushing:** a temper can be bought early for a surcharge on the missing Heat share, so
+  progression is never blocked. A rush fills the Heat bar to the tier it reaches.
+- **Buffs that make owned parts easier to upgrade:**
+  - Bay synergy: each Missile Bay level gives +5% Heat and −3% temper price, up to 40% off.
+  - Resting heat: benched parts warm at 50%.
+  - Veteran parts: taken to Tier III in any earlier run, they unlock at half price with half
+    the Tier II Heat already filled. This replaces the old "Known blueprint ×2 offer weight".
+- **Saves:** older saves keep their fitted parts, tiers and spend. Heat starts at 0, any 0.7.2
+  blueprint offers are dropped, and the Missile Bay starts at level 0.
+- **Co-op:** the `buyBlueprint` and `buyMastery` commands are replaced by `unlockPart`,
+  `temperPart` and `buyMissileBay`.
